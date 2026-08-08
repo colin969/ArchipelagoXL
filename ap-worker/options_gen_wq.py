@@ -69,7 +69,7 @@ def safe_json(value):
     if isinstance(value, list):
         return [safe_json(v) for v in value]
     if isinstance(value, dict):
-        return {k: safe_json(v) for k, v in value.items()}
+        return {safe_json(k): safe_json(v) for k, v in value.items()}
     return value
 
 def get_default(option):
@@ -186,7 +186,10 @@ class OptionsGenQueue(LobbyQueue):
                         option_def["valid_keys"] = safe_json(valid_keys)
                     option_group_options[option_name] = option_def
                 if option_group_options:
-                    game_options[group] = option_group_options
+                    # Group names can be Enum members (e.g. a StrEnum) rather than plain
+                    # strings. Those can't be unpickled by the parent process when the
+                    # result comes back over the pipe, as it never loaded the apworld.
+                    game_options[safe_json(group)] = option_group_options
             result = {"options": game_options}
             status = JobStatus.Failure if 'error' in result else JobStatus.Success
             return status, result
