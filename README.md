@@ -1,12 +1,13 @@
-Archipelago lobby (Community AP Fork)
+Archipelago XL
 =================
 
-This project provides a lobby to collect yaml files from players to be able to
-host archipelagoes easily.
+A complete software package for hosting extra large Archipelago games.
 
-This also contains 
- - APX, a proxy server for improving Archipelago Server capabilities and perf
- - Community AP Tools, a frontend for collaborative reviews of lobby yamls, and realtime management of the Archipelago Server
+This includes forks of:
+- Ionium Lobby, for managing yaml submissions
+- Archipelago Webhost, for the base hosting of games
+- APX, a proxy for the Webhost to provide extra optimizations and extended functionality like per-slot passwords
+- Community AP Tool, for collaborative tools to review yaml submissions, and manage live games
 
 # Running this project
 
