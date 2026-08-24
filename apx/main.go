@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,7 @@ type Config struct {
 	ApApiRoot            string `json:"ap_api_root"`
 	TLSCertFile          string `json:"tls_cert_file"`
 	TLSKeyFile           string `json:"tls_key_file"`
+	Passwordless         bool   `json:"passwordless"`
 }
 
 func main() {
@@ -50,8 +52,17 @@ func run() error {
 		return err
 	}
 
+	var tlsCfg *tls.Config
+	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("loading TLS keypair: %w", err)
+		}
+		tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+
 	reg, metrics := initMetrics()
-	rm, router, err := startRoomManager(cfg, reg, metrics)
+	rm, router, err := startRoomManager(cfg, reg, metrics, tlsCfg)
 	if err != nil {
 		log.Panicf("starting room manager: %v", err)
 	}
@@ -64,7 +75,7 @@ func run() error {
 	}
 
 	go func() {
-		err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.ListenAddr, &cfg.ReducedListenAddr, &cfg.TlsListenAddr, &cfg.TlsReducedListenAddr)
+		err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.ListenAddr, &cfg.ReducedListenAddr)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
@@ -167,6 +178,13 @@ func getConfig() (*Config, error) {
 	}
 	if v := os.Getenv("TLS_KEY_FILE"); v != "" {
 		cfg.TLSKeyFile = v
+	}
+	if v := os.Getenv("PASSWORDLESS"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PASSWORDLESS %q: %w", v, err)
+		}
+		cfg.Passwordless = enabled
 	}
 
 	if cfg.APPort < 1 || cfg.APPort > 65535 {

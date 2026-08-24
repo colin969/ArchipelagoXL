@@ -92,19 +92,19 @@ func newDebugTap(slotCount int) *debugTap {
 }
 
 type apxServer struct {
-	logf          func(f string, v ...any)
-	config        *Config
-	roomInfo      RoomInfoMessage
-	roomPlayers   *RoomPlayers // Immutable
-	passwords     *passwordStore
-	fullFeed      *fullFeedStore
-	bounceInfo    *bounceInfoStore
-	connections   *connectionRegistry
-	datapackages  *DataPackageStore
-	metrics       *metrics
-	lobbyRoomId   string
-	debugTap      *debugTap
-	largeDpLogger *log.Logger
+	logf         func(f string, v ...any)
+	config       *Config
+	roomInfo     RoomInfoMessage
+	roomPlayers  *RoomPlayers // Immutable
+	passwords    *passwordStore
+	fullFeed     *fullFeedStore
+	bounceInfo   *bounceInfoStore
+	connections  *connectionRegistry
+	datapackages *DataPackageStore
+	metrics      *metrics
+	lobbyRoomId  string
+	debugTap     *debugTap
+	debugLogger  *log.Logger
 }
 
 // No strict lock, but this MUST be immutable to be safe
@@ -306,7 +306,7 @@ func (s apxServer) serveConn(w http.ResponseWriter, r *http.Request, reduced boo
 	defer cancel()
 
 	// Send RoomInfo as opening message
-	if err := wsjson.Write(ctx, c, []any{s.roomInfo}); err != nil {
+	if err := s.sendLoggedMsg(ctx, c, []any{s.roomInfo}); err != nil {
 		s.logf("failed to send RoomInfo: %v", err)
 		return
 	}
@@ -333,15 +333,21 @@ func (s apxServer) serveConn(w http.ResponseWriter, r *http.Request, reduced boo
 		err = wsjson.Read(ctx, c, &messages)
 		if err != nil {
 			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
-				s.logf("client read: %v", err)
+				s.logf("client read inner: %v", err)
 			}
 			return
 		}
 
 		for _, message := range messages {
 			// Uncomment to add raw printing
-			// raw, _ := json.Marshal(message)
-			// s.logf("raw message: %s", raw)
+			raw, err := json.Marshal(message)
+			if err != nil {
+				s.logf("client unmarshal: %v", err)
+				return
+			}
+			if s.debugLogger != nil {
+				s.debugLogger.Printf("-> client: %s", raw)
+			}
 
 			cmd, ok := message["cmd"].(string)
 			if !ok {
@@ -355,7 +361,7 @@ func (s apxServer) serveConn(w http.ResponseWriter, r *http.Request, reduced boo
 
 			if err := s.handleMessage(ctx, connState, MessageType(cmd), message); err != nil {
 				if !isNormalClose(err) && ctx.Err() == nil {
-					s.logf("client read: %v", err)
+					s.logf("client read outer: %v", err)
 				}
 			}
 		}
@@ -390,6 +396,8 @@ func (s apxServer) handleMessage(ctx context.Context, connState *connectionState
 			// We're authed, it's a message we don't care about, pass it on
 			if connState.apConn != nil {
 				return wsjson.Write(ctx, connState.apConn, []any{raw})
+			} else {
+				connState.cancel()
 			}
 			return nil
 		}
@@ -482,4 +490,15 @@ func (dt *debugTap) Send(slotId int, raw []byte) {
 		default:
 		}
 	}
+}
+
+func (s apxServer) sendLoggedMsg(ctx context.Context, c *websocket.Conn, v any) error {
+	if s.debugLogger != nil {
+		if data, err := json.Marshal(v); err == nil {
+			s.debugLogger.Printf("<- apx: %s", data)
+		} else {
+			s.debugLogger.Printf("<- apx: (marshal error: %v)", err)
+		}
+	}
+	return wsjson.Write(ctx, c, v)
 }

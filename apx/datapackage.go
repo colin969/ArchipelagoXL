@@ -140,15 +140,6 @@ func (s apxServer) handleGetDataPackage(ctx context.Context, connState *connecti
 		}
 	}
 
-	// TODO: Make sure this behaves
-	// if len(requestedGames) > 10 {
-	// 	if connState.authenticated {
-	// 		s.logLargeDpRequest(*connState.registeredClient.game, *connState.slotName, len(requestedGames))
-	// 	} else if connState.largeDpRequested < len(requestedGames) {
-	// 		connState.largeDpRequested = len(requestedGames)
-	// 	}
-	// }
-
 	// TODO: Verify this works before allowing to go live
 	// If the client immediately requests an identical message, bad client!
 	// Probably an application level timeout
@@ -283,11 +274,4 @@ func (ds *DataPackageStore) buildResponse(games []string) (json.RawMessage, erro
 	msg = append(msg, footer...)
 
 	return msg, nil
-}
-
-func (s *apxServer) logLargeDpRequest(game string, slot string, count int) {
-	s.largeDpLogger.Printf(
-		"large_datapackage_request room=%s game=%q slot=%q requested_count=%d",
-		s.lobbyRoomId, game, slot, count,
-	)
 }

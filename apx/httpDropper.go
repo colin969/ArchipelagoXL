@@ -1,23 +1,30 @@
 package main
 
 import (
+	"crypto/tls"
 	"io"
 	"net"
 	"sync"
 )
 
+// Special listener to mimic Python's transport.abort() behaviour for non-TLS traffic
 type httpDropper struct {
-	net.Listener
+	listener net.Listener
+	tlsCfg   *tls.Config
 }
 
 func (hd *httpDropper) Accept() (net.Conn, error) {
 	// Just accept the connection, but we'll wrap it
-	conn, err := hd.Listener.Accept()
+	conn, err := hd.listener.Accept()
 	if err != nil {
 		return nil, err
 	}
-	return &peekedConn{Conn: conn}, nil
+	peeked := &peekedConn{Conn: conn}
+	return tls.Server(peeked, hd.tlsCfg), nil
 }
+
+func (hd *httpDropper) Close() error   { return hd.listener.Close() }
+func (hd *httpDropper) Addr() net.Addr { return hd.listener.Addr() }
 
 type peekedConn struct {
 	net.Conn
@@ -41,13 +48,10 @@ func (c *peekedConn) Read(b []byte) (int, error) {
 	})
 
 	if c.dropMe {
-		// Drop non-TLS traffic like archipelago.gg
 		if tc, ok := c.Conn.(*net.TCPConn); ok {
-			tc.CloseRead() // Must close read before closing write, otherwise RST not FIN resp
-			tc.CloseWrite()
-		} else {
-			c.Conn.Close()
+			tc.SetLinger(0) // RST immediately, discard buffers — matches transport.abort()
 		}
+		c.Conn.Close()
 		return 0, io.EOF
 	}
 

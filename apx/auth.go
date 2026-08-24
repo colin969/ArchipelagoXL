@@ -90,7 +90,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 			Errors: []string{"InvalidSlot"},
 		}
 		s.logf("InvalidSlot for %s", msg.Name)
-		if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
+		if err := s.sendLoggedMsg(ctx, connState.clientConn, []any{errorMsg}); err != nil {
 			_ = connState.clientConn.CloseNow()
 			return err
 		}
@@ -111,22 +111,24 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 		}
 	}
 
-	password, ok := s.passwords.Get(slotEntry[1])
-	if !(ok && msg.Password != nil && password == *msg.Password) {
-		errorMsg := ConnectionRefusedMessage{
-			Cmd:    "ConnectionRefused",
-			Errors: []string{"InvalidPassword"},
+	if s.config.Passwordless != true {
+		password, ok := s.passwords.Get(slotEntry[1])
+		if !(ok && msg.Password != nil && password == *msg.Password) {
+			errorMsg := ConnectionRefusedMessage{
+				Cmd:    "ConnectionRefused",
+				Errors: []string{"InvalidPassword"},
+			}
+			s.logf("InvalidPassword for %s", msg.Name)
+			if err := s.sendLoggedMsg(ctx, connState.clientConn, []any{errorMsg}); err != nil {
+				_ = connState.clientConn.CloseNow()
+				return err
+			}
+			connState.authFailCount += 1
+			if connState.authFailCount > 10 {
+				return connState.clientConn.Close(websocket.StatusNormalClosure, "InvalidPassword")
+			}
+			return nil
 		}
-		s.logf("InvalidPassword for %s", msg.Name)
-		if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
-			_ = connState.clientConn.CloseNow()
-			return err
-		}
-		connState.authFailCount += 1
-		if connState.authFailCount > 10 {
-			return connState.clientConn.Close(websocket.StatusNormalClosure, "InvalidPassword")
-		}
-		return nil
 	}
 
 	// Restrict full feed client access
@@ -139,7 +141,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 				Errors: []string{"InvalidSlot"},
 			}
 			s.logf("Full feed denial for %s", msg.Name)
-			if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
+			if err := s.sendLoggedMsg(ctx, connState.clientConn, []any{errorMsg}); err != nil {
 				_ = connState.clientConn.CloseNow()
 				return err
 			}
@@ -180,10 +182,6 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 		connState.isRetryStormClient = false
 		log.Printf("retry storm client: %s, %s, %s", s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game)
 		s.metrics.retryStormClients.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game).Inc()
-	}
-
-	if connState.largeDpRequested > 0 {
-		s.logLargeDpRequest(*game, *connState.slotName, connState.largeDpRequested)
 	}
 
 	log.Printf("Connected to %s", msg.Name)
@@ -273,6 +271,9 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 	}
 
 	// Forward the Connected message to the client
+	if s.debugLogger != nil {
+		s.debugLogger.Printf("<- server: %s", response)
+	}
 	if err := wsjson.Write(ctx, connState.clientConn, response); err != nil {
 		apConn.CloseNow()
 		return nil, 0, nil, fmt.Errorf("forwarding Connected to client: %w", err)
@@ -338,6 +339,9 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 	// Send messages to client
 	go func() {
 		for msg := range msgs {
+			if s.debugLogger != nil {
+				s.debugLogger.Printf("<- server: %s", msg.data)
+			}
 			if err := connState.clientConn.Write(ctx, msg.msgType, msg.data); err != nil {
 				if ctx.Err() == nil {
 					log.Printf("client write error: %v", err)

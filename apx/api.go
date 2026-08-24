@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,6 +34,7 @@ type RoomManager struct {
 	config        *Config
 	registry      *RoomRegistry
 	metrics       *metrics
+	tlsCfg        *tls.Config
 	reg           *prometheus.Registry
 	largeDpLogger *log.Logger
 }
@@ -175,8 +177,8 @@ func newRoomRegistry() *RoomRegistry {
 	}
 }
 
-func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics) (*RoomManager, *mux.Router, error) {
-	logFile, err := os.OpenFile("large_datapackage_requests.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, tlsCfg *tls.Config) (*RoomManager, *mux.Router, error) {
+	logFile, err := os.OpenFile("packets.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening log file: %w", err)
 	}
@@ -187,6 +189,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics) (
 		registry:      newRoomRegistry(),
 		reg:           reg,
 		metrics:       metrics,
+		tlsCfg:        tlsCfg,
 		largeDpLogger: largeDpLogger,
 	}
 
@@ -211,7 +214,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics) (
 	return srv, r, nil
 }
 
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, listenAddr, reducedListenAddr *string, tlsListenAddr *string, tlsReducedListenAddr *string) error {
+func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, listenAddr, reducedListenAddr *string) error {
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
 		return fmt.Errorf("room already exists: %s", lobbyRoomId)
@@ -238,26 +241,28 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 	datapackageCache := newDataPackageStore(true) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
-	slots, err := fetchSlotPasswords(rm.config, lobbyRoomId)
-	if err != nil {
-		return fmt.Errorf("failed to fetch slot passwords: %w", err)
+	if rm.config.Passwordless != true {
+		slots, err := fetchSlotPasswords(rm.config, lobbyRoomId)
+		if err != nil {
+			return fmt.Errorf("failed to fetch slot passwords: %w", err)
+		}
+		loadPasswordsIntoStore(connRegistry, passwordStore, roomPlayers, slots)
 	}
-	loadPasswordsIntoStore(connRegistry, passwordStore, roomPlayers, slots)
 
 	apx := &apxServer{
-		logf:          log.Printf,
-		config:        rm.config,
-		roomInfo:      *roomInfo,
-		roomPlayers:   roomPlayers,
-		passwords:     passwordStore,
-		fullFeed:      fullFeedStore,
-		connections:   connRegistry,
-		bounceInfo:    bounceInfo,
-		datapackages:  datapackageCache,
-		metrics:       rm.metrics,
-		lobbyRoomId:   lobbyRoomId,
-		debugTap:      debugTap,
-		largeDpLogger: rm.largeDpLogger,
+		logf:         log.Printf,
+		config:       rm.config,
+		roomInfo:     *roomInfo,
+		roomPlayers:  roomPlayers,
+		passwords:    passwordStore,
+		fullFeed:     fullFeedStore,
+		connections:  connRegistry,
+		bounceInfo:   bounceInfo,
+		datapackages: datapackageCache,
+		metrics:      rm.metrics,
+		lobbyRoomId:  lobbyRoomId,
+		debugTap:     debugTap,
+		debugLogger:  rm.largeDpLogger,
 	}
 
 	if err := apx.prefetchDataPackages(context.Background()); err != nil {
@@ -315,7 +320,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 	if err != nil {
 		return fmt.Errorf("listening on normal port: %w", err)
 	}
-	log.Printf("room %s: listening on ws://%v", lobbyRoomId, wsListener.Addr())
 
 	if reducedListenAddr == nil {
 		a := "0.0.0.0"
@@ -325,61 +329,20 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 	if err != nil {
 		return fmt.Errorf("listening on reduced port: %w", err)
 	}
-	log.Printf("room %s: reduced listening on ws://%v", lobbyRoomId, wsReducedListener.Addr())
+
+	if rm.tlsCfg != nil {
+		wsListener = &httpDropper{listener: wsListener, tlsCfg: rm.tlsCfg}
+		wsReducedListener = &httpDropper{listener: wsReducedListener, tlsCfg: rm.tlsCfg}
+		log.Printf("room %s: listening on wss://%v", lobbyRoomId, wsListener.Addr())
+		log.Printf("room %s: reduced listening on wss://%v", lobbyRoomId, wsReducedListener.Addr())
+	} else {
+		log.Printf("room %s: listening on ws://%v", lobbyRoomId, wsListener.Addr())
+		log.Printf("room %s: reduced listening on ws://%v", lobbyRoomId, wsReducedListener.Addr())
+	}
 
 	errc := make(chan error, 1)
-	go func() {
-		errc <- normalServer.Serve(wsListener)
-	}()
-	go func() {
-		errc <- reducedServer.Serve(wsReducedListener)
-	}()
-
-	// TLS listeners on fixed ports 9004/9005
-	if rm.config.TLSCertFile != "" {
-		if tlsListenAddr == nil {
-			a := "0.0.0.0"
-			tlsListenAddr = &a
-		}
-		if tlsReducedListenAddr == nil {
-			a := "0.0.0.0"
-			tlsReducedListenAddr = &a
-		}
-
-		tlsNormalListener, err := net.Listen("tcp", *tlsListenAddr)
-		if err != nil {
-			return fmt.Errorf("listening on TLS normal port: %w", err)
-		}
-		log.Printf("room %s: TLS listening on wss://%v", lobbyRoomId, tlsNormalListener.Addr())
-
-		tlsReducedListener, err := net.Listen("tcp", *tlsReducedListenAddr)
-		if err != nil {
-			return fmt.Errorf("listening on TLS reduced port: %w", err)
-		}
-		log.Printf("room %s: TLS reduced listening on wss://%v", lobbyRoomId, tlsReducedListener.Addr())
-
-		tlsNormalServer := &http.Server{
-			Handler:      apxHandler{server: apx, reduced: false},
-			ReadTimeout:  time.Second * 10,
-			WriteTimeout: time.Second * 10,
-		}
-		tlsReducedServer := &http.Server{
-			Handler:      apxHandler{server: apx, reduced: true},
-			ReadTimeout:  time.Second * 10,
-			WriteTimeout: time.Second * 10,
-		}
-
-		// Store for shutdown
-		room.normalServer = tlsNormalServer
-		room.reducedServer = tlsReducedServer
-
-		go func() {
-			errc <- tlsNormalServer.ServeTLS(&httpDropper{tlsNormalListener}, rm.config.TLSCertFile, rm.config.TLSKeyFile)
-		}()
-		go func() {
-			errc <- tlsReducedServer.ServeTLS(&httpDropper{tlsReducedListener}, rm.config.TLSCertFile, rm.config.TLSKeyFile)
-		}()
-	}
+	go func() { errc <- normalServer.Serve(wsListener) }()
+	go func() { errc <- reducedServer.Serve(wsReducedListener) }()
 
 	log.Printf("Opened room: %s", lobbyRoomId)
 
@@ -814,7 +777,6 @@ func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
 func (rm *HostedRoom) startCheckedLocationPoller(apApiRoot, apRoomId string, interval time.Duration) {
 	go func() {
 		for {
-			log.Printf("refreshing checked locations")
 			if err := rm.refreshCheckedLocations(apApiRoot, apRoomId); err != nil {
 				log.Printf("refreshing checked locations: %v", err)
 			}
