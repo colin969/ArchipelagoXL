@@ -171,6 +171,7 @@ services:
       AP_API_ROOT: "http://ap-webhost:9888"
       TLS_CERT_FILE: ""
       TLS_KEY_FILE: ""
+      PASSWORDLESS: false
       GOEXPERIMENT: "jsonv2"
     env_file:
       - ./.env.community
