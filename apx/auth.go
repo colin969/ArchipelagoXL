@@ -135,7 +135,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 	if !connState.reduced {
 		allowed := s.fullFeed.Allowed(slotEntry[1])
 		if !allowed {
-			s.connections.SendChatMessageToSlot(ctx, slotEntry[1], "Restricted access to this port")
+			SendChatMessageToClient(ctx, connState.clientConn, slotEntry[1], "Restricted access to this port")
 			errorMsg := ConnectionRefusedMessage{
 				Cmd:    "ConnectionRefused",
 				Errors: []string{"InvalidSlot"},
@@ -194,11 +194,11 @@ func (s apxServer) handleSay(ctx context.Context, connState *connectionState, ra
 	if text, ok := raw["text"].(string); ok && text != "" {
 		trimmed := strings.ToLower(strings.TrimSpace(text))
 		if strings.HasPrefix(trimmed, "!countdown") {
-			s.connections.SendChatMessageToSlot(ctx, connState.registeredClient.slotId, "You're not allowed to do this")
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
 			return nil
 		}
 		if strings.HasPrefix(trimmed, "!players") {
-			s.connections.SendChatMessageToSlot(ctx, connState.registeredClient.slotId, "You're not allowed to do this")
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
 			return nil
 		}
 	}
@@ -302,12 +302,12 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 
 	// Avoid any processing on these packets where possible
 
-	// Allow 5 messages to be queued at a time. Maybe this is awful, unsure.
+	// Allow 3 messages to be queued at a time. Maybe this is awful, unsure.
 	// This should never include datapackages since we handle them ourselves!
 	msgs := make(chan struct {
 		msgType websocket.MessageType
 		data    []byte
-	}, 5)
+	}, 3)
 
 	// Collect messages from server - We don't want to fail catching a ping from read if the client is slow
 	go func() {
@@ -321,6 +321,7 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 				if !isNormalClose(err) && ctx.Err() == nil {
 					s.logf("AP read error: %v", err)
 				}
+				connState.cancel()
 				return
 			}
 			select {
@@ -346,6 +347,7 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 				if ctx.Err() == nil {
 					log.Printf("client write error: %v", err)
 				}
+				connState.cancel()
 				return
 			}
 		}

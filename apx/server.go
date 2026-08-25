@@ -220,6 +220,25 @@ func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMes
 	}
 }
 
+func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, slotId int, msg string) {
+	message := PrintJsonChatMessage{
+		Cmd: "PrintJSON",
+		Data: []JsonMessagePart{
+			{
+				Type:  "text",
+				Text:  msg,
+				Color: "bold",
+			},
+		},
+		Type:    "Chat",
+		Team:    0,
+		Slot:    slotId,
+		Message: msg,
+	}
+
+	_ = wsjson.Write(ctx, clientConn, []any{message})
+}
+
 func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId int, msg string) {
 	message := PrintJsonChatMessage{
 		Cmd: "PrintJSON",
