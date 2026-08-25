@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"maps"
 	"net/http"
 	"slices"
@@ -104,7 +103,7 @@ type apxServer struct {
 	metrics      *metrics
 	lobbyRoomId  string
 	debugTap     *debugTap
-	debugLogger  *log.Logger
+	lokiLogger   *LokiLogger
 }
 
 // No strict lock, but this MUST be immutable to be safe
@@ -325,7 +324,7 @@ func (s apxServer) serveConn(w http.ResponseWriter, r *http.Request, reduced boo
 	defer cancel()
 
 	// Send RoomInfo as opening message
-	if err := s.sendLoggedMsg(ctx, c, []any{s.roomInfo}); err != nil {
+	if err := wsjson.Write(ctx, c, []any{s.roomInfo}); err != nil {
 		s.logf("failed to send RoomInfo: %v", err)
 		return
 	}
@@ -364,14 +363,15 @@ func (s apxServer) serveConn(w http.ResponseWriter, r *http.Request, reduced boo
 				s.logf("client unmarshal: %v", err)
 				return
 			}
-			if s.debugLogger != nil {
-				s.debugLogger.Printf("-> client: %s", raw)
-			}
 
 			cmd, ok := message["cmd"].(string)
 			if !ok {
 				s.logf("message missing or invalid cmd field: %v", message)
 				continue
+			}
+
+			if s.lokiLogger != nil && connState.authenticated {
+				s.lokiLogger.Log(*connState.slotName, LogSourceClient, raw)
 			}
 
 			if connState.authenticated {
@@ -509,15 +509,4 @@ func (dt *debugTap) Send(slotId int, raw []byte) {
 		default:
 		}
 	}
-}
-
-func (s apxServer) sendLoggedMsg(ctx context.Context, c *websocket.Conn, v any) error {
-	if s.debugLogger != nil {
-		if data, err := json.Marshal(v); err == nil {
-			s.debugLogger.Printf("<- apx: %s", data)
-		} else {
-			s.debugLogger.Printf("<- apx: (marshal error: %v)", err)
-		}
-	}
-	return wsjson.Write(ctx, c, v)
 }

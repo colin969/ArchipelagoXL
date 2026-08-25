@@ -35,6 +35,7 @@ type Config struct {
 	TLSCertFile          string `json:"tls_cert_file"`
 	TLSKeyFile           string `json:"tls_key_file"`
 	Passwordless         bool   `json:"passwordless"`
+	LokiEndpoint         string `json:"loki_endpoint"`
 }
 
 func main() {
@@ -186,6 +187,9 @@ func getConfig() (*Config, error) {
 		}
 		cfg.Passwordless = enabled
 	}
+	if v := os.Getenv("LOKI_ENDPOINT"); v != "" {
+		cfg.LokiEndpoint = v
+	}
 
 	if cfg.APPort < 1 || cfg.APPort > 65535 {
 		return nil, fmt.Errorf("port %d out of range (1-65535)", cfg.APPort)
@@ -227,8 +231,6 @@ func connectAndGetRoomInfo(apHost string, apPort int) (*RoomInfoMessage, error) 
 		if err := json.Unmarshal(data, &roomInfo); err != nil {
 			return nil, fmt.Errorf("failed to parse RoomInfo: %w", err)
 		}
-
-		roomInfo.Password = true
 
 		log.Printf("connected to AP server: seed=%q", roomInfo.SeedName)
 		return &roomInfo, nil

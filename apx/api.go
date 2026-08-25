@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -31,12 +30,11 @@ type SphereResult struct {
 }
 
 type RoomManager struct {
-	config        *Config
-	registry      *RoomRegistry
-	metrics       *metrics
-	tlsCfg        *tls.Config
-	reg           *prometheus.Registry
-	largeDpLogger *log.Logger
+	config   *Config
+	registry *RoomRegistry
+	metrics  *metrics
+	tlsCfg   *tls.Config
+	reg      *prometheus.Registry
 }
 
 type RoomRegistry struct {
@@ -178,19 +176,12 @@ func newRoomRegistry() *RoomRegistry {
 }
 
 func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, tlsCfg *tls.Config) (*RoomManager, *mux.Router, error) {
-	logFile, err := os.OpenFile("packets.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, nil, fmt.Errorf("opening log file: %w", err)
-	}
-	largeDpLogger := log.New(logFile, "", log.LstdFlags|log.LUTC)
-
 	srv := &RoomManager{
-		config:        cfg,
-		registry:      newRoomRegistry(),
-		reg:           reg,
-		metrics:       metrics,
-		tlsCfg:        tlsCfg,
-		largeDpLogger: largeDpLogger,
+		config:   cfg,
+		registry: newRoomRegistry(),
+		reg:      reg,
+		metrics:  metrics,
+		tlsCfg:   tlsCfg,
 	}
 
 	r := mux.NewRouter()
@@ -229,6 +220,9 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 	if err != nil {
 		return fmt.Errorf("failed to get RoomInfo from AP server, aborting: %w", err)
 	}
+	if rm.config.Passwordless != true {
+		roomInfo.Password = true
+	}
 
 	spheres, err := fetchRoomSpheres(rm.config.ApApiRoot, apRoomId)
 	if err != nil {
@@ -248,6 +242,10 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 		}
 		loadPasswordsIntoStore(connRegistry, passwordStore, roomPlayers, slots)
 	}
+	var lokiLogger *LokiLogger
+	if rm.config.LokiEndpoint != "" {
+		lokiLogger = NewLokiLogger(rm.config.LokiEndpoint, lobbyRoomId)
+	}
 
 	apx := &apxServer{
 		logf:         log.Printf,
@@ -262,7 +260,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 		metrics:      rm.metrics,
 		lobbyRoomId:  lobbyRoomId,
 		debugTap:     debugTap,
-		debugLogger:  rm.largeDpLogger,
+		lokiLogger:   lokiLogger,
 	}
 
 	if err := apx.prefetchDataPackages(context.Background()); err != nil {

@@ -90,7 +90,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 			Errors: []string{"InvalidSlot"},
 		}
 		s.logf("InvalidSlot for %s", msg.Name)
-		if err := s.sendLoggedMsg(ctx, connState.clientConn, []any{errorMsg}); err != nil {
+		if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
 			_ = connState.clientConn.CloseNow()
 			return err
 		}
@@ -111,6 +111,12 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 		}
 	}
 
+	if s.lokiLogger != nil {
+		if raw, err := json.Marshal(raw); err == nil {
+			s.lokiLogger.Log(msg.Name, LogSourceClient, raw)
+		}
+	}
+
 	if s.config.Passwordless != true {
 		password, ok := s.passwords.Get(slotEntry[1])
 		if !(ok && msg.Password != nil && password == *msg.Password) {
@@ -119,7 +125,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 				Errors: []string{"InvalidPassword"},
 			}
 			s.logf("InvalidPassword for %s", msg.Name)
-			if err := s.sendLoggedMsg(ctx, connState.clientConn, []any{errorMsg}); err != nil {
+			if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
 				_ = connState.clientConn.CloseNow()
 				return err
 			}
@@ -141,7 +147,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 				Errors: []string{"InvalidSlot"},
 			}
 			s.logf("Full feed denial for %s", msg.Name)
-			if err := s.sendLoggedMsg(ctx, connState.clientConn, []any{errorMsg}); err != nil {
+			if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
 				_ = connState.clientConn.CloseNow()
 				return err
 			}
@@ -271,8 +277,10 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 	}
 
 	// Forward the Connected message to the client
-	if s.debugLogger != nil {
-		s.debugLogger.Printf("<- server: %s", response)
+	if s.lokiLogger != nil {
+		for _, raw := range response {
+			s.lokiLogger.Log(connectMsg.Name, LogSourceServer, raw)
+		}
 	}
 	if err := wsjson.Write(ctx, connState.clientConn, response); err != nil {
 		apConn.CloseNow()
@@ -339,9 +347,21 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 
 	// Send messages to client
 	go func() {
+		var decodedMsgs []map[string]any
 		for msg := range msgs {
-			if s.debugLogger != nil {
-				s.debugLogger.Printf("<- server: %s", msg.data)
+			if s.lokiLogger != nil {
+				if err := json.Unmarshal(msg.data, &decodedMsgs); err == nil {
+					for _, decodedMsg := range decodedMsgs {
+						// Re-marshal individual message, not the whole array
+						raw, err := json.Marshal(decodedMsg)
+						if err != nil {
+							continue
+						}
+						s.lokiLogger.Log(*connState.slotName, LogSourceServer, raw)
+					}
+				} else {
+					s.logf("failed to unmarshal server message: %v", err)
+				}
 			}
 			if err := connState.clientConn.Write(ctx, msg.msgType, msg.data); err != nil {
 				if ctx.Err() == nil {
