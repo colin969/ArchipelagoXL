@@ -78,15 +78,15 @@ func run() error {
 		WriteTimeout: time.Second * 10,
 	}
 
-	go func() {
+	if cfg.ApRoomId != "" {
 		if cfg.LobbyRoomId == "" {
 			cfg.LobbyRoomId = uuid.New().String()
 		}
-		err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.NormalPort, &cfg.ReducedPort, cfg.Passwordless, false)
+		_, err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.NormalPort, &cfg.ReducedPort, cfg.Passwordless, false)
 		if err != nil {
-			log.Fatalf("%v", err)
+			log.Fatalf("starting env defined room: %v", err)
 		}
-	}()
+	}
 
 	if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Printf("API server error: %v", err)

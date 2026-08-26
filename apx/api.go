@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"strconv"
@@ -286,23 +289,25 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 
 	r := mux.NewRouter()
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
-	r.HandleFunc("/api/rooms", srv.handleListRooms).Methods(http.MethodGet)
-	api := r.PathPrefix("/api/{roomId}").Subrouter()
+	api := r.PathPrefix("/api").Subrouter()
 	api.Use(srv.loggingMiddleware)
 	api.Use(srv.authMiddleware)
-	api.HandleFunc("/release/{slotName}", srv.handleRelease).Methods(http.MethodGet)
-	api.HandleFunc("/refresh_passwords", srv.handlePasswordRefresh).Methods(http.MethodPost)
-	api.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
-	api.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
-	api.HandleFunc("/full_feed", srv.handleFullFeed).Methods(http.MethodGet)
-	api.HandleFunc("/full_feed/{slotId}", srv.handleFullFeedUser).Methods(http.MethodPost, http.MethodDelete)
-	api.HandleFunc("/bounce_exclusions", srv.handleBounceExclusionsList).Methods(http.MethodGet)
-	api.HandleFunc("/bounce_exclusions/{slotId}/{tag}", srv.handleBounceExclusions).Methods(http.MethodPost, http.MethodDelete)
-	api.HandleFunc("/deathlink_probability", srv.handleProbability).Methods(http.MethodGet, http.MethodPost)
-	api.HandleFunc("/spheres", srv.handleAllSpheres).Methods(http.MethodGet)
-	api.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
-	api.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
-	api.HandleFunc("/debug/slot/{slotId}", srv.handleDebugTap)
+	api.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
+	api.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
+	room := api.PathPrefix("/{roomId}").Subrouter()
+	room.HandleFunc("/release/{slotName}", srv.handleRelease).Methods(http.MethodGet)
+	room.HandleFunc("/refresh_passwords", srv.handlePasswordRefresh).Methods(http.MethodPost)
+	room.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
+	room.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
+	room.HandleFunc("/full_feed", srv.handleFullFeed).Methods(http.MethodGet)
+	room.HandleFunc("/full_feed/{slotId}", srv.handleFullFeedUser).Methods(http.MethodPost, http.MethodDelete)
+	room.HandleFunc("/bounce_exclusions", srv.handleBounceExclusionsList).Methods(http.MethodGet)
+	room.HandleFunc("/bounce_exclusions/{slotId}/{tag}", srv.handleBounceExclusions).Methods(http.MethodPost, http.MethodDelete)
+	room.HandleFunc("/deathlink_probability", srv.handleProbability).Methods(http.MethodGet, http.MethodPost)
+	room.HandleFunc("/spheres", srv.handleAllSpheres).Methods(http.MethodGet)
+	room.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
+	room.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
+	room.HandleFunc("/debug/slot/{slotId}", srv.handleDebugTap)
 
 	// Check every 2m, kill after 2h
 	srv.startRoomKiller(time.Duration(2)*time.Minute, time.Duration(2)*time.Hour)
@@ -313,11 +318,10 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 	for _, record := range records {
-		go func(rec RoomRecord) {
-			if err := srv.startNewHostedRoom(rec.ApRoomId, rec.LobbyRoomId, &rec.NormalPort, &rec.ReducedPort, rec.Passwordless, true); err != nil {
-				log.Printf("failed to restart room %s: %v", rec.LobbyRoomId, err)
-			}
-		}(record)
+		_, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalPort, &record.ReducedPort, record.Passwordless, true)
+		if err != nil {
+			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
+		}
 	}
 
 	return srv, r, nil
@@ -339,25 +343,137 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalPort, reducedPort *int, passwordless bool, save bool) error {
+type uploadRoomRequest struct {
+	LobbyRoomId  string
+	Passwordless bool
+}
+
+func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
+	return uploadRoomRequest{
+		LobbyRoomId:  r.FormValue("lobby_room_id"),
+		Passwordless: r.FormValue("passwordless") == "true",
+	}
+}
+
+func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	uploadReq := uploadRoomRequestFromForm(r)
+
+	// Parse the incoming multipart form (100MB max)
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to parse multipart form"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "no file provided"})
+		return
+	}
+	defer file.Close()
+
+	// Forward the file to the AP server's /api/upload_room
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	fw, err := mw.CreateFormFile("file", header.Filename)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create form file"})
+		return
+	}
+	if _, err := io.Copy(fw, file); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to buffer file"})
+		return
+	}
+	mw.Close()
+
+	uploadURL := fmt.Sprintf("%s/api/upload_room", rm.config.ApApiRoot)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, uploadURL, &buf)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create upstream request"})
+		return
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-Api-Key", rm.config.ApApiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("uploading to AP: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		var apErr map[string]string
+		json.NewDecoder(resp.Body).Decode(&apErr)
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP server error: %s", apErr["error"])})
+		return
+	}
+
+	var apResult struct {
+		RoomID string `json:"room_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apResult); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to decode AP response"})
+		return
+	}
+	if apResult.RoomID == "" {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": "AP server returned no room_id"})
+		return
+	}
+
+	// Create the hosted room using the returned AP room ID
+	// Use the AP room ID as both the lobby and AP room ID if no lobby ID is provided,
+	// or accept an optional lobby_room_id form field
+	lobbyRoomId := uploadReq.LobbyRoomId
+	if lobbyRoomId == "" {
+		lobbyRoomId = apResult.RoomID
+	}
+
+	room, err := rm.startNewHostedRoom(apResult.RoomID, lobbyRoomId, nil, nil, uploadReq.Passwordless, true)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(ApxRoomInfo{
+		LobbyRoomId: room.lobbyRoomId,
+		ApRoomId:    room.apRoomId,
+		NormalPort:  room.normalPort,
+		ReducedPort: room.reducedPort,
+	})
+}
+
+func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalPort, reducedPort *int, passwordless bool, save bool) (*HostedRoom, error) {
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
-		return fmt.Errorf("room already exists: %s", lobbyRoomId)
+		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
 	}
 
 	apPort, err := ensureApRoomPort(rm.config.ApApiRoot, rm.config.ApApiKey, apRoomId)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	roomPlayers, err := fetchRoomPlayers(rm.config.ApApiRoot, apRoomId)
 	if err != nil {
-		return fmt.Errorf("failed to get %s/api/room/%s/players from AP server, aborting: %w", rm.config.ApApiRoot, apRoomId, err)
+		return nil, fmt.Errorf("failed to get %s/api/room/%s/players from AP server, aborting: %w", rm.config.ApApiRoot, apRoomId, err)
 	}
 
 	roomInfo, err := connectAndGetRoomInfo(rm.config.APHost, apPort)
 	if err != nil {
-		return fmt.Errorf("failed to get RoomInfo from AP server, aborting: %w", err)
+		return nil, fmt.Errorf("failed to get RoomInfo from AP server, aborting: %w", err)
 	}
 	if passwordless != true {
 		roomInfo.Password = true
@@ -377,7 +493,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	if passwordless != true {
 		slots, err := fetchSlotPasswords(rm.config, lobbyRoomId)
 		if err != nil {
-			return fmt.Errorf("failed to fetch slot passwords: %w", err)
+			return nil, fmt.Errorf("failed to fetch slot passwords: %w", err)
 		}
 		loadPasswordsIntoStore(connRegistry, passwordStore, roomPlayers, slots)
 	}
@@ -413,7 +529,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	checkedLocs := newCheckedLocations()
 	room := &HostedRoom{
@@ -447,24 +562,17 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		WriteTimeout: time.Second * 10,
 	}
 
-	// Add room to registry
-	err = rm.registry.Add(room)
-	if err != nil {
-		return fmt.Errorf("room already exists: %s", lobbyRoomId)
-	}
-	defer rm.registry.Remove(lobbyRoomId)
-
 	// Setup both servers
 
 	wsListener, err := bindPort(normalPort)
 	if err != nil {
-		return fmt.Errorf("listening on normal port: %w", err)
+		return nil, fmt.Errorf("listening on normal port: %w", err)
 	}
 	room.normalPort = wsListener.Addr().(*net.TCPAddr).Port
 
 	wsReducedListener, err := bindPort(reducedPort)
 	if err != nil {
-		return fmt.Errorf("listening on reduced port: %w", err)
+		return nil, fmt.Errorf("listening on reduced port: %w", err)
 	}
 	room.reducedPort = wsReducedListener.Addr().(*net.TCPAddr).Port
 
@@ -480,11 +588,11 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 
 	log.Printf("room %s: multiserver port %d", lobbyRoomId, apPort)
 
-	errc := make(chan error, 1)
-	go func() { errc <- normalServer.Serve(wsListener) }()
-	go func() { errc <- reducedServer.Serve(wsReducedListener) }()
-
-	log.Printf("Opened room: %s", lobbyRoomId)
+	// Add room to registry
+	err = rm.registry.Add(room)
+	if err != nil {
+		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
+	}
 
 	// We can run APX temporarily without a lobby using the env vars, so ignore those
 	if save {
@@ -499,18 +607,27 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		}
 	}
 
-	// Wait until a server errors, or cancel is called
-	select {
-	case err := <-errc:
-		return fmt.Errorf("ws server error: %w", err)
-	case <-ctx.Done():
-	}
+	go func() {
+		defer cancel()
+		defer rm.registry.Remove(lobbyRoomId)
 
-	// Shutdown both servers immediately
-	normalServer.Close()
-	reducedServer.Close()
+		errc := make(chan error, 1)
+		go func() { errc <- normalServer.Serve(wsListener) }()
+		go func() { errc <- reducedServer.Serve(wsReducedListener) }()
 
-	return nil
+		log.Printf("Opened room: %s", lobbyRoomId)
+
+		select {
+		case err := <-errc:
+			log.Printf("room %s: ws server error: %v", lobbyRoomId, err)
+		case <-ctx.Done():
+		}
+
+		normalServer.Close()
+		reducedServer.Close()
+	}()
+
+	return room, nil
 }
 
 func (rm *RoomManager) loggingMiddleware(next http.Handler) http.Handler {
