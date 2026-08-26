@@ -264,24 +264,6 @@ impl<'r> FromRequest<'r> for ApRoom {
 
         let tracker_info = try_err_outcome!(parse_tracker(tracker_body));
 
-        let ap_host = config.ap_room_host.clone();
-        let ap_port = config.ap_room_port;
-        DATA_PACKAGE.get_or_init(move || {
-            let url = format!("ws://{}:{}", ap_host, ap_port);
-            eprintln!("[GUARD] Connecting to WebSocket at: {}", url);
-            let (mut socket, _) = tungstenite::connect(&url).unwrap();
-            let msg = "[{\"cmd\": \"GetDataPackage\"}]";
-            let _ = socket.read().unwrap();
-            socket.send(tungstenite::Message::Text(msg.into())).unwrap();
-            socket.flush().unwrap();
-            let raw_datapackage = socket.read().unwrap();
-            socket.close(None).unwrap();
-
-            let mut dp: DPackage =
-                serde_json::from_str(raw_datapackage.to_text().unwrap()).unwrap();
-            dp.0.pop().unwrap().data
-        });
-
         *cache.0.lock().unwrap() = Some((Instant::now(), TrackerInfo {
             slots: tracker_info.slots.clone(),
         }));

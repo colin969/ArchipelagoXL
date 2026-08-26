@@ -117,7 +117,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 		}
 	}
 
-	if s.config.Passwordless != true {
+	if s.passwordless != true {
 		password, ok := s.passwords.Get(slotEntry[1])
 		if !(ok && msg.Password != nil && password == *msg.Password) {
 			errorMsg := ConnectionRefusedMessage{
@@ -168,7 +168,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 		connState.pendingDatapackGames = nil
 	}
 
-	apConn, slotId, game, err := s.connectAP(ctx, connState, connState.reduced, msg)
+	apConn, slotId, game, err := s.connectAP(ctx, connState, connState.reduced, msg, s.apPort)
 	if err != nil {
 		return fmt.Errorf("connecting to AP: %w", err)
 	}
@@ -182,13 +182,6 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 	}
 	s.connections.Register(slotId, &client, msg.Tags)
 	connState.registeredClient = &client
-
-	// Client tried to retry storm earlier before auth, we can do metrics here instead
-	if connState.isRetryStormClient {
-		connState.isRetryStormClient = false
-		log.Printf("retry storm client: %s, %s, %s", s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game)
-		s.metrics.retryStormClients.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game).Inc()
-	}
 
 	log.Printf("Connected to %s", msg.Name)
 
@@ -235,7 +228,7 @@ func (s apxServer) handleConnectUpdate(ctx context.Context, connState *connectio
 	return nil
 }
 
-func (s apxServer) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage) (*websocket.Conn, int, *string, error) {
+func (s apxServer) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage, apPort int) (*websocket.Conn, int, *string, error) {
 	// Fix password when talking to ap server (only needed when using per-slot passwords)
 	if s.config.LobbyEnabled {
 		if s.roomInfo.Password {
@@ -245,9 +238,9 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 		}
 	}
 
-	log.Printf("Connecting to AP server at %s", fmt.Sprintf("ws://%s:%d", s.config.APHost, s.config.APPort))
+	log.Printf("Connecting to AP server at %s", fmt.Sprintf("ws://%s:%d", s.config.APHost, apPort))
 
-	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, s.config.APPort), nil)
+	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, apPort), nil)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("dialing AP server: %w", err)
 	}

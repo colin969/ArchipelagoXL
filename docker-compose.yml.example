@@ -161,17 +161,17 @@ services:
       LOBBY_ENABLED: true
       LOBBY_ROOT_URL: http://lobby:8000
       LOBBY_API_KEY: "changeme"
-      APX_WS_LISTENADDR: "0.0.0.0:9002"
-      APX_WS_REDUCED_LISTENADDR: "0.0.0.0:9003"
-      APX_WS_TLS_LISTENADDR: "0.0.0.0:9004"
-      APX_WS_TLS_REDUCED_LISTENADDR: "0.0.0.0:9005"
+      NORMAL_PORT: "9002"
+      REDUCED_PORT: "9003"
       APX_API_LISTENADDR: "0.0.0.0:9001"
       APX_API_KEY: "changeme"
       AP_ROOM_HOST: "ap-webhost"
       AP_API_ROOT: "http://ap-webhost:9888"
+      AP_ADMIN_API_KEY: "ap_changeme"
       TLS_CERT_FILE: ""
       TLS_KEY_FILE: ""
       PASSWORDLESS: false
+      LOKI_ENDPOINT: "http://loki:3100"
       GOEXPERIMENT: "jsonv2"
     env_file:
       - ./.env.community
@@ -225,6 +225,13 @@ services:
     volumes:
       - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
       - ./data/prometheus/data:/prometheus
+
+  loki:
+    image: grafana/loki:3.0.0
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - ./data/loki:/loki
   
   grafana:
     image: grafana/grafana

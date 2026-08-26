@@ -2,7 +2,6 @@
     "apx_ws_listenaddr": ":9002",
     "apx_ws_reduced_listenaddr": ":9003",
     "ap_room_host": "localhost",
-    "ap_room_port": 38281,
     "ap_room_password": "",
     "lobby_enabled": false,
     "lobby_root_url": "",

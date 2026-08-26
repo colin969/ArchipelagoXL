@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,10 +11,12 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/gorilla/mux"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -29,12 +32,88 @@ type SphereResult struct {
 	Checked   int             `json:"checked"`
 }
 
+type RoomStore struct {
+	db *sql.DB
+}
+
+type RoomRecord struct {
+	LobbyRoomId  string
+	ApRoomId     string
+	NormalPort   int
+	ReducedPort  int
+	CreatedAt    time.Time
+	Disabled     bool
+	Passwordless bool
+}
+
 type RoomManager struct {
 	config   *Config
 	registry *RoomRegistry
 	metrics  *metrics
 	tlsCfg   *tls.Config
 	reg      *prometheus.Registry
+	store    *RoomStore
+}
+
+func NewRoomStore(path string) (*RoomStore, error) {
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		return nil, fmt.Errorf("opening sqlite: %w", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS rooms (
+				lobby_room_id  TEXT PRIMARY KEY,
+				ap_room_id     TEXT NOT NULL,
+				normal_port    INTEGER NOT NULL,
+				reduced_port   INTEGER NOT NULL,
+				created_at     INTEGER NOT NULL,
+				disabled       INTEGER NOT NULL DEFAULT 0,
+				passwordless   INTEGER NOT NULL DEFAULT 0
+		);
+	`); err != nil {
+		return nil, fmt.Errorf("creating table: %w", err)
+	}
+	return &RoomStore{db: db}, nil
+}
+
+func (s *RoomStore) Disable(lobbyRoomId string) error {
+	_, err := s.db.Exec(`UPDATE rooms SET disabled = 1 WHERE lobby_room_id = ?`, lobbyRoomId)
+	return err
+}
+
+func (s *RoomStore) Save(r RoomRecord) error {
+	_, err := s.db.Exec(`
+			INSERT INTO rooms (lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, passwordless)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(lobby_room_id) DO UPDATE SET
+					ap_room_id   = excluded.ap_room_id,
+					normal_port  = excluded.normal_port,
+					reduced_port = excluded.reduced_port,
+					passwordless = excluded.passwordless
+	`, r.LobbyRoomId, r.ApRoomId, r.NormalPort, r.ReducedPort, r.CreatedAt.Unix(), r.Passwordless)
+	return err
+}
+
+func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
+	rows, err := s.db.Query(`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, passwordless FROM rooms WHERE disabled = 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []RoomRecord
+	for rows.Next() {
+		var r RoomRecord
+		var ts int64
+		var passwordless int
+		if err := rows.Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalPort, &r.ReducedPort, &ts, &passwordless); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = time.Unix(ts, 0)
+		r.Passwordless = passwordless == 1
+		records = append(records, r)
+	}
+	return records, rows.Err()
 }
 
 type RoomRegistry struct {
@@ -116,11 +195,12 @@ type ApxRoomInfo struct {
 	ReducedPort int    `json:"reduced_port"`
 }
 
+// e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
 type HostedRoom struct {
-	lobbyRoomId string
-	apx         *apxServer
-	spheres     Spheres
-	// e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
+	lastActivity         *atomic.Int64
+	lobbyRoomId          string
+	apx                  *apxServer
+	spheres              Spheres
 	locationIdToName     map[string]map[int]string
 	checkedLocations     *CheckedLocations
 	sphereCache          *slotSphereCache
@@ -194,13 +274,14 @@ func newRoomRegistry() *RoomRegistry {
 	}
 }
 
-func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, tlsCfg *tls.Config) (*RoomManager, *mux.Router, error) {
+func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, tlsCfg *tls.Config, store *RoomStore) (*RoomManager, *mux.Router, error) {
 	srv := &RoomManager{
 		config:   cfg,
 		registry: newRoomRegistry(),
 		reg:      reg,
 		metrics:  metrics,
 		tlsCfg:   tlsCfg,
+		store:    store,
 	}
 
 	r := mux.NewRouter()
@@ -209,6 +290,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api := r.PathPrefix("/api/{roomId}").Subrouter()
 	api.Use(srv.loggingMiddleware)
 	api.Use(srv.authMiddleware)
+	api.HandleFunc("/release/{slotName}", srv.handleRelease).Methods(http.MethodGet)
 	api.HandleFunc("/refresh_passwords", srv.handlePasswordRefresh).Methods(http.MethodPost)
 	api.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
 	api.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
@@ -221,6 +303,22 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
 	api.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
 	api.HandleFunc("/debug/slot/{slotId}", srv.handleDebugTap)
+
+	// Check every 2m, kill after 2h
+	srv.startRoomKiller(time.Duration(2)*time.Minute, time.Duration(2)*time.Hour)
+
+	// Start up rooms
+	records, err := srv.store.LoadAll()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, record := range records {
+		go func(rec RoomRecord) {
+			if err := srv.startNewHostedRoom(rec.ApRoomId, rec.LobbyRoomId, &rec.NormalPort, &rec.ReducedPort, rec.Passwordless, true); err != nil {
+				log.Printf("failed to restart room %s: %v", rec.LobbyRoomId, err)
+			}
+		}(record)
+	}
 
 	return srv, r, nil
 }
@@ -241,10 +339,15 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, listenAddr, reducedListenAddr *string) error {
+func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalPort, reducedPort *int, passwordless bool, save bool) error {
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
 		return fmt.Errorf("room already exists: %s", lobbyRoomId)
+	}
+
+	apPort, err := ensureApRoomPort(rm.config.ApApiRoot, rm.config.ApApiKey, apRoomId)
+	if err != nil {
+		return err
 	}
 
 	roomPlayers, err := fetchRoomPlayers(rm.config.ApApiRoot, apRoomId)
@@ -252,11 +355,11 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 		return fmt.Errorf("failed to get %s/api/room/%s/players from AP server, aborting: %w", rm.config.ApApiRoot, apRoomId, err)
 	}
 
-	roomInfo, err := connectAndGetRoomInfo(rm.config.APHost, rm.config.APPort)
+	roomInfo, err := connectAndGetRoomInfo(rm.config.APHost, apPort)
 	if err != nil {
 		return fmt.Errorf("failed to get RoomInfo from AP server, aborting: %w", err)
 	}
-	if rm.config.Passwordless != true {
+	if passwordless != true {
 		roomInfo.Password = true
 	}
 
@@ -271,7 +374,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 	datapackageCache := newDataPackageStore(true) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
-	if rm.config.Passwordless != true {
+	if passwordless != true {
 		slots, err := fetchSlotPasswords(rm.config, lobbyRoomId)
 		if err != nil {
 			return fmt.Errorf("failed to fetch slot passwords: %w", err)
@@ -283,7 +386,11 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 		lokiLogger = NewLokiLogger(rm.config.LokiEndpoint, lobbyRoomId)
 	}
 
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().Unix())
+
 	apx := &apxServer{
+		lastActivity: &lastActivity,
 		logf:         log.Printf,
 		config:       rm.config,
 		roomInfo:     *roomInfo,
@@ -295,8 +402,10 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 		datapackages: datapackageCache,
 		metrics:      rm.metrics,
 		lobbyRoomId:  lobbyRoomId,
+		apPort:       apPort,
 		debugTap:     debugTap,
 		lokiLogger:   lokiLogger,
+		passwordless: passwordless,
 	}
 
 	if err := apx.prefetchDataPackages(context.Background()); err != nil {
@@ -308,6 +417,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 
 	checkedLocs := newCheckedLocations()
 	room := &HostedRoom{
+		lastActivity:         &lastActivity,
 		lobbyRoomId:          lobbyRoomId,
 		apx:                  apx,
 		spheres:              spheres,
@@ -346,21 +456,13 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 
 	// Setup both servers
 
-	if listenAddr == nil {
-		a := "0.0.0.0"
-		listenAddr = &a
-	}
-	wsListener, err := net.Listen("tcp", *listenAddr)
+	wsListener, err := bindPort(normalPort)
 	if err != nil {
 		return fmt.Errorf("listening on normal port: %w", err)
 	}
 	room.normalPort = wsListener.Addr().(*net.TCPAddr).Port
 
-	if reducedListenAddr == nil {
-		a := "0.0.0.0"
-		reducedListenAddr = &a
-	}
-	wsReducedListener, err := net.Listen("tcp", *reducedListenAddr)
+	wsReducedListener, err := bindPort(reducedPort)
 	if err != nil {
 		return fmt.Errorf("listening on reduced port: %w", err)
 	}
@@ -376,11 +478,26 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 		log.Printf("room %s: reduced listening on ws://%v", lobbyRoomId, wsReducedListener.Addr())
 	}
 
+	log.Printf("room %s: multiserver port %d", lobbyRoomId, apPort)
+
 	errc := make(chan error, 1)
 	go func() { errc <- normalServer.Serve(wsListener) }()
 	go func() { errc <- reducedServer.Serve(wsReducedListener) }()
 
 	log.Printf("Opened room: %s", lobbyRoomId)
+
+	// We can run APX temporarily without a lobby using the env vars, so ignore those
+	if save {
+		if err := rm.store.Save(RoomRecord{
+			LobbyRoomId: lobbyRoomId,
+			ApRoomId:    apRoomId,
+			NormalPort:  room.normalPort,
+			ReducedPort: room.reducedPort,
+			CreatedAt:   time.Now(),
+		}); err != nil {
+			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
+		}
+	}
 
 	// Wait until a server errors, or cancel is called
 	select {
@@ -915,6 +1032,128 @@ func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (
 	return room, true
 }
 
+func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+
+	vars := mux.Vars(r)
+	slotName := vars["slotName"]
+
+	// Find slot by name
+	var targetSlot *NetworkSlotArray // adjust to your actual slot type
+	for _, slot := range room.apx.roomPlayers.slots {
+		if slot.Name == slotName {
+			s := slot
+			targetSlot = &s
+			break
+		}
+	}
+	if targetSlot == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "slot not found"})
+		return
+	}
+
+	wsURL := fmt.Sprintf("ws://%s:%d", rm.config.APHost, room.apx.apPort)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("connecting to AP: %v", err)})
+		return
+	}
+	defer c.CloseNow()
+
+	msg := fmt.Sprintf(
+		`[{"cmd":"Connect","version":{"major":9000,"minor":0,"build":1,"class":"Version"},"items_handling":7,"uuid":"","tags":["Admin"],"password":null,"game":%q,"name":%q},{"cmd":"StatusUpdate","status":30}]`,
+		targetSlot.Game, slotName,
+	)
+
+	if err := c.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("sending release command: %v", err)})
+		return
+	}
+
+	// Give the server a moment to process, then close
+	c.Close(websocket.StatusNormalClosure, "")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "released", "slot": slotName})
+}
+
+func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			deadline := time.Now().Add(-timeout).Unix()
+			for _, room := range rm.registry.List() {
+				if room.lastActivity.Load() < deadline {
+					log.Printf("killing idle room %s", room.lobbyRoomId)
+					if rm.store != nil {
+						if err := rm.store.Disable(room.lobbyRoomId); err != nil {
+							log.Printf("failed to disable room %s in store: %v", room.lobbyRoomId, err)
+						}
+					}
+					rm.registry.Remove(room.lobbyRoomId)
+				}
+			}
+		}
+	}()
+}
+
+type ApRoomStatus struct {
+	Alive bool `json:"alive"`
+	Port  int  `json:"port"`
+}
+
+func ensureApRoomPort(apApiRoot string, apApiKey string, apRoomId string) (int, error) {
+	url := fmt.Sprintf("%s/room/%s/status", apApiRoot, apRoomId)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", apApiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("fetching room status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// good, pass through
+	case http.StatusForbidden:
+		return 0, fmt.Errorf("access denied to room %s status (check API key)", apRoomId)
+	case http.StatusServiceUnavailable:
+		return 0, fmt.Errorf("room %s failed to come online in time", apRoomId)
+	default:
+		return 0, fmt.Errorf("unexpected status %d from /room/%s/status", resp.StatusCode, apRoomId)
+	}
+
+	var status ApRoomStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return 0, fmt.Errorf("decoding room status: %w", err)
+	}
+
+	if status.Alive == false {
+		return 0, fmt.Errorf("webhost room %s can't be brought online?", apRoomId)
+	}
+
+	return status.Port, nil
+}
+
 func maxRoomPlayerId(nameToId map[string]int) int {
 	var maxNumber int
 	for _, id := range nameToId {
@@ -923,4 +1162,15 @@ func maxRoomPlayerId(nameToId map[string]int) int {
 		}
 	}
 	return maxNumber
+}
+
+func bindPort(port *int) (net.Listener, error) {
+	if port != nil {
+		l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *port))
+		if err == nil {
+			return l, nil
+		}
+		log.Printf("failed to bind port %d, using random: %v", *port, err)
+	}
+	return net.Listen("tcp", "0.0.0.0:0")
 }

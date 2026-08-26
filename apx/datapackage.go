@@ -176,7 +176,7 @@ func (s apxServer) handleGetDataPackage(ctx context.Context, connState *connecti
 
 // Grab datapackage from AP server and cache locally so we can provide it to clients ourselves
 func (s apxServer) fetchDataPackageFromAPServer(ctx context.Context, game string) (GameData, error) {
-	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, s.config.APPort), nil)
+	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, s.apPort), nil)
 	if err != nil {
 		return GameData{}, fmt.Errorf("dialing upstream: %w", err)
 	}

@@ -14,28 +14,27 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/google/uuid"
 )
 
 type Config struct {
-	ListenAddr           string `json:"apx_ws_listenaddr"`
-	ReducedListenAddr    string `json:"apx_ws_reduced_listenaddr"`
-	TlsListenAddr        string `json:"apx_ws_tls_listenaddr"`
-	TlsReducedListenAddr string `json:"apx_ws_tls_reduced_listenaddr"`
-	APHost               string `json:"ap_room_host"`
-	APPort               int    `json:"ap_room_port"`
-	APPassword           string `json:"ap_room_password"`
-	LobbyEnabled         bool   `json:"lobby_enabled"`
-	LobbyRootUrl         string `json:"lobby_root_url"`
-	LobbyRoomId          string `json:"lobby_room_id"`
-	LobbyApiKey          string `json:"lobby_api_key"`
-	ApiListenAddr        string `json:"apx_api_listen"`
-	ApiKey               string `json:"apx_api_key"`
-	ApRoomId             string `json:"ap_room_id"`
-	ApApiRoot            string `json:"ap_api_root"`
-	TLSCertFile          string `json:"tls_cert_file"`
-	TLSKeyFile           string `json:"tls_key_file"`
-	Passwordless         bool   `json:"passwordless"`
-	LokiEndpoint         string `json:"loki_endpoint"`
+	NormalPort    int    `json:"normal_port"`
+	ReducedPort   int    `json:"reduced_port"`
+	APHost        string `json:"ap_room_host"`
+	APPassword    string `json:"ap_room_password"`
+	LobbyEnabled  bool   `json:"lobby_enabled"`
+	LobbyRootUrl  string `json:"lobby_root_url"`
+	LobbyRoomId   string `json:"lobby_room_id"`
+	LobbyApiKey   string `json:"lobby_api_key"`
+	ApiListenAddr string `json:"apx_api_listen"`
+	ApiKey        string `json:"apx_api_key"`
+	ApRoomId      string `json:"ap_room_id"`
+	ApApiRoot     string `json:"ap_api_root"`
+	ApApiKey      string `json:"ap_admin_api_key"`
+	TLSCertFile   string `json:"tls_cert_file"`
+	TLSKeyFile    string `json:"tls_key_file"`
+	Passwordless  bool   `json:"passwordless"`
+	LokiEndpoint  string `json:"loki_endpoint"`
 }
 
 func main() {
@@ -63,7 +62,11 @@ func run() error {
 	}
 
 	reg, metrics := initMetrics()
-	rm, router, err := startRoomManager(cfg, reg, metrics, tlsCfg)
+	roomStore, err := NewRoomStore("./data.sqlite")
+	if err != nil {
+		log.Panicf("creating room store: %v", err)
+	}
+	rm, router, err := startRoomManager(cfg, reg, metrics, tlsCfg, roomStore)
 	if err != nil {
 		log.Panicf("starting room manager: %v", err)
 	}
@@ -76,7 +79,10 @@ func run() error {
 	}
 
 	go func() {
-		err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.ListenAddr, &cfg.ReducedListenAddr)
+		if cfg.LobbyRoomId == "" {
+			cfg.LobbyRoomId = uuid.New().String()
+		}
+		err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.NormalPort, &cfg.ReducedPort, cfg.Passwordless, false)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
@@ -121,27 +127,22 @@ func getConfig() (*Config, error) {
 	}
 
 	// Env vars override config file
-	if v := os.Getenv("APX_WS_LISTENADDR"); v != "" {
-		cfg.ListenAddr = v
+	if v := os.Getenv("NORMAL_PORT"); v != "" {
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid NORMAL_PORT %q: %w", v, err)
+		}
+		cfg.NormalPort = port
 	}
-	if v := os.Getenv("APX_WS_REDUCED_LISTENADDR"); v != "" {
-		cfg.ReducedListenAddr = v
-	}
-	if v := os.Getenv("APX_WS_TLS_LISTENADDR"); v != "" {
-		cfg.TlsListenAddr = v
-	}
-	if v := os.Getenv("APX_WS_TLS_REDUCED_LISTENADDR"); v != "" {
-		cfg.TlsReducedListenAddr = v
+	if v := os.Getenv("REDUCED_PORT"); v != "" {
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid REDUCED_PORT %q: %w", v, err)
+		}
+		cfg.ReducedPort = port
 	}
 	if v := os.Getenv("AP_ROOM_HOST"); v != "" {
 		cfg.APHost = v
-	}
-	if v := os.Getenv("AP_ROOM_PORT"); v != "" {
-		port, err := strconv.Atoi(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid AP_ROOM_PORT %q: %w", v, err)
-		}
-		cfg.APPort = port
 	}
 	if v := os.Getenv("AP_ROOM_PASSWORD"); v != "" {
 		cfg.APPassword = v
@@ -174,6 +175,9 @@ func getConfig() (*Config, error) {
 	if v := os.Getenv("AP_API_ROOT"); v != "" {
 		cfg.ApApiRoot = v
 	}
+	if v := os.Getenv("AP_ADMIN_API_KEY"); v != "" {
+		cfg.ApApiKey = v
+	}
 	if v := os.Getenv("TLS_CERT_FILE"); v != "" {
 		cfg.TLSCertFile = v
 	}
@@ -189,10 +193,6 @@ func getConfig() (*Config, error) {
 	}
 	if v := os.Getenv("LOKI_ENDPOINT"); v != "" {
 		cfg.LokiEndpoint = v
-	}
-
-	if cfg.APPort < 1 || cfg.APPort > 65535 {
-		return nil, fmt.Errorf("port %d out of range (1-65535)", cfg.APPort)
 	}
 
 	return cfg, nil

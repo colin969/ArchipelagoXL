@@ -660,25 +660,33 @@ async fn ap_cmd(cmd: String, config: &State<Config>) -> crate::error::Result<()>
 #[rocket::get("/release/<slot_name>")]
 async fn release(
     _session: ModeratorSession,
-    ap_room: ApRoom,
     slot_name: &str,
     config: &State<Config>,
 ) -> crate::error::Result<Redirect> {
-    let url = format!("ws://{}:{}", config.ap_room_host, config.ap_room_port);
-    let slot = ap_room
-        .tracker_info
-        .slots
-        .iter()
-        .find(|slot| slot.name == slot_name)
-        .unwrap();
-    let (mut socket, _) = connect(&url)?;
-    let msg = format!(
-        "[{{\"cmd\": \"Connect\", \"version\": {{ \"major\": 9000, \"minor\": 0, \"build\": 1, \"class\": \"Version\"}}, \"items_handling\": 7, \"uuid\": \"\", \"tags\": [\"Admin\"], \"password\": null, \"game\": \"{}\", \"name\": \"{}\"}}, {{\"cmd\": \"StatusUpdate\", \"status\": 30}}]",
-        slot.game, slot_name
-    );
-    socket.send(Message::Text(msg.into()))?;
-    socket.flush()?;
-    socket.close(None)?;
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
+    let mut url = apx_api_root
+        .join(&format!("/api/{}/release/", config.lobby_room_id))?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("Invalid APX URL"))?
+        .push(slot_name);
+
+    let response = reqwest::Client::new()
+        .post(url)
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        Err(anyhow!("Release failed: {}", response.status()))?;
+    }
 
     Ok(Redirect::to("/"))
 }
@@ -956,7 +964,6 @@ pub struct Config {
     pub ap_room_url: Url,
     pub ap_api_root: Url,
     pub ap_room_host: String,
-    pub ap_room_port: u16,
     pub ap_admin_api_key: String,
     pub apx_api_root: Option<Url>,
     pub apx_api_key: Option<String>,
@@ -982,10 +989,6 @@ async fn main() -> crate::error::Result<()> {
     let ap_room_id = std::env::var("AP_ROOM_ID").expect("Provide an `AP_ROOM_ID` env variable");
     let ap_room_host =
         std::env::var("AP_ROOM_HOST").expect("Provide an `AP_ROOM_HOST` env variable");
-    let ap_room_port = std::env::var("AP_ROOM_PORT")
-        .expect("Provide an `AP_ROOM_PORT` env variable")
-        .parse::<u16>()
-        .expect("AP_ROOM_PORT must be a valid port number");
     let ap_admin_api_key =
         std::env::var("AP_ADMIN_API_KEY").expect("Provide an `AP_ADMIN_AP_KEY` env variable");
 
@@ -1000,7 +1003,6 @@ async fn main() -> crate::error::Result<()> {
 
     eprintln!("[STARTUP] AP_API_ROOT: {}", ap_api_root);
     eprintln!("[STARTUP] AP_ROOM_HOST: {}", ap_room_host);
-    eprintln!("[STARTUP] AP_ROOM_PORT: {}", ap_room_port);
     eprintln!("[STARTUP] AP_ROOM_ID: {}", ap_room_id);
 
     let apx_api_root = std::env::var("APX_API_ROOT")
@@ -1022,7 +1024,6 @@ async fn main() -> crate::error::Result<()> {
         ap_room_url,
         ap_api_root,
         ap_room_host,
-        ap_room_port,
         ap_room_id,
         ap_admin_api_key,
         apx_api_root,

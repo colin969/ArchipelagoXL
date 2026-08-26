@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -91,6 +93,8 @@ func newDebugTap(slotCount int) *debugTap {
 }
 
 type apxServer struct {
+	passwordless bool
+	lastActivity *atomic.Int64
 	logf         func(f string, v ...any)
 	config       *Config
 	roomInfo     RoomInfoMessage
@@ -102,6 +106,7 @@ type apxServer struct {
 	datapackages *DataPackageStore
 	metrics      *metrics
 	lobbyRoomId  string
+	apPort       int
 	debugTap     *debugTap
 	lokiLogger   *LokiLogger
 }
@@ -402,6 +407,7 @@ func (s apxServer) handleMessage(ctx context.Context, connState *connectionState
 	}
 
 	if connState.authenticated {
+		s.lastActivity.Store(time.Now().Unix())
 		switch cmd {
 		case MessageTypeBounce:
 			return s.handleBounce(ctx, connState, raw)

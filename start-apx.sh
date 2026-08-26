@@ -16,13 +16,10 @@ if [[ ! -s ".env.community" ]]; then
     read -r LOBBY_ROOM_ID
     echo "Paste the AP room ID:"
     read -r AP_ROOM_ID
-    echo "Paste the AP room port:"
-    read -r AP_ROOM_PORT
 
     cat > .env.community <<EOF
 LOBBY_ROOM_ID=$LOBBY_ROOM_ID
 AP_ROOM_ID=$AP_ROOM_ID
-AP_ROOM_PORT=$AP_ROOM_PORT
 EOF
     echo "Saved to .env.community"
 fi
