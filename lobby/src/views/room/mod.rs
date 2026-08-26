@@ -1,6 +1,7 @@
 pub mod apworlds;
 pub mod edit;
 pub mod gen;
+pub mod host;
 pub mod list;
 pub mod main;
 
@@ -11,6 +12,7 @@ pub fn routes() -> Vec<rocket::Route> {
     routes.extend(apworlds::routes());
     routes.extend(edit::routes());
     routes.extend(gen::routes());
+    routes.extend(host::routes());
     routes.extend(list::routes());
     routes
 }

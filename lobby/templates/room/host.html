@@ -1,0 +1,107 @@
+{% extends "room/_base.html" %}
+
+{% block menu %}
+    {% let room_url = format!("/room/{}", self.room.id) %}
+    {% call menu::menu_item("Room", "", room_url, false, "room-menu") %}{% endcall %}
+    {% if base.is_logged_in && room.settings.show_apworlds %}
+        {% let apworlds_url = format!("/room/{}/worlds", self.room.id) %}
+        {% call menu::menu_item("Apworlds", "", apworlds_url, false, "apworldsButton") %}{% endcall %}
+    {% endif %}
+    {% let edit_url = format!("/edit-room/{}", self.room.id) %}
+    {% call menu::menu_item("Edit room", "", edit_url, false, "editButton") %}{% endcall %}
+    {% let gen_url = format!("/room/{}/generation", self.room.id) %}
+    {% call menu::menu_item("Generation", "", gen_url, false, "genButton") %}{% endcall %}
+    {% let host_url = format!("/room/{}/host", self.room.id) %}
+    {% call menu::menu_item("Host", "", host_url, true, "hostButton") %}{% endcall %}
+{% endblock %}
+
+{% block main %}
+
+{% if let Some(apx) = self.apx_room_info %}
+    {% if apx.normal_port == 0 || apx.reduced_port == 0 %}
+    <table class="styled">
+        <thead>
+            <tr><th colspan=2>Host status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="shrink">Status:</td>
+                <td><span style="color: orange; font-weight: bold">Closed</span></td>
+            </tr>
+            <tr>
+                <td class="shrink">AP Room ID:</td>
+                <td><code>{{ apx.ap_room_id }}</code></td>
+            </tr>
+            <tr>
+                <td class="shrink">Lobby Room ID:</td>
+                <td><code>{{ apx.lobby_room_id }}</code></td>
+            </tr>
+            <tr>
+                <td colspan=2>The room is registered but not currently running.</td>
+            </tr>
+        </tbody>
+    </table>
+    {% else %}
+    <table class="styled">
+        <thead>
+            <tr><th colspan=2>Host status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="shrink">Status:</td>
+                <td><span style="color: green; font-weight: bold">Online</span></td>
+            </tr>
+            <tr>
+                <td class="shrink">Normal port:</td>
+                <td><code>{{ apx.normal_port }}</code></td>
+            </tr>
+            <tr>
+                <td class="shrink">Reduced port:</td>
+                <td><code>{{ apx.reduced_port }}</code></td>
+            </tr>
+            <tr>
+                <td class="shrink">AP Room ID:</td>
+                <td><code>{{ apx.ap_room_id }}</code></td>
+            </tr>
+            <tr>
+                <td class="shrink">Lobby Room ID:</td>
+                <td><code>{{ apx.lobby_room_id }}</code></td>
+            </tr>
+        </tbody>
+    </table>
+    {% endif %}
+
+{% else %}
+    <table class="styled">
+        <thead>
+            <tr><th colspan=2>Host status</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td class="shrink">Status:</td>
+                <td><span style="color: red; font-weight: bold">Offline</span></td>
+            </tr>
+            <tr>
+                <td colspan=2>The room is not currently hosted on APX.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    {% if let Some(current_gen) = self.current_gen %}
+        {% if current_gen.status == GenerationStatus::Done %}
+        <a class="button-emulator validation-button" href="/room/{{ self.room.id }}/host/start">Start hosting</a>
+        {% else %}
+        <a class="button-emulator cancel-button not-clickable">Start hosting</a>
+        <p>Generation must be complete before hosting.</p>
+        {% endif %}
+    {% else %}
+        <a class="button-emulator cancel-button not-clickable">Start hosting</a>
+        <p>No generation available. <a href="/room/{{ self.room.id }}/generation">Run a generation first.</a></p>
+    {% endif %}
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/room.js?{{ base.js_version }}" defer></script>
+{% endblock %}

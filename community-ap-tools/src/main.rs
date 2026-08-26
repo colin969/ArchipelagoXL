@@ -18,7 +18,6 @@ use rocket::{
 use rocket::fs::{FileServer, relative};
 use rocket_oauth2::OAuth2;
 use serde::{Deserialize, Serialize};
-use tungstenite::{Message, connect};
 use uuid::Uuid;
 
 mod auth;

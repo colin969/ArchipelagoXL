@@ -60,7 +60,9 @@ pub struct Context {
 
 #[derive(Debug, Clone)]
 pub struct LobbyConfig {
-    admin_rooms_only: bool
+    pub admin_rooms_only: bool,
+    pub apx_root: String,
+    pub apx_api_key: String,
 }
 
 const CSS_VERSION: &str = std::env!("CSS_VERSION");
@@ -171,8 +173,13 @@ fn get_lobby_config() -> LobbyConfig {
         .map(|v| matches!(v.to_lowercase().as_str(), "true"))
         .unwrap_or(false);
 
-    return LobbyConfig {
-        admin_rooms_only
+    let apx_root = std::env::var("APX_ROOT").expect("Provide an APX_ROOT env variable");
+    let apx_api_key = std::env::var("APX_API_KEY").expect("Provide an APX_API_KEY env variable");
+
+    LobbyConfig {
+        admin_rooms_only,
+        apx_root,
+        apx_api_key,
     }
 }
 

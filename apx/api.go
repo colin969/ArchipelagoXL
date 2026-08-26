@@ -97,6 +97,25 @@ func (s *RoomStore) Save(r RoomRecord) error {
 	return err
 }
 
+func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
+	var r RoomRecord
+	var ts int64
+	var passwordless int
+	err := s.db.QueryRow(
+		`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, passwordless FROM rooms WHERE lobby_room_id = ?`,
+		lobbyRoomId,
+	).Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalPort, &r.ReducedPort, &ts, &passwordless)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.CreatedAt = time.Unix(ts, 0)
+	r.Passwordless = passwordless == 1
+	return &r, nil
+}
+
 func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 	rows, err := s.db.Query(`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, passwordless FROM rooms WHERE disabled = 0`)
 	if err != nil {
@@ -294,6 +313,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.Use(srv.authMiddleware)
 	api.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
 	api.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
+	api.HandleFunc("/room/{roomId}", srv.handleRoomStatus).Methods(http.MethodGet)
 	room := api.PathPrefix("/{roomId}").Subrouter()
 	room.HandleFunc("/release/{slotName}", srv.handleRelease).Methods(http.MethodGet)
 	room.HandleFunc("/refresh_passwords", srv.handlePasswordRefresh).Methods(http.MethodPost)
@@ -341,6 +361,43 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Check if room exists in DB (regardless of running state)
+	record, err := rm.store.FindByLobbyRoomId(roomId)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to query store"})
+		return
+	}
+	if record == nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	if room, ok := rm.registry.Get(roomId); ok {
+		json.NewEncoder(w).Encode(ApxRoomInfo{
+			LobbyRoomId: room.lobbyRoomId,
+			ApRoomId:    room.apRoomId,
+			NormalPort:  room.normalPort,
+			ReducedPort: room.reducedPort,
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(ApxRoomInfo{
+		LobbyRoomId: record.LobbyRoomId,
+		ApRoomId:    record.ApRoomId,
+		NormalPort:  0,
+		ReducedPort: 0,
+	})
 }
 
 type uploadRoomRequest struct {
@@ -410,10 +467,9 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		var apErr map[string]string
-		json.NewDecoder(resp.Body).Decode(&apErr)
+		body, _ := io.ReadAll(resp.Body)
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP server error: %s", apErr["error"])})
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP server error: %v", string(body))})
 		return
 	}
 
@@ -431,6 +487,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	log.Printf("ap room id: %s", apResult.RoomID)
 	// Create the hosted room using the returned AP room ID
 	// Use the AP room ID as both the lobby and AP room ID if no lobby ID is provided,
 	// or accept an optional lobby_room_id form field
@@ -534,6 +591,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	room := &HostedRoom{
 		lastActivity:         &lastActivity,
 		lobbyRoomId:          lobbyRoomId,
+		apRoomId:             apRoomId,
 		apx:                  apx,
 		spheres:              spheres,
 		sphereCache:          newSlotSphereCache(),

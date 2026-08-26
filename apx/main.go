@@ -88,11 +88,11 @@ func run() error {
 		}
 	}
 
+	log.Printf("API server listening on http://%s", cfg.ApiListenAddr)
 	if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Printf("API server error: %v", err)
 		return err
 	}
-	log.Printf("API server listening on http://%s", cfg.ApiListenAddr)
 
 	return nil
 }
