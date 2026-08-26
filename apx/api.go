@@ -49,6 +49,16 @@ func (r *RoomRegistry) Get(roomId string) (*HostedRoom, bool) {
 	return room, ok
 }
 
+func (r *RoomRegistry) List() []*HostedRoom {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	rooms := make([]*HostedRoom, 0, len(r.rooms))
+	for _, room := range r.rooms {
+		rooms = append(rooms, room)
+	}
+	return rooms
+}
+
 func (r *RoomRegistry) Add(hostedRoom *HostedRoom) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -99,6 +109,13 @@ func newCheckedLocations() CheckedLocations {
 	}
 }
 
+type ApxRoomInfo struct {
+	LobbyRoomId string `json:"lobby_room_id"`
+	ApRoomId    string `json:"ap_room_id"`
+	NormalPort  int    `json:"normal_port"`
+	ReducedPort int    `json:"reduced_port"`
+}
+
 type HostedRoom struct {
 	lobbyRoomId string
 	apx         *apxServer
@@ -111,6 +128,8 @@ type HostedRoom struct {
 	normalServer         *http.Server
 	reducedServer        *http.Server
 	apRoomId             string
+	normalPort           int
+	reducedPort          int
 	ctx                  context.Context
 	cancel               context.CancelFunc
 }
@@ -186,6 +205,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 
 	r := mux.NewRouter()
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
+	r.HandleFunc("/api/rooms", srv.handleListRooms).Methods(http.MethodGet)
 	api := r.PathPrefix("/api/{roomId}").Subrouter()
 	api.Use(srv.loggingMiddleware)
 	api.Use(srv.authMiddleware)
@@ -203,6 +223,22 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/debug/slot/{slotId}", srv.handleDebugTap)
 
 	return srv, r, nil
+}
+
+func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
+	rooms := rm.registry.List()
+	result := make([]ApxRoomInfo, 0, len(rooms))
+	for _, room := range rooms {
+		result = append(result, ApxRoomInfo{
+			LobbyRoomId: room.lobbyRoomId,
+			ApRoomId:    room.apRoomId,
+			NormalPort:  room.normalPort,
+			ReducedPort: room.reducedPort,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
 
 func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, listenAddr, reducedListenAddr *string) error {
@@ -318,6 +354,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 	if err != nil {
 		return fmt.Errorf("listening on normal port: %w", err)
 	}
+	room.normalPort = wsListener.Addr().(*net.TCPAddr).Port
 
 	if reducedListenAddr == nil {
 		a := "0.0.0.0"
@@ -327,6 +364,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, l
 	if err != nil {
 		return fmt.Errorf("listening on reduced port: %w", err)
 	}
+	room.reducedPort = wsReducedListener.Addr().(*net.TCPAddr).Port
 
 	if rm.tlsCfg != nil {
 		wsListener = &httpDropper{listener: wsListener, tlsCfg: rm.tlsCfg}

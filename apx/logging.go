@@ -12,11 +12,17 @@ import (
 )
 
 type LogSource string
+type LogLevel string
 
 const (
 	LogSourceClient LogSource = "client"
 	LogSourceApx    LogSource = "apx"
 	LogSourceServer LogSource = "server"
+
+	LogLevelDebug LogLevel = "debug"
+	LogLevelInfo  LogLevel = "info"
+	LogLevelWarn  LogLevel = "warn"
+	LogLevelError LogLevel = "error"
 )
 
 var linePool = sync.Pool{
@@ -57,19 +63,49 @@ func NewLokiLogger(endpoint, roomId string) *LokiLogger {
 	return l
 }
 
+// Log level info by default
 func (l *LokiLogger) Log(slot string, source LogSource, msg []byte) {
+	l.LogAt(slot, source, LogLevelInfo, msg)
+}
+
+// Log with a specific level
+func (l *LokiLogger) LogAt(slot string, source LogSource, level LogLevel, msg []byte) {
 	buf := linePool.Get().(*[]byte)
-	*buf = append((*buf)[:0], msg...)
+	*buf = (*buf)[:0]
+
+	slotVal, _ := json.Marshal(slot)
+	levelVal, _ := json.Marshal(string(level))
+
+	// If json, merge with keys, if not json, wrap in msg
+	msg = bytes.TrimSpace(msg)
+	if len(msg) > 1 && msg[0] == '{' && msg[len(msg)-1] == '}' {
+		// Merge _slot and _level into existing JSON object
+		*buf = append(*buf, `{"_slot":`...)
+		*buf = append(*buf, slotVal...)
+		*buf = append(*buf, `,"_level":`...)
+		*buf = append(*buf, levelVal...)
+		*buf = append(*buf, ',')
+		*buf = append(*buf, msg[1:]...) // strip leading '{'
+	} else {
+		// Wrap plain text under "msg"
+		msgVal, _ := json.Marshal(string(msg))
+		*buf = append(*buf, `{"_slot":`...)
+		*buf = append(*buf, slotVal...)
+		*buf = append(*buf, `,"_level":`...)
+		*buf = append(*buf, levelVal...)
+		*buf = append(*buf, `,"msg":`...)
+		*buf = append(*buf, msgVal...)
+		*buf = append(*buf, '}')
+	}
 
 	select {
 	case l.ch <- lokiEntry{
-		slot:      slot,
 		source:    source,
 		line:      *buf,
 		timestamp: time.Now(),
 	}:
 	default:
-		linePool.Put(buf) // channel full, return immediately
+		linePool.Put(buf)
 	}
 }
 
@@ -78,10 +114,9 @@ func (l *LokiLogger) Close() {
 	l.wg.Wait()
 }
 
+// streamKey no longer contains slot or cmd
 type streamKey struct {
-	slot      string
-	cmd       string
-	direction LogSource
+	source LogSource
 }
 
 type lokiStream struct {
@@ -109,7 +144,6 @@ func (l *LokiLogger) run() {
 		if err := l.push(streams); err != nil {
 			log.Printf("loki push error: %v", err)
 		}
-		// return buffers to pool after push completes
 		for _, s := range streams {
 			for _, e := range s.entries {
 				b := e.line
@@ -127,10 +161,7 @@ func (l *LokiLogger) run() {
 				flush()
 				return
 			}
-			key := streamKey{
-				slot:      entry.slot,
-				direction: entry.source,
-			}
+			key := streamKey{source: entry.source}
 			batch[key] = append(batch[key], entry)
 			count++
 			if count >= l.batchSize {
@@ -159,17 +190,15 @@ func (l *LokiLogger) push(streams []lokiStream) error {
 
 	for _, s := range streams {
 		labels := map[string]string{
-			"room_id":   l.roomId,
-			"slot":      s.key.slot,
-			"cmd":       s.key.cmd,
-			"direction": string(s.key.direction),
+			"room_id": l.roomId,
+			"source":  string(s.key.source),
 		}
 
 		values := make([][2]string, len(s.entries))
 		for i, e := range s.entries {
 			values[i] = [2]string{
 				strconv.FormatInt(e.timestamp.UnixNano(), 10),
-				string(e.line), // copy into string for JSON serialisation
+				string(e.line),
 			}
 		}
 

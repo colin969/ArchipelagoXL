@@ -26,8 +26,8 @@ schema_config:
         period: 24h
 
 limits_config:
-  max_streams_per_user: 15000
-  max_global_streams_per_user: 15000
+  max_streams_per_user: 10000
+  max_global_streams_per_user: 10000
   ingestion_rate_mb: 20
   ingestion_burst_size_mb: 40
   retention_period: 72h

@@ -3,11 +3,12 @@ Archipelago XL
 
 A complete software package for hosting extra large Archipelago games.
 
-This includes forks of:
-- Ionium Lobby, for managing yaml submissions
-- Archipelago Webhost, for the base hosting of games
+This includes:
+- (fork) Ionium Lobby, for managing yaml submissions
+- (fork) Archipelago Webhost, for the base hosting of games
 - APX, a proxy for the Webhost to provide extra optimizations and extended functionality like per-slot passwords
-- Community AP Tool, for collaborative tools to review yaml submissions, and manage live games
+- (fork) Community AP Tool, for collaborative tools to review yaml submissions, and manage live games
+- (optional) Prometheus + Loki + Grafana, for collecting logs and analyzing metrics from a big sync
 
 # Running this project
 
