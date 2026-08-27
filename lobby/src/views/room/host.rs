@@ -194,6 +194,37 @@ async fn host_room_stop(
     Ok(rocket::response::Redirect::to(format!("/room/{}/host", room_id)))
 }
 
+#[rocket::get("/room/<room_id>/host/delete")]
+#[tracing::instrument(skip(session, ctx, lobby_config))]
+async fn host_room_delete(
+    room_id: RoomId,
+    session: LoggedInSession,
+    ctx: &State<Context>,
+    lobby_config: &State<LobbyConfig>,
+) -> Result<rocket::response::Redirect> {
+    let mut conn = ctx.db_pool.get().await?;
+    let room = db::get_room(room_id, &mut conn).await?;
+    let is_my_room = session.0.is_admin || session.user_id() == room.settings.author_id;
+
+    if !is_my_room {
+        Err(anyhow::anyhow!("Cannot delete a room that isn't yours"))?
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .delete(format!("{}/api/room/{}", lobby_config.apx_root, room_id))
+        .header("X-API-Key", &lobby_config.apx_api_key)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err: serde_json::Value = resp.json().await.unwrap_or_default();
+        Err(anyhow::anyhow!("APX error: {}", err["error"].as_str().unwrap_or(&err.to_string())))?
+    }
+
+    Ok(rocket::response::Redirect::to(format!("/room/{}/host", room_id)))
+}
+
 async fn fetch_apx_room_info(
   apx_root: &str,
   apx_api_key: &str,
@@ -218,5 +249,6 @@ pub fn routes() -> Vec<rocket::Route> {
         host_room,
         host_room_start,
         host_room_stop,
+        host_room_delete,
     ]
 }

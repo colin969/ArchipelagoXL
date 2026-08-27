@@ -42,6 +42,7 @@
         </tbody>
     </table>
     <a class="button-emulator validation-button" href="/room/{{ self.room.id }}/host/start">Resume hosting</a>
+    <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/delete" onclick="return confirm('Are you sure you want to delete this hosted room? This cannot be undone.')">Delete hosted room</a>
     {% else %}
     <table class="styled">
         <thead>
@@ -71,6 +72,7 @@
         </tbody>
     </table>
     <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/stop">Stop hosting</a>
+    <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/delete" onclick="return confirm('Are you sure you want to delete this hosted room? This cannot be undone.')">Delete hosted room</a>
     {% endif %}
 
 {% else %}

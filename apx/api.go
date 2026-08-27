@@ -98,6 +98,11 @@ func (s *RoomStore) Save(r RoomRecord) error {
 	return err
 }
 
+func (s *RoomStore) Delete(lobbyRoomId string) error {
+	_, err := s.db.Exec(`DELETE FROM rooms WHERE lobby_room_id = ?`, lobbyRoomId)
+	return err
+}
+
 func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
 	var r RoomRecord
 	var ts int64
@@ -325,6 +330,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
 	api.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}", srv.handleRoomStatus).Methods(http.MethodGet)
+	api.HandleFunc("/room/{roomId}", srv.handleRoomDelete).Methods(http.MethodDelete)
 	api.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	room := api.PathPrefix("/{roomId}").Subrouter()
@@ -551,7 +557,7 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "room_id": roomId})
 }
 
-func (rm *RoomManager) handleRemoveRoom(w http.ResponseWriter, r *http.Request) {
+func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
 
@@ -569,19 +575,22 @@ func (rm *RoomManager) handleRemoveRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := rm.store.Disable(roomId); err != nil {
+	// Remove room record
+	if err := rm.store.Delete(roomId); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to disable room in store"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to delete room from store"})
 		return
 	}
 
+	// Remove from active rooms list
 	rm.registry.Remove(roomId)
+	// Stop backing webhost room (webhost can clean up database record left behind later)
 	apRoomId := record.ApRoomId
 	go func() {
 		rm.stopApRoom(apRoomId)
 	}()
 
-	json.NewEncoder(w).Encode(map[string]string{"status": "removed", "room_id": roomId})
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "room_id": roomId})
 }
 
 type uploadRoomRequest struct {
@@ -696,7 +705,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalId, reducedId *int, passwordless bool, save bool) (*HostedRoom, error) {
+func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalIdPtr, reducedIdPtr *int, passwordless bool, save bool) (*HostedRoom, error) {
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
 		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
@@ -788,10 +797,17 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	if err := room.refreshCheckedLocations(rm.config.ApApiRoot, apRoomId); err != nil {
 		log.Printf("initial checked locations fetch failed: %v", err)
 	}
-	room.startCheckedLocationPoller(rm.config.ApApiRoot, apRoomId, 30*time.Second)
+	room.startCheckedLocationPoller(ctx, rm.config.ApApiRoot, apRoomId, 30*time.Second)
 
-	normalHandler := apxHandler{server: apx, reduced: false, id: *normalId}
-	reducedHandler := apxHandler{server: apx, reduced: true, id: *reducedId}
+	var normalId, reducedId int
+	if normalIdPtr != nil {
+		normalId = *normalIdPtr
+	}
+	if reducedIdPtr != nil {
+		reducedId = *reducedIdPtr
+	}
+	normalHandler := apxHandler{server: apx, reduced: false, id: normalId}
+	reducedHandler := apxHandler{server: apx, reduced: true, id: reducedId}
 
 	err = rm.registry.AllocateAndRegisterHandlerPair(&normalHandler, &reducedHandler)
 	if err != nil {
@@ -1242,13 +1258,23 @@ func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
 }
 
 // TODO: Cancel on context cancel
-func (rm *HostedRoom) startCheckedLocationPoller(apApiRoot, apRoomId string, interval time.Duration) {
+func (rm *HostedRoom) startCheckedLocationPoller(ctx context.Context, apApiRoot, apRoomId string, interval time.Duration) {
 	go func() {
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			if err := rm.refreshCheckedLocations(apApiRoot, apRoomId); err != nil {
 				log.Printf("refreshing checked locations: %v", err)
 			}
-			time.Sleep(interval)
+			// Interval before polling again
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
 		}
 	}()
 }
