@@ -1550,7 +1550,7 @@ type ApRoomStatus struct {
 func ensureApRoomPort(apApiRoot string, apApiKey string, apRoomId string) (int, error) {
 	url := fmt.Sprintf("%s/room/%s/status", apApiRoot, apRoomId)
 
-	const timeout = 15 * time.Second
+	const timeout = 30 * time.Second
 	const interval = 3 * time.Second
 	deadline := time.Now().Add(timeout)
 
