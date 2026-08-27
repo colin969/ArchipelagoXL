@@ -529,7 +529,8 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if _, ok := rm.registry.Get(roomId); !ok {
+	room, ok := rm.registry.Get(roomId)
+	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "room not running"})
 		return
@@ -542,6 +543,10 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rm.registry.Remove(roomId)
+	apRoomId := room.apRoomId
+	go func() {
+		rm.stopApRoom(apRoomId)
+	}()
 
 	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "room_id": roomId})
 }
@@ -571,6 +576,10 @@ func (rm *RoomManager) handleRemoveRoom(w http.ResponseWriter, r *http.Request) 
 	}
 
 	rm.registry.Remove(roomId)
+	apRoomId := record.ApRoomId
+	go func() {
+		rm.stopApRoom(apRoomId)
+	}()
 
 	json.NewEncoder(w).Encode(map[string]string{"status": "removed", "room_id": roomId})
 }
@@ -1405,12 +1414,16 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 			for _, room := range rm.registry.List() {
 				if room.lastActivity.Load() < deadline {
 					log.Printf("killing idle room %s", room.lobbyRoomId)
+					apRoomId := room.apRoomId
 					if rm.store != nil {
 						if err := rm.store.Disable(room.lobbyRoomId); err != nil {
 							log.Printf("failed to disable room %s in store: %v", room.lobbyRoomId, err)
 						}
 					}
 					rm.registry.Remove(room.lobbyRoomId)
+					go func() {
+						rm.stopApRoom(apRoomId)
+					}()
 				}
 			}
 		}
@@ -1481,6 +1494,26 @@ func (r *RoomRegistry) AllocateAndRegisterHandlerPair(normal, reduced *apxHandle
 	r.idToHandler[ids[1]] = reduced
 
 	return nil
+}
+
+func (rm *RoomManager) stopApRoom(apRoomId string) {
+	url := fmt.Sprintf("%s/room/%s/stop", rm.config.ApApiRoot, apRoomId)
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		log.Printf("stop AP room %s: creating request: %v", apRoomId, err)
+		return
+	}
+	req.Header.Set("X-Api-Key", rm.config.ApApiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("stop AP room %s: %v", apRoomId, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("stop AP room %s: unexpected status %d: %s", apRoomId, resp.StatusCode, body)
+	}
 }
 
 type ApRoomStatus struct {
