@@ -303,18 +303,8 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 
 	// Avoid any processing on these packets where possible
 
-	// Allow 3 messages to be queued at a time. Maybe this is awful, unsure.
-	// This should never include datapackages since we handle them ourselves!
-	msgs := make(chan struct {
-		msgType websocket.MessageType
-		data    []byte
-	}, 3)
-
-	// Collect messages from server - We don't want to fail catching a ping from read if the client is slow
 	go func() {
 		defer apConn.CloseNow()
-		defer close(msgs)
-		// Kill client conn if ap conn drops
 		defer connState.cancel()
 		for {
 			msgType, data, err := apConn.Read(ctx)
@@ -322,30 +312,13 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 				if !isNormalClose(err) && ctx.Err() == nil {
 					s.logf("AP read error: %v", err)
 				}
-				connState.cancel()
 				return
 			}
-			select {
-			// Space on channel, push there
-			case msgs <- struct {
-				msgType websocket.MessageType
-				data    []byte
-			}{msgType, data}:
-			// Context asked us to exit
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
 
-	// Send messages to client
-	go func() {
-		var decodedMsgs []map[string]any
-		for msg := range msgs {
 			if s.lokiLogger != nil {
-				if err := json.Unmarshal(msg.data, &decodedMsgs); err == nil {
+				var decodedMsgs []map[string]any
+				if err := json.Unmarshal(data, &decodedMsgs); err == nil {
 					for _, decodedMsg := range decodedMsgs {
-						// Re-marshal individual message, not the whole array
 						raw, err := json.Marshal(decodedMsg)
 						if err != nil {
 							continue
@@ -356,11 +329,11 @@ func (s apxServer) connectAP(ctx context.Context, connState *connectionState, re
 					s.logf("failed to unmarshal server message: %v", err)
 				}
 			}
-			if err := connState.clientConn.Write(ctx, msg.msgType, msg.data); err != nil {
+
+			if err := connState.clientConn.Write(ctx, msgType, data); err != nil {
 				if ctx.Err() == nil {
-					log.Printf("client write error: %v", err)
+					s.logf("client write error: %v", err)
 				}
-				connState.cancel()
 				return
 			}
 		}

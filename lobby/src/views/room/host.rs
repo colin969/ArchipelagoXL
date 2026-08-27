@@ -9,8 +9,18 @@ use crate::error::Result;
 pub struct ApxRoomInfo {
     pub lobby_room_id: String,
     pub ap_room_id: String,
-    pub normal_port: u16,
-    pub reduced_port: u16,
+    pub normal_id: u16,
+    pub reduced_id: u16,
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApxRoomInfoDisplay {
+    pub lobby_room_id: String,
+    pub ap_room_id: String,
+    pub normal_addr: String,
+    pub reduced_addr: String,
+    pub disabled: bool,
 }
 
 #[derive(Template, WebTemplate)]
@@ -19,7 +29,7 @@ struct HostRoomTpl<'a> {
     base: TplContext<'a>,
     room: Room,
     current_gen: Option<Generation>,
-    apx_room_info: Option<ApxRoomInfo>
+    apx_room_info: Option<ApxRoomInfoDisplay>
 }
 
 
@@ -46,9 +56,17 @@ async fn host_room<'a>(
       &lobby_config.apx_root,
       &lobby_config.apx_api_key,
       &room.id.to_string(),
-  )
-  .await
-  .unwrap_or(None);
+    )
+    .await
+    .unwrap_or(None)
+    .map(|info| ApxRoomInfoDisplay {
+        lobby_room_id: info.lobby_room_id,
+        ap_room_id: info.ap_room_id,
+        normal_addr: format!("ap{}.{}", info.normal_id, lobby_config.apx_ws_root),
+        reduced_addr: format!("ap{}.{}", info.reduced_id, lobby_config.apx_ws_root),
+        disabled: info.disabled,
+    });
+
 
     Ok(HostRoomTpl {
         base: TplContext::from_session("room", session.0, ctx, lobby_config, Some(format!("{} - Host", room.settings.name))).await,
@@ -73,6 +91,26 @@ async fn host_room_start(
 
     if !is_my_room {
         Err(anyhow::anyhow!("Cannot host a room that isn't yours"))?
+    }
+
+    let client = reqwest::Client::new();
+
+    if fetch_apx_room_info(&lobby_config.apx_root, &lobby_config.apx_api_key, &room.id.to_string())
+        .await
+        .unwrap_or(None)
+        .is_some() {
+        let resp = client
+            .post(format!("{}/api/room/{}/start", lobby_config.apx_root, room_id))
+            .header("X-API-Key", &lobby_config.apx_api_key)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let err: serde_json::Value = resp.json().await.unwrap_or_default();
+            Err(anyhow::anyhow!("APX error: {}", err["error"].as_str().unwrap_or(&err.to_string())))?
+        }
+
+        return Ok(rocket::response::Redirect::to(format!("/room/{}/host", room_id)));
     }
 
     let gen = db::get_generation_for_room(room_id, &mut conn)
@@ -119,12 +157,42 @@ async fn host_room_start(
 
     if !resp.status().is_success() {
         let err: serde_json::Value = resp.json().await.unwrap_or_default();
-        Err(anyhow::anyhow!("APX error: {}", err["error"].as_str().unwrap_or("unknown")))?
+        Err(anyhow::anyhow!("APX error: {}", err["error"].as_str().unwrap_or(&err.to_string())))?
     }
 
     Ok(rocket::response::Redirect::to(format!("/room/{}/host", room_id)))
 }
 
+#[rocket::get("/room/<room_id>/host/stop")]
+#[tracing::instrument(skip(session, ctx, lobby_config))]
+async fn host_room_stop(
+    room_id: RoomId,
+    session: LoggedInSession,
+    ctx: &State<Context>,
+    lobby_config: &State<LobbyConfig>,
+) -> Result<rocket::response::Redirect> {
+    let mut conn = ctx.db_pool.get().await?;
+    let room = db::get_room(room_id, &mut conn).await?;
+    let is_my_room = session.0.is_admin || session.user_id() == room.settings.author_id;
+
+    if !is_my_room {
+        Err(anyhow::anyhow!("Cannot stop a room that isn't yours"))?
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/room/{}/stop", lobby_config.apx_root, room_id))
+        .header("X-API-Key", &lobby_config.apx_api_key)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let err: serde_json::Value = resp.json().await.unwrap_or_default();
+        Err(anyhow::anyhow!("APX error: {}", err["error"].as_str().unwrap_or(&err.to_string())))?
+    }
+
+    Ok(rocket::response::Redirect::to(format!("/room/{}/host", room_id)))
+}
 
 async fn fetch_apx_room_info(
   apx_root: &str,
@@ -149,5 +217,6 @@ pub fn routes() -> Vec<rocket::Route> {
     rocket::routes![
         host_room,
         host_room_start,
+        host_room_stop,
     ]
 }

@@ -103,9 +103,9 @@ func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
 	var ts int64
 	var passwordless int
 	err := s.db.QueryRow(
-		`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, passwordless FROM rooms WHERE lobby_room_id = ?`,
+		`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, disabled, passwordless FROM rooms WHERE lobby_room_id = ?`,
 		lobbyRoomId,
-	).Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalPort, &r.ReducedPort, &ts, &passwordless)
+	).Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalPort, &r.ReducedPort, &ts, &r.Disabled, &passwordless)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -226,6 +226,7 @@ type ApxRoomInfo struct {
 	ApRoomId    string `json:"ap_room_id"`
 	NormalId    int    `json:"normal_id"`
 	ReducedId   int    `json:"reduced_id"`
+	Disabled    bool   `json:"disabled"`
 }
 
 // e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
@@ -324,6 +325,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
 	api.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}", srv.handleRoomStatus).Methods(http.MethodGet)
+	api.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
+	api.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	room := api.PathPrefix("/{roomId}").Subrouter()
 	room.HandleFunc("/release/{slotName}", srv.handleRelease).Methods(http.MethodGet)
 	room.HandleFunc("/refresh_passwords", srv.handlePasswordRefresh).Methods(http.MethodPost)
@@ -392,6 +395,7 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 			ApRoomId:    room.apRoomId,
 			NormalId:    room.normalHandler.id,
 			ReducedId:   room.reducedHandler.id,
+			Disabled:    false,
 		})
 	}
 
@@ -424,6 +428,7 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 			ApRoomId:    room.apRoomId,
 			NormalId:    room.normalHandler.id,
 			ReducedId:   room.reducedHandler.id,
+			Disabled:    false,
 		})
 		return
 	}
@@ -433,7 +438,141 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 		ApRoomId:    record.ApRoomId,
 		NormalId:    0,
 		ReducedId:   0,
+		Disabled:    true,
 	})
+}
+
+func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Already running
+	if _, ok := rm.registry.Get(roomId); ok {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room already running"})
+		return
+	}
+
+	record, err := rm.store.FindByLobbyRoomId(roomId)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to query store"})
+		return
+	}
+	if record == nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	// Re-enable in DB if it was disabled
+	if record.Disabled {
+		if _, err := rm.store.db.Exec(`UPDATE rooms SET disabled = 0 WHERE lobby_room_id = ?`, roomId); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to re-enable room"})
+			return
+		}
+	} else {
+		if room, ok := rm.registry.Get(roomId); ok {
+			json.NewEncoder(w).Encode(ApxRoomInfo{
+				LobbyRoomId: room.lobbyRoomId,
+				ApRoomId:    room.apRoomId,
+				NormalId:    room.normalHandler.id,
+				ReducedId:   room.reducedHandler.id,
+				Disabled:    false,
+			})
+			return
+		}
+	}
+
+	// Poll for the backing AP room to come online (15s timeout, 3s interval)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	var apPort int
+	for {
+		apPort, err = ensureApRoomPort(rm.config.ApApiRoot, rm.config.ApApiKey, record.ApRoomId)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			w.WriteHeader(http.StatusGatewayTimeout)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP room did not come online in time: %v", err)})
+			return
+		case <-time.After(3 * time.Second):
+		}
+	}
+	_ = apPort
+
+	room, err := rm.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalPort, &record.ReducedPort, record.Passwordless, true)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
+		return
+	}
+
+	json.NewEncoder(w).Encode(ApxRoomInfo{
+		LobbyRoomId: room.lobbyRoomId,
+		ApRoomId:    room.apRoomId,
+		NormalId:    room.normalHandler.id,
+		ReducedId:   room.reducedHandler.id,
+		Disabled:    false,
+	})
+}
+
+func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if _, ok := rm.registry.Get(roomId); !ok {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not running"})
+		return
+	}
+
+	if err := rm.store.Disable(roomId); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to disable room in store"})
+		return
+	}
+
+	rm.registry.Remove(roomId)
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "room_id": roomId})
+}
+
+func (rm *RoomManager) handleRemoveRoom(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	record, err := rm.store.FindByLobbyRoomId(roomId)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to query store"})
+		return
+	}
+	if record == nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	if err := rm.store.Disable(roomId); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to disable room in store"})
+		return
+	}
+
+	rm.registry.Remove(roomId)
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "removed", "room_id": roomId})
 }
 
 type uploadRoomRequest struct {
@@ -1352,6 +1491,26 @@ type ApRoomStatus struct {
 func ensureApRoomPort(apApiRoot string, apApiKey string, apRoomId string) (int, error) {
 	url := fmt.Sprintf("%s/room/%s/status", apApiRoot, apRoomId)
 
+	const timeout = 15 * time.Second
+	const interval = 3 * time.Second
+	deadline := time.Now().Add(timeout)
+
+	for {
+		port, err := tryGetApRoomPort(url, apApiKey, apRoomId)
+		if err == nil {
+			return port, nil
+		}
+
+		if time.Now().After(deadline) {
+			return 0, fmt.Errorf("AP room %s did not come online within %s: %w", apRoomId, timeout, err)
+		}
+
+		log.Printf("AP room %s not ready, retrying in %s: %v", apRoomId, interval, err)
+		time.Sleep(interval)
+	}
+}
+
+func tryGetApRoomPort(url, apApiKey, apRoomId string) (int, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return 0, fmt.Errorf("creating request: %w", err)
@@ -1370,7 +1529,7 @@ func ensureApRoomPort(apApiRoot string, apApiKey string, apRoomId string) (int, 
 	case http.StatusForbidden:
 		return 0, fmt.Errorf("access denied to room %s status (check API key)", apRoomId)
 	case http.StatusServiceUnavailable:
-		return 0, fmt.Errorf("room %s failed to come online in time", apRoomId)
+		return 0, fmt.Errorf("room %s not yet available", apRoomId)
 	default:
 		return 0, fmt.Errorf("unexpected status %d from /room/%s/status", resp.StatusCode, apRoomId)
 	}
@@ -1380,8 +1539,8 @@ func ensureApRoomPort(apApiRoot string, apApiKey string, apRoomId string) (int, 
 		return 0, fmt.Errorf("decoding room status: %w", err)
 	}
 
-	if status.Alive == false {
-		return 0, fmt.Errorf("webhost room %s can't be brought online?", apRoomId)
+	if !status.Alive {
+		return 0, fmt.Errorf("room %s is not alive", apRoomId)
 	}
 
 	return status.Port, nil

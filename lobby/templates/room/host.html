@@ -18,7 +18,7 @@
 {% block main %}
 
 {% if let Some(apx) = self.apx_room_info %}
-    {% if apx.normal_port == 0 || apx.reduced_port == 0 %}
+    {% if apx.disabled %}
     <table class="styled">
         <thead>
             <tr><th colspan=2>Host status</th></tr>
@@ -30,17 +30,18 @@
             </tr>
             <tr>
                 <td class="shrink">AP Room ID:</td>
-                <td><code>{{ apx.ap_room_id }}</code></td>
+                <td style="font-family: 'Courier New', monospace;">{{ apx.ap_room_id }}</td>
             </tr>
             <tr>
                 <td class="shrink">Lobby Room ID:</td>
-                <td><code>{{ apx.lobby_room_id }}</code></td>
+                <td style="font-family: 'Courier New', monospace;">{{ apx.lobby_room_id }}</td>
             </tr>
             <tr>
                 <td colspan=2>The room is registered but not currently running.</td>
             </tr>
         </tbody>
     </table>
+    <a class="button-emulator validation-button" href="/room/{{ self.room.id }}/host/start">Resume hosting</a>
     {% else %}
     <table class="styled">
         <thead>
@@ -52,23 +53,24 @@
                 <td><span style="color: green; font-weight: bold">Online</span></td>
             </tr>
             <tr>
-                <td class="shrink">Normal port:</td>
-                <td><code>{{ apx.normal_port }}</code></td>
+                <td class="shrink">Normal Addr:</td>
+                <td style="font-family: 'Courier New', monospace;">{{ apx.normal_addr }}</td>
             </tr>
             <tr>
-                <td class="shrink">Reduced port:</td>
-                <td><code>{{ apx.reduced_port }}</code></td>
+                <td class="shrink">Reduced Addr:</td>
+                <td style="font-family: 'Courier New', monospace;">{{ apx.reduced_addr }}</td>
             </tr>
             <tr>
                 <td class="shrink">AP Room ID:</td>
-                <td><code>{{ apx.ap_room_id }}</code></td>
+                <td style="font-family: 'Courier New', monospace;">{{ apx.ap_room_id }}</td>
             </tr>
             <tr>
                 <td class="shrink">Lobby Room ID:</td>
-                <td><code>{{ apx.lobby_room_id }}</code></td>
+                <td style="font-family: 'Courier New', monospace;">{{ apx.lobby_room_id }}</td>
             </tr>
         </tbody>
     </table>
+    <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/stop">Stop hosting</a>
     {% endif %}
 
 {% else %}
