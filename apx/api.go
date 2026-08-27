@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -139,8 +140,9 @@ func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 }
 
 type RoomRegistry struct {
-	mu    sync.RWMutex
-	rooms map[string]*HostedRoom
+	mu          sync.RWMutex
+	rooms       map[string]*HostedRoom
+	idToHandler map[int]*apxHandler
 }
 
 func (r *RoomRegistry) Get(roomId string) (*HostedRoom, bool) {
@@ -171,12 +173,21 @@ func (r *RoomRegistry) Add(hostedRoom *HostedRoom) error {
 	return nil
 }
 
+func (r *RoomRegistry) GetHandlerById(id int) (*apxHandler, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	room, ok := r.idToHandler[id]
+	return room, ok
+}
+
 func (r *RoomRegistry) Remove(roomId string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	room, exists := r.rooms[roomId]
 	if exists {
 		room.cancel()
+		delete(r.idToHandler, room.normalHandler.id)
+		delete(r.idToHandler, room.reducedHandler.id)
 	}
 	delete(r.rooms, roomId)
 }
@@ -213,8 +224,8 @@ func newCheckedLocations() CheckedLocations {
 type ApxRoomInfo struct {
 	LobbyRoomId string `json:"lobby_room_id"`
 	ApRoomId    string `json:"ap_room_id"`
-	NormalPort  int    `json:"normal_port"`
-	ReducedPort int    `json:"reduced_port"`
+	NormalId    int    `json:"normal_id"`
+	ReducedId   int    `json:"reduced_id"`
 }
 
 // e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
@@ -227,11 +238,9 @@ type HostedRoom struct {
 	checkedLocations     *CheckedLocations
 	sphereCache          *slotSphereCache
 	completeSphere1Slots map[int]struct{}
-	normalServer         *http.Server
-	reducedServer        *http.Server
 	apRoomId             string
-	normalPort           int
-	reducedPort          int
+	normalHandler        *apxHandler
+	reducedHandler       *apxHandler
 	ctx                  context.Context
 	cancel               context.CancelFunc
 }
@@ -292,7 +301,8 @@ func (c *slotSphereCache) Set(slotId int, b []byte) {
 
 func newRoomRegistry() *RoomRegistry {
 	return &RoomRegistry{
-		rooms: make(map[string]*HostedRoom),
+		rooms:       make(map[string]*HostedRoom),
+		idToHandler: make(map[int]*apxHandler),
 	}
 }
 
@@ -347,6 +357,32 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	return srv, r, nil
 }
 
+func startWsRouter(cfg *Config, rm *RoomManager) error {
+	router := newSubdomainRouter(rm.registry, rm.tlsCfg)
+
+	addr := fmt.Sprintf(":%d", cfg.WsPort)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("ws router listen on %s: %w", addr, err)
+	}
+
+	var listener net.Listener = ln
+	if rm.tlsCfg != nil {
+		listener = &httpDropper{listener: ln, tlsCfg: rm.tlsCfg}
+		log.Printf("WS router listening on wss://%s", addr)
+	} else {
+		log.Printf("WS router listening on ws://%s", addr)
+	}
+
+	go func() {
+		if err := http.Serve(listener, router); err != nil {
+			log.Printf("ws router error: %v", err)
+		}
+	}()
+
+	return nil
+}
+
 func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	rooms := rm.registry.List()
 	result := make([]ApxRoomInfo, 0, len(rooms))
@@ -354,8 +390,8 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 		result = append(result, ApxRoomInfo{
 			LobbyRoomId: room.lobbyRoomId,
 			ApRoomId:    room.apRoomId,
-			NormalPort:  room.normalPort,
-			ReducedPort: room.reducedPort,
+			NormalId:    room.normalHandler.id,
+			ReducedId:   room.reducedHandler.id,
 		})
 	}
 
@@ -386,8 +422,8 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 		json.NewEncoder(w).Encode(ApxRoomInfo{
 			LobbyRoomId: room.lobbyRoomId,
 			ApRoomId:    room.apRoomId,
-			NormalPort:  room.normalPort,
-			ReducedPort: room.reducedPort,
+			NormalId:    room.normalHandler.id,
+			ReducedId:   room.reducedHandler.id,
 		})
 		return
 	}
@@ -395,8 +431,8 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: record.LobbyRoomId,
 		ApRoomId:    record.ApRoomId,
-		NormalPort:  0,
-		ReducedPort: 0,
+		NormalId:    0,
+		ReducedId:   0,
 	})
 }
 
@@ -507,12 +543,12 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: room.lobbyRoomId,
 		ApRoomId:    room.apRoomId,
-		NormalPort:  room.normalPort,
-		ReducedPort: room.reducedPort,
+		NormalId:    room.normalHandler.id,
+		ReducedId:   room.reducedHandler.id,
 	})
 }
 
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalPort, reducedPort *int, passwordless bool, save bool) (*HostedRoom, error) {
+func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalId, reducedId *int, passwordless bool, save bool) (*HostedRoom, error) {
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
 		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
@@ -606,44 +642,20 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	}
 	room.startCheckedLocationPoller(rm.config.ApApiRoot, apRoomId, 30*time.Second)
 
-	// Normal traffic
-	normalServer := &http.Server{
-		Handler:      apxHandler{server: apx, reduced: false},
-		ReadTimeout:  time.Second * 10,
-		WriteTimeout: time.Second * 10,
-	}
+	normalHandler := apxHandler{server: apx, reduced: false, id: *normalId}
+	reducedHandler := apxHandler{server: apx, reduced: true, id: *reducedId}
 
-	// Reduced traffic (e.g less PrintJSON messages)
-	reducedServer := &http.Server{
-		Handler:      apxHandler{server: apx, reduced: true},
-		ReadTimeout:  time.Second * 10,
-		WriteTimeout: time.Second * 10,
-	}
-
-	// Setup both servers
-
-	wsListener, err := bindPort(normalPort)
+	err = rm.registry.AllocateAndRegisterHandlerPair(&normalHandler, &reducedHandler)
 	if err != nil {
-		return nil, fmt.Errorf("listening on normal port: %w", err)
-	}
-	room.normalPort = wsListener.Addr().(*net.TCPAddr).Port
-
-	wsReducedListener, err := bindPort(reducedPort)
-	if err != nil {
-		return nil, fmt.Errorf("listening on reduced port: %w", err)
-	}
-	room.reducedPort = wsReducedListener.Addr().(*net.TCPAddr).Port
-
-	if rm.tlsCfg != nil {
-		wsListener = &httpDropper{listener: wsListener, tlsCfg: rm.tlsCfg}
-		wsReducedListener = &httpDropper{listener: wsReducedListener, tlsCfg: rm.tlsCfg}
-		log.Printf("room %s: listening on wss://%v", lobbyRoomId, wsListener.Addr())
-		log.Printf("room %s: reduced listening on wss://%v", lobbyRoomId, wsReducedListener.Addr())
-	} else {
-		log.Printf("room %s: listening on ws://%v", lobbyRoomId, wsListener.Addr())
-		log.Printf("room %s: reduced listening on ws://%v", lobbyRoomId, wsReducedListener.Addr())
+		cancel()
+		return nil, fmt.Errorf("allocating handler IDs: %w", err)
 	}
 
+	room.normalHandler = &normalHandler
+	room.reducedHandler = &reducedHandler
+
+	log.Printf("room %s: listening on id %d", lobbyRoomId, room.normalHandler.id)
+	log.Printf("room %s: reduced listening on id %d", lobbyRoomId, room.reducedHandler.id)
 	log.Printf("room %s: multiserver port %d", lobbyRoomId, apPort)
 
 	// Add room to registry
@@ -657,33 +669,13 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		if err := rm.store.Save(RoomRecord{
 			LobbyRoomId: lobbyRoomId,
 			ApRoomId:    apRoomId,
-			NormalPort:  room.normalPort,
-			ReducedPort: room.reducedPort,
+			NormalPort:  room.normalHandler.id,
+			ReducedPort: room.reducedHandler.id,
 			CreatedAt:   time.Now(),
 		}); err != nil {
 			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
 		}
 	}
-
-	go func() {
-		defer cancel()
-		defer rm.registry.Remove(lobbyRoomId)
-
-		errc := make(chan error, 1)
-		go func() { errc <- normalServer.Serve(wsListener) }()
-		go func() { errc <- reducedServer.Serve(wsReducedListener) }()
-
-		log.Printf("Opened room: %s", lobbyRoomId)
-
-		select {
-		case err := <-errc:
-			log.Printf("room %s: ws server error: %v", lobbyRoomId, err)
-		case <-ctx.Done():
-		}
-
-		normalServer.Close()
-		reducedServer.Close()
-	}()
 
 	return room, nil
 }
@@ -1286,6 +1278,72 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 	}()
 }
 
+func (r *RoomRegistry) AllocateAndRegisterHandlerPair(normal, reduced *apxHandler) error {
+	const minID = 1000
+	const maxID = 50000
+	const rangeSize = maxID - minID + 1
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tryAllocate := func(id int) bool {
+		if id < minID || id > maxID {
+			return false
+		}
+		_, inUse := r.idToHandler[id]
+		return !inUse
+	}
+
+	// Storage for found ids (useful to let filler know about preallocate ids later)
+	ids := [2]int{}
+	found := 0
+
+	// Try to set to old ids first
+	if normal.id != 0 && tryAllocate(normal.id) {
+		ids[0] = normal.id
+		found++
+	}
+	if reduced.id != 0 && reduced.id != ids[0] && tryAllocate(reduced.id) {
+		ids[1] = reduced.id
+		found++
+	}
+
+	// Fill any
+	if found < 2 {
+		start := minID + rand.Intn(rangeSize)
+		for i := 0; i < rangeSize && found < 2; i++ {
+			id := minID + (start-minID+i)%rangeSize
+			if id == ids[0] || id == ids[1] {
+				continue
+			}
+			if _, inUse := r.idToHandler[id]; !inUse {
+				// Slot 0 = normal, Slot 1 = reduced. Probably a better way of making this readable
+				if found == 0 || (found == 1 && ids[0] != 0) {
+					if ids[0] == 0 {
+						ids[0] = id
+					} else {
+						ids[1] = id
+					}
+				} else {
+					ids[found] = id
+				}
+				found++
+			}
+		}
+	}
+
+	if ids[0] == 0 || ids[1] == 0 {
+		return fmt.Errorf("no available Id pair in range [%d, %d]", minID, maxID)
+	}
+
+	normal.id = ids[0]
+	reduced.id = ids[1]
+	r.idToHandler[ids[0]] = normal
+	r.idToHandler[ids[1]] = reduced
+
+	return nil
+}
+
 type ApRoomStatus struct {
 	Alive bool `json:"alive"`
 	Port  int  `json:"port"`
@@ -1337,15 +1395,4 @@ func maxRoomPlayerId(nameToId map[string]int) int {
 		}
 	}
 	return maxNumber
-}
-
-func bindPort(port *int) (net.Listener, error) {
-	if port != nil {
-		l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", *port))
-		if err == nil {
-			return l, nil
-		}
-		log.Printf("failed to bind port %d, using random: %v", *port, err)
-	}
-	return net.Listen("tcp", "0.0.0.0:0")
 }

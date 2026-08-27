@@ -301,6 +301,7 @@ const (
 type apxHandler struct {
 	server  *apxServer
 	reduced bool
+	id      int
 }
 
 // Put options on the handler so we can run 2 servers with the same apxServer backing them

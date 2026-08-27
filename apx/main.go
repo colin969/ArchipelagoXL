@@ -18,6 +18,7 @@ import (
 )
 
 type Config struct {
+	WsPort        int    `json:"ws_port"`
 	NormalPort    int    `json:"normal_port"`
 	ReducedPort   int    `json:"reduced_port"`
 	APHost        string `json:"ap_room_host"`
@@ -69,6 +70,11 @@ func run() error {
 	rm, router, err := startRoomManager(cfg, reg, metrics, tlsCfg, roomStore)
 	if err != nil {
 		log.Panicf("starting room manager: %v", err)
+	}
+
+	err = startWsRouter(cfg, rm)
+	if err != nil {
+		log.Panicf("starting ws router: %v", err)
 	}
 
 	s := &http.Server{
@@ -127,6 +133,13 @@ func getConfig() (*Config, error) {
 	}
 
 	// Env vars override config file
+	if v := os.Getenv("WS_PORT"); v != "" {
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WS_PORT %q: %w", v, err)
+		}
+		cfg.WsPort = port
+	}
 	if v := os.Getenv("NORMAL_PORT"); v != "" {
 		port, err := strconv.Atoi(v)
 		if err != nil {
