@@ -42,7 +42,7 @@
         {% endif %}
     </a>
     <a href="/room/{{ self.room.id }}/generation/output" style="display: none" class="button-emulator validation-button" id="gen-output-button">Download generation output</a>
-    <p style="display: none; margin-top: 1em" id="ap-upload-hint">Next step: <a href="https://archipelago.gg/uploads" target="_blank">Upload to Archipelago.gg</a></p>
+    <p style="display: none; margin-top: 1em" id="ap-upload-hint">Next step: <a href="/room/{{ self.room.id }}/host">Host on APX</a> or <a href="https://archipelago.gg/uploads" target="_blank">Upload to Archipelago.gg</a></p>
 {% else %}
     {% let is_ok_for_gen = self.generation_checklist.values().min().copied().unwrap_or_default() %}
 
@@ -65,6 +65,19 @@
     {% else %}
         <a class='button-emulator cancel-button not-clickable'>Start generation</a>
     {% endif %}
+
+    <script>
+        function onManualUploadChange(input) {
+            if (input.files.length > 0) {
+                document.getElementById('manual-upload-form').submit();
+            }
+        }
+    </script>
+
+    <form id="manual-upload-form" action="/room/{{ self.room.id }}/generation/manual_upload" method="post" enctype="multipart/form-data" style="display: inline">
+        <input type="file" id="manual-upload-input" name="file" accept=".zip" style="display: none" onchange="onManualUploadChange(this)">
+        <a class="button-emulator validation-button" onclick="document.getElementById('manual-upload-input').click(); return false;">Upload own generation</a>
+    </form>
 {% endif %}
 
 {% endblock %}

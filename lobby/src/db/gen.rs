@@ -103,6 +103,22 @@ pub async fn insert_generation_for_room(
     Ok(())
 }
 
+pub async fn insert_generation_for_room_as_done(
+    room_id: RoomId,
+    job_id: JobId,
+    conn: &mut AsyncPgConnection,
+) -> Result<()> {
+    diesel::insert_into(generations::table)
+        .values(NewGeneration {
+            room_id,
+            job_id: job_id.into(),
+            status: GenerationStatus::Done.as_str().to_string(),
+        })
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 #[tracing::instrument(skip(conn))]
 pub async fn delete_generation_for_room(
     room_id: RoomId,

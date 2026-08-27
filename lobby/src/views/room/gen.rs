@@ -11,7 +11,7 @@ use crate::{
     error::{ApiResult, RedirectTo},
     generation::get_generation_info,
     index_manager::IndexManager,
-    jobs::{GenerationOutDir, GenerationParams, GenerationQueue},
+    jobs::{GenerationOutDir, GenerationParams, GenerationQueue, refresh_gen_patches},
     session::LoggedInSession,
 };
 use apwm::Index;
@@ -20,8 +20,8 @@ use askama_web::WebTemplate;
 use diesel_async::AsyncPgConnection;
 use http::header::CONTENT_DISPOSITION;
 use itertools::Itertools;
-use rocket::tokio::fs::File;
-use rocket::{fs::NamedFile, http::Header, State};
+use rocket::{FromForm, form::Form, tokio::fs::File};
+use rocket::{fs::{NamedFile, TempFile}, http::Header, State};
 use rocket::{
     futures::stream::Stream,
     response::{stream::ByteStream, Redirect},
@@ -33,6 +33,11 @@ use wq::{JobId, JobStatus};
 use crate::error::Result;
 use crate::utils::RenamedFile;
 use crate::{Context, TplContext, LobbyConfig};
+
+#[derive(FromForm)]
+struct ManualUploadForm<'r> {
+    file: TempFile<'r>,
+}
 
 #[derive(Template, WebTemplate)]
 #[template(path = "room/gen.html")]
@@ -329,6 +334,70 @@ async fn gen_room_logs_stream<'a>(
     })
 }
 
+#[rocket::post("/room/<room_id>/generation/manual_upload", data = "<form>")]
+#[tracing::instrument(skip(session, redirect_to, form, generation_out_dir, ctx))]
+async fn gen_room_manual_upload(
+    room_id: RoomId,
+    session: LoggedInSession,
+    redirect_to: &RedirectTo,
+    form: Form<ManualUploadForm<'_>>,
+    generation_out_dir: &State<GenerationOutDir>,
+    ctx: &State<Context>,
+) -> Result<Redirect> {
+    redirect_to.set(&format!("/room/{room_id}/generation"));
+
+    let mut conn = ctx.db_pool.get().await?;
+
+    let room = db::get_room(room_id, &mut conn).await?;
+    let is_my_room = session.0.is_admin || session.user_id() == room.settings.author_id;
+
+    if !is_my_room {
+        Err(anyhow::anyhow!(
+            "Cannot upload generation for a room that isn't yours"
+        ))?
+    }
+
+    if db::get_generation_for_room(room_id, &mut conn).await?.is_some() {
+        Err(anyhow::anyhow!(
+            "Cannot upload a generation while one already exists"
+        ))?
+    }
+
+    let zip_path_temp = form.file.path()
+        .ok_or_else(|| anyhow::anyhow!("No temporary file path available"))?;
+
+    // Inspect first 4 bytes to tell if it's a zip or not
+    let zip_magic = {
+        let mut buf = [0u8; 4];
+        let mut f = tokio::fs::File::open(zip_path_temp).await?;
+        f.read_exact(&mut buf).await?;
+        buf
+    };
+    
+    if zip_magic != [0x50, 0x4B, 0x03, 0x04] {
+        Err(anyhow::anyhow!("Uploaded file must be a zip"))?
+    }
+
+    let job_id = JobId::new();
+    let out_dir = generation_out_dir.inner().0.join(job_id.to_string());
+    tokio::fs::create_dir_all(&out_dir).await?;
+
+    // Copy instead of using persist_to, rename won't work well inside docker, copy is fineeee
+    let zip_path = out_dir.join(format!("{}.zip", room_id));
+    tokio::fs::copy(zip_path_temp, &zip_path).await?;
+
+    // Write log so the log viewer shows something meaningful
+    tokio::fs::write(out_dir.join("output.log"), "Manually uploaded by room owner").await?;
+
+    db::insert_generation_for_room_as_done(room_id, job_id, &mut conn).await?;
+
+    // Force patches to get matched to gen properly
+    refresh_gen_patches(room_id, &generation_out_dir.inner().0, &mut conn).await?;
+
+    Ok(Redirect::to(rocket::uri!(gen_room(room_id))))
+}
+
+
 #[rocket::get("/room/<room_id>/generation/output")]
 #[tracing::instrument(skip(session, generation_out_dir, ctx))]
 async fn gen_room_output<'a>(
@@ -480,5 +549,6 @@ pub fn routes() -> Vec<rocket::Route> {
         gen_room_logs_stream,
         gen_room_output,
         gen_room_status,
+        gen_room_manual_upload,
     ]
 }

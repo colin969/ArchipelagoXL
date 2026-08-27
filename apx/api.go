@@ -601,7 +601,7 @@ type uploadRoomRequest struct {
 func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 	return uploadRoomRequest{
 		LobbyRoomId:  r.FormValue("lobby_room_id"),
-		Passwordless: r.FormValue("passwordless") == "true",
+		Passwordless: r.FormValue("passwordless") != "false",
 	}
 }
 
@@ -702,6 +702,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		ApRoomId:    room.apRoomId,
 		NormalId:    room.normalHandler.id,
 		ReducedId:   room.reducedHandler.id,
+		Disabled:    false,
 	})
 }
 
@@ -831,11 +832,12 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	// We can run APX temporarily without a lobby using the env vars, so ignore those
 	if save {
 		if err := rm.store.Save(RoomRecord{
-			LobbyRoomId: lobbyRoomId,
-			ApRoomId:    apRoomId,
-			NormalPort:  room.normalHandler.id,
-			ReducedPort: room.reducedHandler.id,
-			CreatedAt:   time.Now(),
+			LobbyRoomId:  lobbyRoomId,
+			ApRoomId:     apRoomId,
+			NormalPort:   room.normalHandler.id,
+			ReducedPort:  room.reducedHandler.id,
+			Passwordless: passwordless,
+			CreatedAt:    time.Now(),
 		}); err != nil {
 			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
 		}
