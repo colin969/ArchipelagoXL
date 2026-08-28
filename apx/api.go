@@ -334,6 +334,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	room := api.PathPrefix("/{roomId}").Subrouter()
+	room.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
 	room.HandleFunc("/release/{slotName}", srv.handleRelease).Methods(http.MethodGet)
 	room.HandleFunc("/refresh_passwords", srv.handlePasswordRefresh).Methods(http.MethodPost)
 	room.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
@@ -1373,6 +1374,44 @@ func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (
 		return nil, false
 	}
 	return room, true
+}
+
+func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+
+	vars := mux.Vars(r)
+	gameName := vars["gameName"]
+	typeName := vars["typeName"]
+	log.Printf("[handleItemNames] requested game=%q type=%q", gameName, typeName)
+
+	var names map[int64]string
+	switch typeName {
+	case "item":
+		names, ok = room.apx.datapackages.ItemIDToName[gameName]
+	case "location":
+		names, ok = room.apx.datapackages.LocationIDToName[gameName]
+	default:
+		http.Error(w, "invalid type, must be 'item' or 'location'", http.StatusBadRequest)
+		return
+	}
+
+	if !ok {
+		http.Error(w, fmt.Sprintf("no data found for game %q", gameName), http.StatusNotFound)
+		return
+	}
+
+	values := make([]string, 0, len(names))
+	for _, v := range names {
+		values = append(values, v)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(values); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+	}
 }
 
 func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {

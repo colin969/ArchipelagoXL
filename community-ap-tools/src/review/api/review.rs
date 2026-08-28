@@ -418,9 +418,11 @@ async fn delete_note(
     Ok(())
 }
 
-#[rocket::get("/tracker_info")]
+#[allow(unused_variables)]
+#[rocket::get("/dashboard/<lobby_room_id>/tracker_info")]
 async fn get_tracker_info(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     ap_room: ApRoom,
     lobby_room: LobbyRoom,
     config: &State<Config>,
@@ -484,9 +486,10 @@ async fn get_tracker_info(
     Ok(Json(slots))
 }
 
-#[rocket::get("/spheres")]
+#[rocket::get("/dashboard/<lobby_room_id>/spheres")]
 async fn get_all_spheres(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     config: &State<Config>,
 ) -> crate::error::Result<Json<serde_json::Value>> {
     let apx_api_root = config
@@ -499,7 +502,7 @@ async fn get_all_spheres(
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
     let client = reqwest::Client::new();
-    let url = format!("{}/api/{}/spheres", apx_api_root, config.lobby_room_id);
+    let url = format!("{}/api/{}/spheres", apx_api_root, lobby_room_id);
     let resp = client
         .get(&url)
         .header("X-API-Key", apx_api_key)
@@ -514,9 +517,10 @@ async fn get_all_spheres(
     Ok(Json(data))
 }
 
-#[rocket::get("/spheres/<slot_id>")]
+#[rocket::get("/dashboard/<lobby_room_id>/spheres/<slot_id>")]
 async fn get_slot_spheres(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
     config: &State<Config>,
 ) -> crate::error::Result<Json<serde_json::Value>> {
@@ -530,7 +534,7 @@ async fn get_slot_spheres(
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
     let client = reqwest::Client::new();
-    let url = format!("{}/api/{}/spheres/{}", apx_api_root, config.lobby_room_id, slot_id);
+    let url = format!("{}/api/{}/spheres/{}", apx_api_root, lobby_room_id, slot_id);
     let resp = client
         .get(&url)
         .header("X-API-Key", apx_api_key)

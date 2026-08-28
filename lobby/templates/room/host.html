@@ -92,6 +92,7 @@
     </table>
     <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/stop" onclick="return handleButtonClick(event)">Stop hosting</a>
     <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/delete" onclick="return handleButtonClick(event, 'Are you sure you want to delete this hosted room? This cannot be undone.')">Delete hosted room</a>
+    <a class="button-emulator external-button" href="{{ self.ap_tools_public_url }}/dashboard/{{ self.room.id }}">View dashboard</a>
     {% endif %}
 
 {% else %}

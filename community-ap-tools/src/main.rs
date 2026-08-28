@@ -1,12 +1,12 @@
-use std::{collections::{HashMap, HashSet}, str::FromStr};
+use std::{collections::{BTreeMap, HashMap, HashSet}, str::FromStr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow};
 use askama::Template;
 use askama_web::WebTemplate;
 use auth::{ModeratorSession, Session};
-use guards::{ApRoom, DATA_PACKAGE, LobbyRoom, SlotPasswords};
+use guards::{ApRoom, ApxRoomInfo, LobbyRoom, SlotPasswords};
 use reqwest::{
     Url,
     header::{HeaderMap, HeaderName, HeaderValue},
@@ -104,9 +104,11 @@ fn unauthorized(req: &Request) -> crate::error::Result<Redirect> {
     )))
 }
 
-#[rocket::get("/")]
-async fn root_run(
+#[allow(unused_variables)]
+#[rocket::get("/dashboard/<lobby_room_id>")]
+async fn dashboard(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     lobby_room: LobbyRoom,
     ap_room: ApRoom,
     slot_passwords: SlotPasswords,
@@ -213,9 +215,10 @@ async fn fetch_incomplete_sphere1s(config: &Config, room_id: &str) -> crate::err
     Ok(response.json().await?)
 }
 
-#[rocket::get("/api/password/<slot_id>")]
+#[rocket::get("/api/dashboard/<lobby_room_id>/password/<slot_id>")]
 async fn get_password(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
     config: &State<Config>,
 ) -> crate::error::Result<(rocket::http::Status, rocket::serde::json::Json<serde_json::Value>)> {
@@ -231,7 +234,7 @@ async fn get_password(
     let client = reqwest::Client::new();
     let url = format!(
         "{}api/{}/password/{}",
-        apx_api_root, config.lobby_room_id, slot_id
+        apx_api_root, lobby_room_id, slot_id
     );
     let response = client
         .get(url)
@@ -246,17 +249,17 @@ async fn get_password(
     Ok((status, rocket::serde::json::Json(body)))
 }
 
-#[rocket::get("/deathlinks")]
+#[allow(unused_variables)]
+#[rocket::get("/dashboard/<lobby_room_id>/deathlinks")]
 async fn deathlinks(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     lobby_room: LobbyRoom,
     ap_room: ApRoom,
     config: &State<Config>,
 ) -> crate::error::Result<DeathlinksIndexTpl> {
-    let room_id = lobby_room.id.to_string();
-
-    let deathlinks = fetch_deathlinks(config, &room_id).await.unwrap_or_default();
-    let excluded_slots = fetch_exclusions(config, &room_id).await.unwrap_or_default();
+    let deathlinks = fetch_deathlinks(config, &lobby_room.id.to_string()).await.unwrap_or_default();
+    let excluded_slots = fetch_exclusions(config, &lobby_room.id.to_string()).await.unwrap_or_default();
 
     let deathlink_tag = String::from("DeathLink");
     let slots: Vec<DeathlinksSlot> = ap_room
@@ -285,9 +288,10 @@ async fn deathlinks(
     })
 }
 
-#[rocket::post("/api/bounce_exclusions/<slot_id>/<tag_name>")]
+#[rocket::post("/api/dashboard/<lobby_room_id>/bounce_exclusions/<slot_id>/<tag_name>")]
 async fn proxy_add_exclusion(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
     tag_name: &str,
     config: &State<Config>,
@@ -305,7 +309,7 @@ async fn proxy_add_exclusion(
     let client = reqwest::Client::new();
     let url = format!(
         "{}api/{}/bounce_exclusions/{}/{}",
-        apx_api_root, config.lobby_room_id, slot_id, tag_name
+        apx_api_root, lobby_room_id, slot_id, tag_name
     );
     let response = client
         .post(url)
@@ -323,9 +327,10 @@ async fn proxy_add_exclusion(
     Ok((status, rocket::serde::json::Json(body)))
 }
 
-#[rocket::delete("/api/bounce_exclusions/<slot_id>/<tag_name>")]
+#[rocket::delete("/api/dashboard/<lobby_room_id>/bounce_exclusions/<slot_id>/<tag_name>")]
 async fn proxy_remove_exclusion(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
     tag_name: &str,
     config: &State<Config>,
@@ -344,7 +349,7 @@ async fn proxy_remove_exclusion(
     let response = client
         .delete(format!(
             "{}api/{}/bounce_exclusions/{}/{}",
-            apx_api_root, config.lobby_room_id, slot_id, tag_name
+            apx_api_root, lobby_room_id, slot_id, tag_name
         ))
         .header("X-API-Key", apx_api_key)
         .send()
@@ -357,9 +362,10 @@ async fn proxy_remove_exclusion(
         .unwrap_or(rocket::http::Status::InternalServerError))
 }
 
-#[rocket::post("/api/full_feed/<slot_id>")]
+#[rocket::post("/api/dashboard/<lobby_room_id>/full_feed/<slot_id>")]
 async fn add_full_feed(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
     config: &State<Config>,
     cache: &State<TrackerInfoCache>,
@@ -377,7 +383,7 @@ async fn add_full_feed(
     let response = client
         .post(format!(
             "{}api/{}/full_feed/{}",
-            apx_api_root, config.lobby_room_id, slot_id
+            apx_api_root, lobby_room_id, slot_id
         ))
         .header("X-API-Key", apx_api_key)
         .send()
@@ -390,9 +396,10 @@ async fn add_full_feed(
         .unwrap_or(rocket::http::Status::InternalServerError))
 }
 
-#[rocket::delete("/api/full_feed/<slot_id>")]
+#[rocket::delete("/api/dashboard/<lobby_room_id>/full_feed/<slot_id>")]
 async fn remove_full_feed(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
     config: &State<Config>,
     cache: &State<TrackerInfoCache>,
@@ -410,7 +417,7 @@ async fn remove_full_feed(
     let response = client
         .delete(format!(
             "{}api/{}/full_feed/{}",
-            apx_api_root, config.lobby_room_id, slot_id
+            apx_api_root, lobby_room_id, slot_id
         ))
         .header("X-API-Key", apx_api_key)
         .send()
@@ -423,9 +430,10 @@ async fn remove_full_feed(
         .unwrap_or(rocket::http::Status::InternalServerError))
 }
 
-#[rocket::get("/api/deathlink_probability")]
+#[rocket::get("/api/dashboard/<lobby_room_id>/deathlink_probability")]
 async fn get_deathlink_probability(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     config: &State<Config>,
 ) -> crate::error::Result<Json<ProbabilityResponse>> {
     let apx_api_root = config
@@ -439,7 +447,7 @@ async fn get_deathlink_probability(
 
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{}/api/{}/deathlink_probability", apx_api_root, config.lobby_room_id))
+        .get(format!("{}/api/{}/deathlink_probability", apx_api_root, lobby_room_id))
         .header("X-API-Key", apx_api_key)
         .send()
         .await?;
@@ -448,9 +456,10 @@ async fn get_deathlink_probability(
     Ok(Json(data))
 }
 
-#[rocket::post("/api/deathlink_probability", data = "<request>")]
+#[rocket::post("/api/dashboard/<lobby_room_id>/deathlink_probability", data = "<request>")]
 async fn set_deathlink_probability(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     config: &State<Config>,
     request: Json<SetProbabilityRequest>,
 ) -> crate::error::Result<Json<ProbabilityResponse>> {
@@ -465,7 +474,7 @@ async fn set_deathlink_probability(
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{}/api/{}/deathlink_probability", apx_api_root, config.lobby_room_id))
+        .post(format!("{}/api/{}/deathlink_probability", apx_api_root, lobby_room_id))
         .header("X-API-Key", apx_api_key)
         .json(&request.into_inner())
         .send()
@@ -475,105 +484,14 @@ async fn set_deathlink_probability(
     Ok(Json(data))
 }
 
-#[derive(Deserialize, Serialize)]
-struct DeferredGamesResponse {
-    games: Vec<String>,
-}
-
-#[derive(Deserialize, Serialize)]
-struct AddDeferredGameRequest {
-    game_name: String,
-}
-
-#[rocket::get("/api/apx/deferred_datapackage_games")]
-async fn get_deferred_datapackage_games(
-    _session: auth::AdminSession,
-    config: &State<Config>,
-) -> crate::error::Result<Json<DeferredGamesResponse>> {
-    let apx_api_root = config
-        .apx_api_root
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API not configured"))?;
-    let apx_api_key = config
-        .apx_api_key
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API key not configured"))?;
-
-    let client = reqwest::Client::new();
-    let response = client
-        .get(format!("{}/api/{}/deferred_datapackage_games", apx_api_root, config.lobby_room_id))
-        .header("X-API-Key", apx_api_key)
-        .send()
-        .await?;
-
-    let data: DeferredGamesResponse = response.json().await?;
-    Ok(Json(data))
-}
-
-#[rocket::post("/api/apx/deferred_datapackage_games", data = "<request>")]
-async fn add_deferred_datapackage_game(
-    _session: auth::AdminSession,
-    config: &State<Config>,
-    request: Json<AddDeferredGameRequest>,
-) -> crate::error::Result<rocket::http::Status> {
-    let apx_api_root = config
-        .apx_api_root
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API not configured"))?;
-    let apx_api_key = config
-        .apx_api_key
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API key not configured"))?;
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(format!("{}/api/{}/deferred_datapackage_games", apx_api_root, config.lobby_room_id))
-        .header("X-API-Key", apx_api_key)
-        .json(&request.into_inner())
-        .send()
-        .await?;
-
-    Ok(rocket::http::Status::from_code(response.status().as_u16())
-        .unwrap_or(rocket::http::Status::InternalServerError))
-}
-
-#[rocket::delete("/api/apx/deferred_datapackage_games/<game_name>")]
-async fn remove_deferred_datapackage_game(
-    _session: auth::AdminSession,
-    game_name: &str,
-    config: &State<Config>,
-) -> crate::error::Result<rocket::http::Status> {
-    let apx_api_root = config
-        .apx_api_root
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API not configured"))?;
-    let apx_api_key = config
-        .apx_api_key
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API key not configured"))?;
-
-    let client = reqwest::Client::new();
-    let mut url = apx_api_root.join(&format!("/api/{}/deferred_datapackage_games/", config.lobby_room_id))?;
-    url.path_segments_mut()
-        .map_err(|_| anyhow!("Invalid APX URL"))?
-        .push(game_name);
-
-    let response = client
-        .delete(url)
-        .header("X-API-Key", apx_api_key)
-        .send()
-        .await?;
-
-    Ok(rocket::http::Status::from_code(response.status().as_u16())
-        .unwrap_or(rocket::http::Status::InternalServerError))
-}
-
-#[rocket::get("/hint/<ty>/<slot_name>/<item_name>")]
+#[rocket::get("/api/dashboard/<lobby_room_id>/hint/<ty>/<slot_name>/<item_name>")]
 async fn hint(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     ty: &str,
     slot_name: &str,
     item_name: &str,
+    apx_room_info: ApxRoomInfo,
     config: &State<Config>,
 ) -> crate::error::Result<Redirect> {
     if !["item", "location"].contains(&ty) {
@@ -595,17 +513,19 @@ async fn hint(
         shlex::try_quote(item_name)?
     );
 
-    ap_cmd(cmd, config).await?;
+    ap_cmd(cmd, apx_room_info, config).await?;
 
-    Ok(Redirect::to("/"))
+    Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
 }
 
-#[rocket::get("/give/<ty>/<slot_name>/<item_name>")]
+#[rocket::get("/api/dashboard/<lobby_room_id>/give/<ty>/<slot_name>/<item_name>")]
 async fn give(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     ty: &str,
     slot_name: &str,
     item_name: &str,
+    apx_room_info: ApxRoomInfo,
     config: &State<Config>,
 ) -> crate::error::Result<Redirect> {
     if !["item", "location"].contains(&ty) {
@@ -627,12 +547,13 @@ async fn give(
         shlex::try_quote(item_name)?
     );
 
-    ap_cmd(cmd, config).await?;
+    ap_cmd(cmd, apx_room_info, config).await?;
 
-    Ok(Redirect::to("/"))
+    Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
 }
 
-async fn ap_cmd(cmd: String, config: &State<Config>) -> crate::error::Result<()> {
+// Fix turn into apx route
+async fn ap_cmd(cmd: String, apx_room_info: ApxRoomInfo, config: &State<Config>) -> crate::error::Result<()> {
     let client = reqwest::Client::new();
     let form = reqwest::multipart::Form::new().text("cmd", cmd);
 
@@ -646,8 +567,11 @@ async fn ap_cmd(cmd: String, config: &State<Config>) -> crate::error::Result<()>
     // since sending a command just inserts something in database that gets polled by the room
     // process later on so they don't provide responses. If anything fails, it just ignores the
     // input and nothing happens...
+    let ap_room_url = config
+        .ap_api_root
+        .join(&format!("/room/{}", apx_room_info.ap_room_id))?;
     let _ = client
-        .post(config.ap_room_url.clone())
+        .post(ap_room_url)
         .multipart(form)
         .headers(headers)
         .send()
@@ -656,9 +580,10 @@ async fn ap_cmd(cmd: String, config: &State<Config>) -> crate::error::Result<()>
     Ok(())
 }
 
-#[rocket::get("/release/<slot_name>")]
+#[rocket::get("/api/dashboard/<lobby_room_id>/release/<slot_name>")]
 async fn release(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_name: &str,
     config: &State<Config>,
 ) -> crate::error::Result<Redirect> {
@@ -672,7 +597,7 @@ async fn release(
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
     let mut url = apx_api_root
-        .join(&format!("/api/{}/release/", config.lobby_room_id))?;
+        .join(&format!("/api/{}/release/", lobby_room_id))?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("Invalid APX URL"))?
         .push(slot_name);
@@ -687,36 +612,51 @@ async fn release(
         Err(anyhow!("Release failed: {}", response.status()))?;
     }
 
-    Ok(Redirect::to("/"))
+    Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
 }
 
-#[rocket::get("/completion/<ty>/<game_name>")]
-async fn autocompletion(
+#[allow(unused_variables)]
+#[rocket::get("/api/dashboard/<lobby_room_id>/names/<type_name>/<game_name>")]
+async fn get_game_names(
     _session: ModeratorSession,
-    ty: &str,
+    lobby_room_id: &str,
+    type_name: &str,
     game_name: &str,
+    config: &State<Config>,
 ) -> crate::error::Result<Json<Vec<String>>> {
-    let datapackage = DATA_PACKAGE.get().context("No datapackage loaded")?;
-    let game = datapackage
-        .data
-        .games
-        .get(game_name)
-        .context("Couldn't find game")?;
-    let names = if ty == "item" {
-        game.game_data.item_name_to_id.keys().cloned().collect()
-    } else {
-        game.game_data.location_name_to_id.keys().cloned().collect()
-    };
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("APX API key not configured"))?;
 
+    let url = apx_api_root.join(&format!(
+        "/api/{}/names/{}/{}",
+        lobby_room_id, type_name, game_name
+    ))?;
+
+    let client = reqwest::Client::new();
+    let result = client
+        .get(url)
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| anyhow!("APX returned error for game names: {}", e))?;
+
+    let names: Vec<String> = result.json().await?;
     Ok(Json(names))
 }
 
-async fn notify_proxy_password_refresh(config: &State<Config>) {
+async fn notify_proxy_password_refresh(lobby_room_id: &str, config: &State<Config>) {
     let (Some(apx_root), Some(apx_key)) = (&config.apx_api_root, &config.apx_api_key) else {
         return;
     };
 
-    let apx_url = match apx_root.join(&format!("/api/{}/refresh_passwords", config.lobby_room_id)) {
+    let apx_url = match apx_root.join(&format!("/api/{}/refresh_passwords", lobby_room_id)) {
         Ok(url) => url,
         Err(e) => {
             eprintln!("[REFRESH_PASSWORDS] Failed to build APX URL: {}", e);
@@ -754,9 +694,10 @@ struct SetPasswordRequest {
     password: Option<String>,
 }
 
-#[rocket::post("/gen_all_passwords")]
+#[rocket::post("/api/dashboard/<lobby_room_id>/gen_all_passwords")]
 async fn gen_all_passwords(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     config: &State<Config>,
     cache: &State<TrackerInfoCache>,
 ) -> crate::error::Result<()> {
@@ -769,7 +710,7 @@ async fn gen_all_passwords(
 
     let url = config.lobby_root_url.join(&format!(
         "/api/room/{}/gen_all_passwords",
-        config.lobby_room_id
+        lobby_room_id
     ))?;
 
     let response = client
@@ -782,7 +723,7 @@ async fn gen_all_passwords(
         Err(anyhow!("Failed to gen passwords: {}", response.status()))?;
     }
 
-    notify_proxy_password_refresh(config).await;
+    notify_proxy_password_refresh(lobby_room_id, config).await;
 
     // Invalidate tracker info cache
     *cache.0.lock().await = None;
@@ -790,9 +731,10 @@ async fn gen_all_passwords(
     Ok(())
 }
 
-#[rocket::post("/set_password/<yaml_id>", data = "<request>")]
+#[rocket::post("/api/dashboard/<lobby_room_id>/set_password/<yaml_id>", data = "<request>")]
 async fn set_password(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     yaml_id: &str,
     request: Json<SetPasswordRequest>,
     config: &State<Config>,
@@ -807,7 +749,7 @@ async fn set_password(
 
     let url = config.lobby_root_url.join(&format!(
         "/api/room/{}/set_password/{}",
-        config.lobby_room_id, yaml_id
+        lobby_room_id, yaml_id
     ))?;
 
     let response = client
@@ -821,7 +763,7 @@ async fn set_password(
         Err(anyhow!("Failed to set password: {}", response.status()))?;
     }
 
-    notify_proxy_password_refresh(config).await;
+    notify_proxy_password_refresh(lobby_room_id, config).await;
 
     // Invalidate tracker info cache
     *cache.0.lock().await = None;
@@ -844,9 +786,10 @@ struct ChangeYamlOwnerRequest {
     new_password: Option<String>,
 }
 
-#[rocket::put("/change_owner/<yaml_id>", data = "<request>")]
+#[rocket::put("/api/dashboard/<lobby_room_id>/change_owner/<yaml_id>", data = "<request>")]
 async fn change_yaml_owner(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     yaml_id: &str,
     request: Json<ChangeYamlOwnerRequest>,
     config: &State<Config>,
@@ -861,7 +804,7 @@ async fn change_yaml_owner(
 
     let url = config.lobby_root_url.join(&format!(
         "/api/room/{}/yaml/{}",
-        config.lobby_room_id, yaml_id
+        lobby_room_id, yaml_id
     ))?;
 
     let response = client
@@ -878,7 +821,7 @@ async fn change_yaml_owner(
         ))?;
     }
 
-    notify_proxy_password_refresh(config).await;
+    notify_proxy_password_refresh(lobby_room_id, config).await;
 
     // Invalidate tracker info cache
     *cache.0.lock().await = None;
@@ -886,21 +829,22 @@ async fn change_yaml_owner(
     Ok(())
 }
 
-#[rocket::get("/debug_slot/<slot_id>")]
+#[rocket::get("/dashboard/<lobby_room_id>/debug_slot/<slot_id>")]
 async fn debug_slot_page(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
-    config: &State<Config>,
 ) -> crate::error::Result<DebugSlotTpl> {
     Ok(DebugSlotTpl {
-        room_id: config.lobby_room_id.to_string(),
+        room_id: lobby_room_id.to_string(),
         slot_id,
     })
 }
 
-#[rocket::get("/api/debug/slot/<slot_id>")]
+#[rocket::get("/api/dashboard/<lobby_room_id>/debug/slot/<slot_id>")]
 async fn debug_slot_tap(
     _session: ModeratorSession,
+    lobby_room_id: &str,
     slot_id: i32,
     config: &State<Config>,
     ws: rocket_ws::WebSocket,
@@ -918,7 +862,7 @@ async fn debug_slot_tap(
         .clone();
 
     let apx_url = apx_api_root
-        .join(&format!("/api/{}/debug/slot/{}", config.lobby_room_id, slot_id))?;
+        .join(&format!("/api/{}/debug/slot/{}", lobby_room_id, slot_id))?;
 
     // Convert http(s) -> ws(s)
     let ws_url = apx_url.as_str().replacen("http", "ws", 1);
@@ -953,14 +897,15 @@ async fn debug_slot_tap(
     })))
 }
 
+#[rocket::get("/")]
+fn index() -> Redirect {
+    Redirect::to("/rooms")
+}
 
 pub struct Config {
     pub lobby_root_url: Url,
     pub lobby_public_url: Option<String>,
-    pub lobby_room_id: Uuid,
     pub lobby_api_key: String,
-    pub ap_room_id: String,
-    pub ap_room_url: Url,
     pub ap_api_root: Url,
     pub ap_room_host: String,
     pub ap_admin_api_key: String,
@@ -970,6 +915,8 @@ pub struct Config {
 
 pub struct TrackerInfoCache(pub Arc<tokio::sync::Mutex<Option<(Instant, Vec<MergedSlotInfo>)>>>);
 pub struct ApRoomCache(pub Arc<Mutex<Option<(Instant, TrackerInfo)>>>);
+pub struct RoomOwnerCache(pub Mutex<HashMap<Uuid, i64>>);
+pub struct SlotMappingCache(pub Mutex<HashMap<String, BTreeMap<usize, String>>>);
 
 const TRACKER_CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -981,11 +928,8 @@ async fn main() -> crate::error::Result<()> {
         std::env::var("LOBBY_ROOT_URL").expect("Provide a `LOBBY_ROOT_URL` env variable");
     let lobby_public_url = 
         std::env::var("LOBBY_PUBLIC_URL").ok();
-    let lobby_room_id =
-        std::env::var("LOBBY_ROOM_ID").expect("Provide a `LOBBY_ROOM_ID` env variable");
     let lobby_api_key =
         std::env::var("LOBBY_API_KEY").expect("Provide a `LOBBY_API_KEY` env variable");
-    let ap_room_id = std::env::var("AP_ROOM_ID").expect("Provide an `AP_ROOM_ID` env variable");
     let ap_room_host =
         std::env::var("AP_ROOM_HOST").expect("Provide an `AP_ROOM_HOST` env variable");
     let ap_admin_api_key =
@@ -1002,7 +946,6 @@ async fn main() -> crate::error::Result<()> {
 
     eprintln!("[STARTUP] AP_API_ROOT: {}", ap_api_root);
     eprintln!("[STARTUP] AP_ROOM_HOST: {}", ap_room_host);
-    eprintln!("[STARTUP] AP_ROOM_ID: {}", ap_room_id);
 
     let apx_api_root = std::env::var("APX_API_ROOT")
         .ok()
@@ -1012,18 +955,12 @@ async fn main() -> crate::error::Result<()> {
     let db_url = std::env::var("DATABASE_URL").expect("Provide a `DATABASE_URL` env variable");
     let db_pool = common::db::get_database_pool(&db_url, MIGRATIONS).await?;
 
-    let ap_room_url = ap_api_root.join(&format!("/room/{}", ap_room_id))?;
-    eprintln!("[STARTUP] Constructed AP_ROOM_URL: {}", ap_room_url);
-
     let mut config = Config {
         lobby_root_url: lobby_root_url.parse()?,
         lobby_public_url,
-        lobby_room_id: lobby_room_id.parse()?,
         lobby_api_key,
-        ap_room_url,
         ap_api_root,
         ap_room_host,
-        ap_room_id,
         ap_admin_api_key,
         apx_api_root,
         apx_api_key,
@@ -1033,7 +970,8 @@ async fn main() -> crate::error::Result<()> {
         .mount(
             "/",
             routes![
-                root_run,
+                index,
+                dashboard,
                 deathlinks,
                 proxy_add_exclusion,
                 proxy_remove_exclusion,
@@ -1041,15 +979,12 @@ async fn main() -> crate::error::Result<()> {
                 set_deathlink_probability,
                 release,
                 hint,
-                autocompletion,
+                get_game_names,
                 give,
                 get_password,
                 set_password,
                 gen_all_passwords,
                 change_yaml_owner,
-                get_deferred_datapackage_games,
-                add_deferred_datapackage_game,
-                remove_deferred_datapackage_game,
                 add_full_feed,
                 remove_full_feed,
                 debug_slot_page,
@@ -1067,6 +1002,8 @@ async fn main() -> crate::error::Result<()> {
         .manage(db_pool)
         .manage(TrackerInfoCache(Arc::new(tokio::sync::Mutex::new(None))))
         .manage(ApRoomCache(Arc::new(Mutex::new(None))))
+        .manage(RoomOwnerCache(Mutex::new(HashMap::new())))
+        .manage(SlotMappingCache(Mutex::new(HashMap::new())))
         .attach(OAuth2::<Discord>::fairing("discord"))
         .launch()
         .await

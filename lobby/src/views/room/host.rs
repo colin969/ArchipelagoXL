@@ -29,7 +29,8 @@ struct HostRoomTpl<'a> {
     base: TplContext<'a>,
     room: Room,
     current_gen: Option<Generation>,
-    apx_room_info: Option<ApxRoomInfoDisplay>
+    apx_room_info: Option<ApxRoomInfoDisplay>,
+    ap_tools_public_url: String,
 }
 
 
@@ -73,6 +74,7 @@ async fn host_room<'a>(
         room,
         current_gen,
         apx_room_info,
+        ap_tools_public_url: lobby_config.ap_tools_public_url.clone(),
     })
 }
 

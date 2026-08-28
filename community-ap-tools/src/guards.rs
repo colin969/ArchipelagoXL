@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt::Display, str::FromStr, sync::OnceLock, time::{Duration, Instant}};
+use std::{collections::BTreeMap, fmt::Display, str::FromStr, time::{Duration, Instant}};
 
 use reqwest::header::{HeaderName, HeaderValue};
 use rocket::{
@@ -8,7 +8,7 @@ use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{ApRoomCache, Config};
+use crate::{ApRoomCache, Config, SlotMappingCache};
 use crate::datapackage::DataPackage;
 
 #[derive(Deserialize, Debug)]
@@ -32,6 +32,7 @@ pub struct SlotPasswords(pub Vec<SlotPasswordInfo>);
 pub struct LobbyRoom {
     pub id: Uuid,
     pub name: String,
+    pub author_id: i64,
     pub yamls: Vec<YamlInfo>,
 }
 
@@ -150,15 +151,54 @@ macro_rules! try_err_outcome {
     };
 }
 
+pub struct LobbyRoomId(pub Uuid);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for LobbyRoomId {
+    type Error = crate::error::Error;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let route = match request.route() {
+            Some(route) => route,
+            None => return Outcome::Error((
+                Status::BadRequest,
+                anyhow::anyhow!("Why is there no route?").into(),
+            )),
+        };
+
+        // Find index of segment in request that'll contain this routes <lobby_room_id> value
+        // This feels hacky but if it works it works
+        let param_index = route
+            .uri
+            .unmounted_origin
+            .path()
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .enumerate()
+            .find_map(|(i, seg)| (seg == "<lobby_room_id>").then_some(i));
+
+        match param_index.and_then(|i| request.param::<Uuid>(i)?.ok()) {
+            Some(id) => Outcome::Success(LobbyRoomId(id)),
+            None => Outcome::Error((
+                Status::BadRequest,
+                anyhow::anyhow!("Missing or invalid lobby_room_id in path").into(),
+            )),
+        }
+    }
+}
+
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for LobbyRoom {
     type Error = crate::error::Error;
+
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let LobbyRoomId(lobby_room_id) = try_outcome!(LobbyRoomId::from_request(request).await);
         let config = request.rocket().state::<Config>().unwrap();
+
         let url = try_err_outcome!(
             config
                 .lobby_root_url
-                .join(&format!("/api/room/{}", config.lobby_room_id))
+                .join(&format!("/api/room/{}", lobby_room_id))
         );
         let client = reqwest::Client::new();
         let result = try_err_outcome!(
@@ -166,7 +206,7 @@ impl<'r> FromRequest<'r> for LobbyRoom {
                 .get(url)
                 .header(
                     HeaderName::from_static("x-api-key"),
-                    HeaderValue::from_str(&config.lobby_api_key).unwrap()
+                    HeaderValue::from_str(&config.lobby_api_key).unwrap(),
                 )
                 .send()
                 .await
@@ -181,19 +221,23 @@ impl<'r> FromRequest<'r> for LobbyRoom {
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for SlotPasswords {
     type Error = crate::error::Error;
+
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let LobbyRoomId(lobby_room_id) = try_outcome!(LobbyRoomId::from_request(request).await);
         let config = request.rocket().state::<Config>().unwrap();
-        let url = try_err_outcome!(config.lobby_root_url.join(&format!(
-            "/api/room/{}/slots_passwords",
-            config.lobby_room_id
-        )));
+
+        let url = try_err_outcome!(
+            config
+                .lobby_root_url
+                .join(&format!("/api/room/{}/slots_passwords", lobby_room_id))
+        );
         let client = reqwest::Client::new();
         let result = try_err_outcome!(
             client
                 .get(url)
                 .header(
                     HeaderName::from_static("x-api-key"),
-                    HeaderValue::from_str(&config.lobby_api_key).unwrap()
+                    HeaderValue::from_str(&config.lobby_api_key).unwrap(),
                 )
                 .send()
                 .await
@@ -212,9 +256,56 @@ pub struct ApMsg {
 #[derive(Deserialize)]
 pub struct DPackage(Vec<ApMsg>);
 
-pub static DATA_PACKAGE: OnceLock<DataPackage> = OnceLock::new();
-pub static SLOT_MAPPING: OnceLock<BTreeMap<usize, String>> = OnceLock::new();
 const AP_ROOM_CACHE_TTL: Duration = Duration::from_secs(30);
+
+#[derive(Deserialize, Debug)]
+pub struct ApxRoomInfo {
+    pub lobby_room_id: String,
+    pub ap_room_id: String,
+    pub normal_id: i64,
+    pub reduced_id: i64,
+    pub disabled: bool,
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for ApxRoomInfo {
+    type Error = crate::error::Error;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let LobbyRoomId(lobby_room_id) = try_outcome!(LobbyRoomId::from_request(request).await);
+        let config = request.rocket().state::<Config>().unwrap();
+
+        let apx_api_root = try_err_outcome!(
+            config
+                .apx_api_root
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("APX API not configured"))
+        );
+        let apx_api_key = try_err_outcome!(
+            config
+                .apx_api_key
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("APX API key not configured"))
+        );
+
+        let apx_room_url = try_err_outcome!(
+            apx_api_root.join(&format!("/api/room/{}", lobby_room_id))
+        );
+        eprintln!("[GUARD] Fetching APX room info from: {}", apx_room_url);
+
+        let client = reqwest::Client::new();
+        let result = try_err_outcome!(
+            client
+                .get(apx_room_url)
+                .header("X-API-Key", apx_api_key)
+                .send()
+                .await
+        );
+        let apx_room_info: ApxRoomInfo = try_err_outcome!(result.json().await);
+
+        Outcome::Success(apx_room_info)
+    }
+}
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for ApRoom {
@@ -236,21 +327,42 @@ impl<'r> FromRequest<'r> for ApRoom {
             }
         }
 
+        let apx_room_info = try_outcome!(ApxRoomInfo::from_request(request).await);
         let config = request.rocket().state::<Config>().unwrap();
+        let slot_mapping_cache = request.rocket().state::<SlotMappingCache>().unwrap();
+
         let room_status_url = try_err_outcome!(
             config
                 .ap_api_root
-                .join(&format!("/api/room_status/{}", config.ap_room_id))
+                .join(&format!("/api/room_status/{}", apx_room_info.ap_room_id))
         );
         eprintln!("[GUARD] Fetching room status from: {}", room_status_url);
         let result = try_err_outcome!(reqwest::get(room_status_url).await);
         let room_status: RoomStatus = try_err_outcome!(result.json().await);
 
-        if SLOT_MAPPING.get().is_none() {
-            let response = try_err_outcome!(reqwest::get(config.ap_room_url.clone()).await);
-            let body = try_err_outcome!(response.text().await);
-            let slots = try_err_outcome!(parse_room(body));
-            let _ = SLOT_MAPPING.set(slots);
+        // Fetch slot mapping if not cached for this ap room
+        {
+            let has_mapping = slot_mapping_cache
+                .0
+                .lock()
+                .unwrap()
+                .contains_key(&apx_room_info.ap_room_id);
+
+            if !has_mapping {
+                let ap_room_url = try_err_outcome!(
+                    config
+                        .ap_api_root
+                        .join(&format!("/room/{}", apx_room_info.ap_room_id))
+                );
+                let response = try_err_outcome!(reqwest::get(ap_room_url).await);
+                let body = try_err_outcome!(response.text().await);
+                let slots = try_err_outcome!(parse_room(body));
+                slot_mapping_cache
+                    .0
+                    .lock()
+                    .unwrap()
+                    .insert(apx_room_info.ap_room_id.clone(), slots);
+            }
         }
 
         let tracker_url = try_err_outcome!(
@@ -262,7 +374,11 @@ impl<'r> FromRequest<'r> for ApRoom {
         let tracker_page = try_err_outcome!(reqwest::get(tracker_url).await);
         let tracker_body = try_err_outcome!(tracker_page.text().await);
 
-        let tracker_info = try_err_outcome!(parse_tracker(tracker_body));
+        let tracker_info = {
+            let mapping_guard = slot_mapping_cache.0.lock().unwrap();
+            let slot_map = mapping_guard.get(&apx_room_info.ap_room_id).unwrap();
+            try_err_outcome!(parse_tracker(tracker_body, slot_map))
+        };
 
         *cache.0.lock().unwrap() = Some((Instant::now(), TrackerInfo {
             slots: tracker_info.slots.clone(),
@@ -301,14 +417,13 @@ fn parse_room(body: String) -> crate::error::Result<BTreeMap<usize, String>> {
     Ok(slots)
 }
 
-fn parse_tracker(body: String) -> crate::error::Result<TrackerInfo> {
+fn parse_tracker(body: String, slot_map: &BTreeMap<usize, String>) -> crate::error::Result<TrackerInfo> {
     let mut slots = Vec::new();
     let html = Html::parse_document(&body);
     let slot_lines_selector = Selector::parse("#checks-table > tbody > tr").unwrap();
     let td_selector = Selector::parse("td").unwrap();
     let a_selector = Selector::parse("a").unwrap();
     let slot_lines = html.select(&slot_lines_selector);
-    let slot_map = SLOT_MAPPING.get().unwrap();
 
     for slot_line in slot_lines {
         let mut cells = slot_line.select(&td_selector);
@@ -322,7 +437,7 @@ fn parse_tracker(body: String) -> crate::error::Result<TrackerInfo> {
             .inner_html()
             .trim()
             .parse::<usize>()?;
-        let _ = cells.next(); // Jump over the slot name
+        let _ = cells.next();
         let slot_name = slot_map.get(&slot_id).unwrap();
         let slot_game = htmlize::unescape(cells.next().unwrap().inner_html().trim().to_string());
         let status = cells.next().unwrap().inner_html().trim().to_string();
@@ -344,16 +459,15 @@ fn parse_tracker(body: String) -> crate::error::Result<TrackerInfo> {
             .to_string()
             .parse::<f64>()
             .ok();
-        let slot_info = SlotInfo {
+
+        slots.push(SlotInfo {
             id: slot_id,
             name: slot_name.to_string(),
             game: slot_game.to_string(),
             status: status.parse().unwrap(),
             checks,
             last_activity,
-        };
-
-        slots.push(slot_info);
+        });
     }
 
     Ok(TrackerInfo { slots })

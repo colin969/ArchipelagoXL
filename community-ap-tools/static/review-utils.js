@@ -93,7 +93,7 @@ function createChecksTable(tableId, slotId, sphereSidebar)
     }
 
     const table = new Tabulator(tableId, {
-        ajaxURL: "/api/spheres/" + slotId,
+        ajaxURL: `/api/dashboard/${window.lobby_room_id}/spheres/${slotId}`,
         ajaxResponse: buildTableData,
         height: "100%",
         layout: "fitDataStretch",
@@ -163,7 +163,7 @@ function createAllChecksTable(tableId, sphereSidebar) {
     };
 
     return new Tabulator(tableId, {
-        ajaxURL: "/api/spheres",
+        ajaxURL: `/api/dashboard/${window.lobby_room_id}/spheres`,
         ajaxResponse: buildTableData,
         height: "100%",
         layout: "fitDataStretch",
@@ -266,7 +266,7 @@ function createTrackerTable(tableId)
     }
 
     const table = new Tabulator(tableId, {
-        ajaxURL: "/api/tracker_info",
+        ajaxURL: `/api/dashboard/${window.lobby_room_id}/tracker_info`,
         height: "100%",
         layout: "fitDataStretch",
         persistence: true,
@@ -421,13 +421,13 @@ function createTrackerTable(tableId)
     window.review_table = table;
 
     setInterval(() => {
-        table.replaceData("/api/tracker_info");
+        table.replaceData(`/api/dashboard/${window.lobby_room_id}/tracker_info`);
     }, 40000);
 }
 
 function forceReviewTableRefresh() {
     if (window.review_table) {
-        window.review_table.replaceData("/api/tracker_info");
+        window.review_table.replaceData(`/api/dashboard/${window.lobby_room_id}/tracker_info`);
     }
 }
 
@@ -564,7 +564,7 @@ function timeSince(secondsSince) {
 }
 
 async function getSlotPassword(slotId) {
-    const res = await fetch("/api/password/" + slotId);
+    const res = await fetch("/api/dashboard/" + window.lobby_room_id + "/password/" + slotId);
     if (res.ok) {
         return (await res.json())["password"];
     }

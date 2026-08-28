@@ -30,6 +30,9 @@ button {
     cursor: pointer;
 }
         </style>
+    <script>
+        window.lobby_room_id = "{{ lobby_room.id }}";
+    </script>
     </head>
     <body id="main">
         <h1>Deathlinks</h1>
@@ -94,7 +97,7 @@ button {
                 const statusCell = row.querySelector('.deathlink-status');
                 const isExcluded = statusCell.innerText === 'Disabled';
                 const method = isExcluded ? 'DELETE' : 'POST';
-                const response = await fetch('/api/bounce_exclusions/' + encodeURIComponent(slotName) + '/DeathLink', { method });
+                const response = await fetch(`/api/dashboard/${window.lobby_room_id}/bounce_exclusions/${encodeURIComponent(slotName)}/DeathLink`, { method });
                 if (response.ok) {
                     statusCell.innerText = isExcluded ? 'Enabled' : 'Disabled';
                 } else {
@@ -109,7 +112,7 @@ button {
 
         async function loadProbability() {
             try {
-                const response = await fetch('/api/deathlink_probability');
+                const response = await fetch(`/api/dashboard/${window.lobby_room_id}/deathlink_probability`);
                 const data = await response.json();
                 probabilityInput.value = Math.round(data.probability * 100);
             } catch (e) {
@@ -124,7 +127,7 @@ button {
                 return;
             }
             try {
-                const response = await fetch('/api/deathlink_probability', {
+                const response = await fetch(`/api/dashboard/${window.lobby_room_id}/deathlink_probability`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ "probability": probability / 100 })

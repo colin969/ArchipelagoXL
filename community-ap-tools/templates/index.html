@@ -109,6 +109,10 @@ td {
     background: rgb(80, 80, 80) !important;
 }
         </style>
+    <script>
+        window.lobby_root_url = "{{ lobby_root_url }}";
+        window.lobby_room_id = "{{ lobby_room_id }}";
+    </script>
     </head>
     <body id="main">
 
@@ -117,8 +121,7 @@ td {
             <div class="button-row">
                 <a href="{{ lobby_root_url}}/room/{{lobby_room_id}}"><button>Ionium Lobby</button></a>
                 <a href="/rooms"><button>Room Settings</button></a>
-                <a href="/deathlinks"><button>Deathlink Settings</button></a>
-                <button onclick="genAllPasswords()">Generate Passwords</button>
+                <a href="/dashboard/{{ lobby_room_id }}/deathlinks"><button>Deathlink Settings</button></a>                <button onclick="genAllPasswords()">Generate Passwords</button>
                 <button onclick="openAllChecksTable()">View All Checks</button>
                 <button onclick="resetTable()">Reset Table</button>
             </div>
@@ -156,9 +159,6 @@ td {
     </body>
 
     <script>
-        window.lobby_root_url = "{{ lobby_root_url }}";
-        window.lobby_room_id = "{{ lobby_room_id }}";
-
         function copySlotHandles(button) {
             const li = button.parentElement;
             const spans = li.querySelectorAll('span[data-discord-id]');
@@ -188,7 +188,7 @@ td {
             yesButton.innerText = "Yes"
             yesButton.addEventListener("click", async () => {
                 const method = isBlocked ? 'DELETE' : 'POST';
-                const response = await fetch(`/api/bounce_exclusions/${slotId}/DeathLink`, { method });
+                const response = await fetch(`/api/dashboard/${window.lobby_room_id}/bounce_exclusions/${slotId}/DeathLink`, { method });
                 if (response.ok) {
                     forceReviewTableRefresh();
                     popup.remove();
@@ -223,7 +223,7 @@ td {
             yesButton.innerText = "Yes"
             yesButton.addEventListener("click", async () => {
                 const method = isFullFeed ? 'DELETE' : 'POST';
-                const response = await fetch(`/api/full_feed/${slotId}`, { method });
+                const response = await fetch(`/api/dashboard/${window.lobby_room_id}/full_feed/${slotId}`, { method });
                 if (response.ok) {
                     forceReviewTableRefresh();
                     popup.remove();
@@ -268,7 +268,7 @@ td {
                 }
 
                 // TODO: Test this with a space in slot name
-                actionUrl = location.href.split("#")[0] + "/release/" + encodeURIComponent(slotName);
+                actionUrl = `/api/dashboard/${window.lobby_room_id}/release/${encodeURIComponent(slotName)}`;
                 fetch(actionUrl)
                 .then(() => {
                     alert("Release action submitted to queue")
@@ -302,7 +302,7 @@ td {
             const hintList = document.createElement("datalist")
             hintList.id = "hint-datalist"
 
-            const url = new URL("/completion/" + ty + "/" + slotGame, document.location);
+            const url = new URL(`/api/dashboard/${window.lobby_room_id}/names/${ty}/${encodeURIComponent(slotGame)}`, document.location);
             fetch(url)
                 .then((response) => {
                     return response.json()
@@ -320,7 +320,7 @@ td {
             hintForm.appendChild(hintButton)
 
             hintForm.addEventListener("submit", () => {
-                actionUrl = location.href.split("#")[0] + "/" + action + "/" + ty + "/" + encodeURIComponent(slotName) + "/" + encodeURIComponent(hintInput.value)
+                actionUrl = `/api/dashboard/${window.lobby_room_id}/${action}/${ty}/${encodeURIComponent(slotName)}/${encodeURIComponent(hintInput.value)}`
                 fetch(actionUrl)
                 .then(() => {
                     alert("Action submitted to queue")
@@ -391,7 +391,7 @@ td {
             confirmButton.innerText = "Generate"
             confirmButton.addEventListener("click", () => {
                 popup.close()
-                const url = new URL("/gen_all_passwords", document.location)
+                const url = new URL(`/api/dashboard/${window.lobby_room_id}/gen_all_passwords`, document.location)
                 fetch(url, { method: "POST" })
                     .then((response) => {
                         if (response.ok) {
@@ -427,7 +427,7 @@ td {
         }
 
         function setPassword(yamlId, password) {
-            const url = new URL("/set_password/" + yamlId, document.location)
+            const url = new URL(`/api/dashboard/${window.lobby_room_id}/set_password/${yamlId}`, document.location)
             fetch(url, {
                 method: "POST",
                 headers: {
@@ -503,7 +503,7 @@ td {
                     body.new_password = generatePassword()
                 }
 
-                const url = new URL("/change_owner/" + yamlId, document.location)
+                const url = new URL(`/api/dashboard/${window.lobby_room_id}/change_owner/${yamlId}`, document.location)
                 fetch(url, {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },

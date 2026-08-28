@@ -64,6 +64,7 @@ pub struct LobbyConfig {
     pub apx_root: String,
     pub apx_api_key: String,
     pub apx_ws_root: String,
+    pub ap_tools_public_url: String,
 }
 
 const CSS_VERSION: &str = std::env!("CSS_VERSION");
@@ -177,13 +178,14 @@ fn get_lobby_config() -> LobbyConfig {
     let apx_root = std::env::var("APX_ROOT").expect("Provide an APX_ROOT env variable");
     let apx_ws_root = std::env::var("APX_WS_ROOT").expect("Provide an APX_WS_ROOT env variable");
     let apx_api_key = std::env::var("APX_API_KEY").expect("Provide an APX_API_KEY env variable");
-
+    let ap_tools_public_url = std::env::var("AP_TOOLS_PUBLIC_URL").unwrap_or_default();
 
     LobbyConfig {
         admin_rooms_only,
         apx_root,
         apx_api_key,
         apx_ws_root,
+        ap_tools_public_url,
     }
 }
 

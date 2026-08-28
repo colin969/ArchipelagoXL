@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use crate::guards::{LobbyRoom, LobbyRoomId};
 use crate::{Discord, error, error::Result, review::Role, review::db as review_db};
 use anyhow::anyhow;
 use diesel_async::AsyncPgConnection;
@@ -191,18 +192,36 @@ impl<'r> FromRequest<'r> for ModeratorSession {
         if session.is_super_admin {
             return Outcome::Success(ModeratorSession(LoggedInSession(session)));
         }
+
         let logged_in_session = LoggedInSession(session);
-        let config = try_outcome!(request.guard::<&State<crate::Config>>().await
-            .map_error(|(s, _)| (s, anyhow!("Missing config").into())));
+        let LobbyRoomId(lobby_room_id) = try_outcome!(LobbyRoomId::from_request(request).await);
+
+        let owner_cache = try_outcome!(request.guard::<&State<crate::RoomOwnerCache>>().await
+            .map_error(|(s, _)| (s, anyhow!("Missing owner cache").into())));
+
+        let cached_author_id = owner_cache.0.lock().unwrap().get(&lobby_room_id).copied();
+
+        let author_id = match cached_author_id {
+            Some(id) => id,
+            None => {
+                let lobby_room = try_outcome!(LobbyRoom::from_request(request).await);
+                owner_cache.0.lock().unwrap().insert(lobby_room_id, lobby_room.author_id);
+                lobby_room.author_id
+            }
+        };
+
+        if logged_in_session.user_id() == author_id {
+            return Outcome::Success(ModeratorSession(logged_in_session));
+        }
+
         let pool = try_outcome!(request.guard::<&State<DieselPool<AsyncPgConnection>>>().await
             .map_error(|(s, _)| (s, anyhow!("Missing pool").into())));
-
         let mut conn = match pool.get().await {
             Ok(c) => c,
             Err(e) => return Outcome::Error((Status::InternalServerError, anyhow!(e).into())),
         };
 
-        match logged_in_session.require_room_role(config.lobby_room_id, Role::Moderator, &mut conn).await {
+        match logged_in_session.require_room_role(lobby_room_id, Role::Moderator, &mut conn).await {
             Ok(_) => Outcome::Success(ModeratorSession(logged_in_session)),
             Err(e) => Outcome::Error((Status::Forbidden, e)),
         }
