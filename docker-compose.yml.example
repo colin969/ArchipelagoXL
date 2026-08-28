@@ -64,6 +64,7 @@ services:
       APX_ROOT: "http://apx:9001"
       APX_API_KEY: "changeme"
       APX_WS_ROOT: "example.com"
+      AP_TOOLS_PUBLIC_URL: "example.com"
     working_dir: /builds/worker/checkout
     command: sh -c "watchexec -w lobby -w Cargo.toml -w Cargo.lock -w Rocket.toml -w apwm -w wq -r cargo run"
     user: "${USER_ID}:${GID}"
