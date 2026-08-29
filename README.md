@@ -10,6 +10,58 @@ This includes:
 - (fork) Community AP Tool, for collaborative tools to review yaml submissions, and manage live games
 - (optional) Prometheus + Loki + Grafana, for collecting logs and analyzing metrics from a big sync
 
+```mermaid
+graph TB
+    subgraph External
+        Players["Player"]
+        Browser["Browser"]
+    end
+
+    subgraph Docker Services
+        subgraph Lobby
+            LobbyFE["Web Frontend"]
+            LobbyAPI["Internal API"]
+        end
+
+        subgraph APTools["AP Tools"]
+            APToolsFE["Web Frontend"]
+        end
+
+        subgraph APX
+            WSRouter["WS Router (single port, subdomain routing)"]
+            APXAPI["Internal API"]
+            subgraph Rooms
+                R1["Room: normal: ap12345 reduced: ap12346"]
+                R2["Room: normal: ap12347 reduced: ap12348"]
+            end
+        end
+
+        subgraph Webhost
+            WebhostAPI["HTTP API"]
+            MS1["Multiserver"]
+            MS2["Multiserver"]
+        end
+    end
+
+    Players -->|"WebSocket (ap12345.host)"| WSRouter
+    Browser -->|"HTTPS"| LobbyFE
+    Browser -->|"HTTPS"| APToolsFE
+
+    LobbyFE --> LobbyAPI
+    LobbyAPI -->|"Create/Close/Destroy Room"| APXAPI
+    APToolsFE -->|"yaml review"| LobbyAPI
+    APToolsFE -->|"Manage Live Room"| APXAPI
+
+    APXAPI -->|"Manage Backing Multiserver"| WebhostAPI
+    WebhostAPI --> MS1
+    WebhostAPI --> MS2
+
+    WSRouter --> R1
+    WSRouter --> R2
+    R1 <-->|"proxied ws"| MS1
+    R2 <-->|"proxied ws"| MS2
+```
+
 # Running this project
 
 ## Setup
