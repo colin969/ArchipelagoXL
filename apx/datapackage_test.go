@@ -87,7 +87,7 @@ func BenchmarkSendDataPackages(b *testing.B) {
 		games[i] = name
 	}
 
-	s := apxServer{
+	s := ApxRoom{
 		datapackages: ds,
 	}
 

@@ -18,24 +18,24 @@ import (
 )
 
 type Config struct {
-	WsPort        int    `json:"ws_port"`
-	NormalPort    int    `json:"normal_port"`
-	ReducedPort   int    `json:"reduced_port"`
-	APHost        string `json:"ap_room_host"`
-	APPassword    string `json:"ap_room_password"`
-	LobbyEnabled  bool   `json:"lobby_enabled"`
-	LobbyRootUrl  string `json:"lobby_root_url"`
-	LobbyRoomId   string `json:"lobby_room_id"`
-	LobbyApiKey   string `json:"lobby_api_key"`
-	ApiListenAddr string `json:"apx_api_listen"`
-	ApiKey        string `json:"apx_api_key"`
-	ApRoomId      string `json:"ap_room_id"`
-	ApApiRoot     string `json:"ap_api_root"`
-	ApApiKey      string `json:"ap_admin_api_key"`
-	TLSCertFile   string `json:"tls_cert_file"`
-	TLSKeyFile    string `json:"tls_key_file"`
-	Passwordless  bool   `json:"passwordless"`
-	LokiEndpoint  string `json:"loki_endpoint"`
+	WsPort           int    `json:"ws_port"`
+	NormalPort       int    `json:"normal_port"`
+	ReducedPort      int    `json:"reduced_port"`
+	APHost           string `json:"ap_room_host"`
+	APPassword       string `json:"ap_room_password"`
+	LobbyEnabled     bool   `json:"lobby_enabled"`
+	LobbyRootUrl     string `json:"lobby_root_url"`
+	LobbyRoomId      string `json:"lobby_room_id"`
+	LobbyApiKey      string `json:"lobby_api_key"`
+	ApiListenAddr    string `json:"apx_api_listen"`
+	ApiKey           string `json:"apx_api_key"`
+	ApRoomId         string `json:"ap_room_id"`
+	ApApiRoot        string `json:"ap_api_root"`
+	ApApiKey         string `json:"ap_admin_api_key"`
+	TLSCertFile      string `json:"tls_cert_file"`
+	TLSKeyFile       string `json:"tls_key_file"`
+	PerSlotPasswords bool   `json:"per_slot_passwords"`
+	LokiEndpoint     string `json:"loki_endpoint"`
 }
 
 func main() {
@@ -88,7 +88,8 @@ func run() error {
 		if cfg.LobbyRoomId == "" {
 			cfg.LobbyRoomId = uuid.New().String()
 		}
-		_, err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.NormalPort, &cfg.ReducedPort, cfg.Passwordless, false)
+		_, err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.NormalPort, &cfg.ReducedPort,
+			cfg.PerSlotPasswords, true, true, false)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)
 		}
@@ -197,12 +198,13 @@ func getConfig() (*Config, error) {
 	if v := os.Getenv("TLS_KEY_FILE"); v != "" {
 		cfg.TLSKeyFile = v
 	}
-	if v := os.Getenv("PASSWORDLESS"); v != "" {
+	cfg.PerSlotPasswords = true
+	if v := os.Getenv("PER_SLOT_PASSWORDS"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		if err != nil {
-			return nil, fmt.Errorf("invalid PASSWORDLESS %q: %w", v, err)
+			return nil, fmt.Errorf("invalid PER_SLOT_PASSWORDS %q: %w", v, err)
 		}
-		cfg.Passwordless = enabled
+		cfg.PerSlotPasswords = enabled
 	}
 	if v := os.Getenv("LOKI_ENDPOINT"); v != "" {
 		cfg.LokiEndpoint = v

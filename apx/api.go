@@ -41,13 +41,15 @@ type RoomStore struct {
 }
 
 type RoomRecord struct {
-	LobbyRoomId  string
-	ApRoomId     string
-	NormalPort   int
-	ReducedPort  int
-	CreatedAt    time.Time
-	Disabled     bool
-	Passwordless bool
+	LobbyRoomId       string
+	ApRoomId          string
+	NormalId          int
+	ReducedId         int
+	CreatedAt         time.Time
+	Disabled          bool
+	PerSlotPasswords  bool
+	DeathlinkDisabled bool
+	ReducedAccess     bool
 }
 
 type RoomManager struct {
@@ -66,13 +68,15 @@ func NewRoomStore(path string) (*RoomStore, error) {
 	}
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS rooms (
-				lobby_room_id  TEXT PRIMARY KEY,
-				ap_room_id     TEXT NOT NULL,
-				normal_port    INTEGER NOT NULL,
-				reduced_port   INTEGER NOT NULL,
-				created_at     INTEGER NOT NULL,
-				disabled       INTEGER NOT NULL DEFAULT 0,
-				passwordless   INTEGER NOT NULL DEFAULT 0
+				lobby_room_id        TEXT PRIMARY KEY,
+				ap_room_id           TEXT NOT NULL,
+				normal_port          INTEGER NOT NULL,
+				reduced_port         INTEGER NOT NULL,
+				created_at           INTEGER NOT NULL,
+				disabled             INTEGER NOT NULL DEFAULT 0,
+				per_slot_passwords   INTEGER NOT NULL DEFAULT 0,
+				deathlink_disabled   INTEGER NOT NULL DEFAULT 0,
+				reduced_access       INTEGER NOT NULL DEFAULT 0
 		);
 	`); err != nil {
 		return nil, fmt.Errorf("creating table: %w", err)
@@ -87,14 +91,16 @@ func (s *RoomStore) Disable(lobbyRoomId string) error {
 
 func (s *RoomStore) Save(r RoomRecord) error {
 	_, err := s.db.Exec(`
-			INSERT INTO rooms (lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, passwordless)
-			VALUES (?, ?, ?, ?, ?, ?)
+			INSERT INTO rooms (lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(lobby_room_id) DO UPDATE SET
-					ap_room_id   = excluded.ap_room_id,
-					normal_port  = excluded.normal_port,
-					reduced_port = excluded.reduced_port,
-					passwordless = excluded.passwordless
-	`, r.LobbyRoomId, r.ApRoomId, r.NormalPort, r.ReducedPort, r.CreatedAt.Unix(), r.Passwordless)
+					ap_room_id         = excluded.ap_room_id,
+					normal_port        = excluded.normal_port,
+					reduced_port       = excluded.reduced_port,
+					per_slot_passwords = excluded.per_slot_passwords,
+					deathlink_disabled = excluded.deathlink_disabled,
+					reduced_access     = excluded.reduced_access
+	`, r.LobbyRoomId, r.ApRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(), r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess)
 	return err
 }
 
@@ -106,11 +112,11 @@ func (s *RoomStore) Delete(lobbyRoomId string) error {
 func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
 	var r RoomRecord
 	var ts int64
-	var passwordless int
+	var perSlotPasswords, deathlinkDisabled, reducedAccess int
 	err := s.db.QueryRow(
-		`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, disabled, passwordless FROM rooms WHERE lobby_room_id = ?`,
+		`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, disabled, per_slot_passwords, deathlink_disabled, reduced_access FROM rooms WHERE lobby_room_id = ?`,
 		lobbyRoomId,
-	).Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalPort, &r.ReducedPort, &ts, &r.Disabled, &passwordless)
+	).Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalId, &r.ReducedId, &ts, &r.Disabled, &perSlotPasswords, &deathlinkDisabled, &reducedAccess)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -118,12 +124,14 @@ func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
 		return nil, err
 	}
 	r.CreatedAt = time.Unix(ts, 0)
-	r.Passwordless = passwordless == 1
+	r.PerSlotPasswords = perSlotPasswords == 1
+	r.DeathlinkDisabled = deathlinkDisabled == 1
+	r.ReducedAccess = reducedAccess == 1
 	return &r, nil
 }
 
 func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
-	rows, err := s.db.Query(`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, passwordless FROM rooms WHERE disabled = 0`)
+	rows, err := s.db.Query(`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access FROM rooms WHERE disabled = 0`)
 	if err != nil {
 		return nil, err
 	}
@@ -133,12 +141,14 @@ func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 	for rows.Next() {
 		var r RoomRecord
 		var ts int64
-		var passwordless int
-		if err := rows.Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalPort, &r.ReducedPort, &ts, &passwordless); err != nil {
+		var perSlotPasswords, deathlinkDisabled, reducedAccess int
+		if err := rows.Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalId, &r.ReducedId, &ts, &perSlotPasswords, &deathlinkDisabled, &reducedAccess); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.Unix(ts, 0)
-		r.Passwordless = passwordless == 1
+		r.PerSlotPasswords = perSlotPasswords == 1
+		r.DeathlinkDisabled = deathlinkDisabled == 1
+		r.ReducedAccess = reducedAccess == 1
 		records = append(records, r)
 	}
 	return records, rows.Err()
@@ -227,18 +237,21 @@ func newCheckedLocations() CheckedLocations {
 }
 
 type ApxRoomInfo struct {
-	LobbyRoomId string `json:"lobby_room_id"`
-	ApRoomId    string `json:"ap_room_id"`
-	NormalId    int    `json:"normal_id"`
-	ReducedId   int    `json:"reduced_id"`
-	Disabled    bool   `json:"disabled"`
+	LobbyRoomId       string `json:"lobby_room_id"`
+	ApRoomId          string `json:"ap_room_id"`
+	NormalId          int    `json:"normal_id"`
+	ReducedId         int    `json:"reduced_id"`
+	Disabled          bool   `json:"disabled"`
+	PerSlotPasswords  bool   `json:"per_slot_passwords"`
+	DeathlinkDisabled bool   `json:"deathlink_disabled"`
+	ReducedAccess     bool   `json:"reduced_access"`
 }
 
 // e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
 type HostedRoom struct {
 	lastActivity         *atomic.Int64
 	lobbyRoomId          string
-	apx                  *apxServer
+	apx                  *ApxRoom
 	spheres              Spheres
 	locationIdToName     map[string]map[int]string
 	checkedLocations     *CheckedLocations
@@ -249,6 +262,8 @@ type HostedRoom struct {
 	reducedHandler       *apxHandler
 	ctx                  context.Context
 	cancel               context.CancelFunc
+	deathlinkDisabled    bool
+	reducedAccess        bool
 }
 
 type Deathlink struct {
@@ -358,7 +373,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 	for _, record := range records {
-		_, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalPort, &record.ReducedPort, record.Passwordless, true)
+		_, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalId, &record.ReducedId,
+			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, true)
 		if err != nil {
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
 		}
@@ -398,11 +414,14 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	result := make([]ApxRoomInfo, 0, len(rooms))
 	for _, room := range rooms {
 		result = append(result, ApxRoomInfo{
-			LobbyRoomId: room.lobbyRoomId,
-			ApRoomId:    room.apRoomId,
-			NormalId:    room.normalHandler.id,
-			ReducedId:   room.reducedHandler.id,
-			Disabled:    false,
+			LobbyRoomId:       room.lobbyRoomId,
+			ApRoomId:          room.apRoomId,
+			NormalId:          room.normalHandler.id,
+			ReducedId:         room.reducedHandler.id,
+			Disabled:          false,
+			PerSlotPasswords:  room.apx.perSlotPasswords,
+			DeathlinkDisabled: room.deathlinkDisabled,
+			ReducedAccess:     room.reducedAccess,
 		})
 	}
 
@@ -430,23 +449,39 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if room, ok := rm.registry.Get(roomId); ok {
+		log.Printf("handleRoomStatus: running room %s psp=%v dd=%v ra=%v",
+			room.lobbyRoomId, room.apx.perSlotPasswords, room.deathlinkDisabled, room.reducedAccess)
 		json.NewEncoder(w).Encode(ApxRoomInfo{
-			LobbyRoomId: room.lobbyRoomId,
-			ApRoomId:    room.apRoomId,
-			NormalId:    room.normalHandler.id,
-			ReducedId:   room.reducedHandler.id,
-			Disabled:    false,
+			LobbyRoomId:       room.lobbyRoomId,
+			ApRoomId:          room.apRoomId,
+			NormalId:          room.normalHandler.id,
+			ReducedId:         room.reducedHandler.id,
+			Disabled:          false,
+			PerSlotPasswords:  room.apx.perSlotPasswords,
+			DeathlinkDisabled: room.deathlinkDisabled,
+			ReducedAccess:     room.reducedAccess,
 		})
 		return
 	}
 
+	log.Printf("handleRoomStatus: disabled record %s psp=%v dd=%v ra=%v",
+		record.LobbyRoomId, record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess)
 	json.NewEncoder(w).Encode(ApxRoomInfo{
-		LobbyRoomId: record.LobbyRoomId,
-		ApRoomId:    record.ApRoomId,
-		NormalId:    0,
-		ReducedId:   0,
-		Disabled:    true,
+		LobbyRoomId:       record.LobbyRoomId,
+		ApRoomId:          record.ApRoomId,
+		NormalId:          0,
+		ReducedId:         0,
+		Disabled:          true,
+		PerSlotPasswords:  record.PerSlotPasswords,
+		DeathlinkDisabled: record.DeathlinkDisabled,
+		ReducedAccess:     record.ReducedAccess,
 	})
+}
+
+type roomStartRequest struct {
+	PerSlotPasswords  *bool `json:"per_slot_passwords"`
+	DeathlinkDisabled *bool `json:"deathlink_disabled"`
+	ReducedAccess     *bool `json:"reduced_access"`
 }
 
 func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +509,26 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var startReq roomStartRequest
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&startReq); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+			return
+		}
+	}
+
+	// Update room's apx config from json body
+	if startReq.PerSlotPasswords != nil {
+		record.PerSlotPasswords = *startReq.PerSlotPasswords
+	}
+	if startReq.DeathlinkDisabled != nil {
+		record.DeathlinkDisabled = *startReq.DeathlinkDisabled
+	}
+	if startReq.ReducedAccess != nil {
+		record.ReducedAccess = *startReq.ReducedAccess
+	}
+
 	// Re-enable in DB if it was disabled
 	if record.Disabled {
 		if _, err := rm.store.db.Exec(`UPDATE rooms SET disabled = 0 WHERE lobby_room_id = ?`, roomId); err != nil {
@@ -494,8 +549,8 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Poll for the backing AP room to come online (15s timeout, 3s interval)
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// Poll for the backing AP room to come online (30s timeout, 3s interval)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	var apPort int
@@ -514,7 +569,8 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = apPort
 
-	room, err := rm.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalPort, &record.ReducedPort, record.Passwordless, true)
+	room, err := rm.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalId, &record.ReducedId,
+		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
@@ -595,14 +651,18 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 }
 
 type uploadRoomRequest struct {
-	LobbyRoomId  string
-	Passwordless bool
+	LobbyRoomId       string
+	PerSlotPasswords  bool
+	DeathlinkDisabled bool
+	ReducedAccess     bool
 }
 
 func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 	return uploadRoomRequest{
-		LobbyRoomId:  r.FormValue("lobby_room_id"),
-		Passwordless: r.FormValue("passwordless") != "false",
+		LobbyRoomId:       r.FormValue("lobby_room_id"),
+		PerSlotPasswords:  r.FormValue("per_slot_passwords") != "false",
+		DeathlinkDisabled: r.FormValue("deathlink_disabled") == "true",
+		ReducedAccess:     r.FormValue("reduced_access") == "true",
 	}
 }
 
@@ -690,7 +750,8 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		lobbyRoomId = apResult.RoomID
 	}
 
-	room, err := rm.startNewHostedRoom(apResult.RoomID, lobbyRoomId, nil, nil, uploadReq.Passwordless, true)
+	room, err := rm.startNewHostedRoom(apResult.RoomID, lobbyRoomId, nil, nil,
+		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
@@ -707,7 +768,9 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalIdPtr, reducedIdPtr *int, passwordless bool, save bool) (*HostedRoom, error) {
+func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalIdPtr, reducedIdPtr *int,
+	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, save bool) (*HostedRoom, error) {
+
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
 		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
@@ -727,7 +790,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	if err != nil {
 		return nil, fmt.Errorf("failed to get RoomInfo from AP server, aborting: %w", err)
 	}
-	if passwordless != true {
+	if perSlotPasswords == true {
 		roomInfo.Password = true
 	}
 
@@ -742,7 +805,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	datapackageCache := newDataPackageStore(true) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
-	if passwordless != true {
+	if perSlotPasswords == true {
 		slots, err := fetchSlotPasswords(rm.config, lobbyRoomId)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch slot passwords: %w", err)
@@ -757,23 +820,35 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().Unix())
 
-	apx := &apxServer{
-		lastActivity: &lastActivity,
-		logf:         log.Printf,
-		config:       rm.config,
-		roomInfo:     *roomInfo,
-		roomPlayers:  roomPlayers,
-		passwords:    passwordStore,
-		fullFeed:     fullFeedStore,
-		connections:  connRegistry,
-		bounceInfo:   bounceInfo,
-		datapackages: datapackageCache,
-		metrics:      rm.metrics,
-		lobbyRoomId:  lobbyRoomId,
-		apPort:       apPort,
-		debugTap:     debugTap,
-		lokiLogger:   lokiLogger,
-		passwordless: passwordless,
+	// Room config options
+	if deathlinkDisabled {
+		bounceInfo.deathlinkProbability = 0
+	}
+
+	if !reducedAccess {
+		for slotId := range roomPlayers.slots {
+			fullFeedStore.Set(slotId)
+		}
+	}
+
+	// Create APX room
+	apx := &ApxRoom{
+		lastActivity:     &lastActivity,
+		logf:             log.Printf,
+		config:           rm.config,
+		roomInfo:         *roomInfo,
+		roomPlayers:      roomPlayers,
+		passwords:        passwordStore,
+		fullFeed:         fullFeedStore,
+		connections:      connRegistry,
+		bounceInfo:       bounceInfo,
+		datapackages:     datapackageCache,
+		metrics:          rm.metrics,
+		lobbyRoomId:      lobbyRoomId,
+		apPort:           apPort,
+		debugTap:         debugTap,
+		lokiLogger:       lokiLogger,
+		perSlotPasswords: perSlotPasswords,
 	}
 
 	if err := apx.prefetchDataPackages(context.Background()); err != nil {
@@ -794,6 +869,8 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		checkedLocations:     &checkedLocs,
 		ctx:                  ctx,
 		cancel:               cancel,
+		deathlinkDisabled:    deathlinkDisabled,
+		reducedAccess:        reducedAccess,
 	}
 
 	if err := room.refreshCheckedLocations(rm.config.ApApiRoot, apRoomId); err != nil {
@@ -830,15 +907,17 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
 	}
 
-	// We can run APX temporarily without a lobby using the env vars, so ignore those
+	// We can run APX temporarily without a lobby using the env vars, so ignore if save not specified
 	if save {
 		if err := rm.store.Save(RoomRecord{
-			LobbyRoomId:  lobbyRoomId,
-			ApRoomId:     apRoomId,
-			NormalPort:   room.normalHandler.id,
-			ReducedPort:  room.reducedHandler.id,
-			Passwordless: passwordless,
-			CreatedAt:    time.Now(),
+			LobbyRoomId:       lobbyRoomId,
+			ApRoomId:          apRoomId,
+			NormalId:          room.normalHandler.id,
+			ReducedId:         room.reducedHandler.id,
+			CreatedAt:         time.Now(),
+			PerSlotPasswords:  perSlotPasswords,
+			DeathlinkDisabled: deathlinkDisabled,
+			ReducedAccess:     reducedAccess,
 		}); err != nil {
 			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
 		}

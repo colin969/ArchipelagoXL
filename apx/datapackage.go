@@ -98,7 +98,7 @@ func (ds *DataPackageStore) AddDataPackage(game string, gd GameData) error {
 
 // MUST be called before server is live to other users. CANNOT be called safely after.
 // TODO: This should really be optimized to not open a conn for each
-func (s apxServer) prefetchDataPackages(ctx context.Context) error {
+func (s ApxRoom) prefetchDataPackages(ctx context.Context) error {
 	for game := range s.roomInfo.DatapackageChecksums {
 		if _, ok := s.datapackages.packages[game]; ok {
 			continue // already cached
@@ -122,7 +122,7 @@ func (s apxServer) prefetchDataPackages(ctx context.Context) error {
 	return nil
 }
 
-func (s apxServer) handleGetDataPackage(ctx context.Context, connState *connectionState, raw map[string]any) error {
+func (s ApxRoom) handleGetDataPackage(ctx context.Context, connState *connectionState, raw map[string]any) error {
 	// We only need 1 field, no point re and unmarshaling just for the struct
 	var requestedGames []string
 	if gamesList, ok := raw["games"].([]any); ok {
@@ -175,7 +175,7 @@ func (s apxServer) handleGetDataPackage(ctx context.Context, connState *connecti
 }
 
 // Grab datapackage from AP server and cache locally so we can provide it to clients ourselves
-func (s apxServer) fetchDataPackageFromAPServer(ctx context.Context, game string) (GameData, error) {
+func (s ApxRoom) fetchDataPackageFromAPServer(ctx context.Context, game string) (GameData, error) {
 	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, s.apPort), nil)
 	if err != nil {
 		return GameData{}, fmt.Errorf("dialing upstream: %w", err)
@@ -221,7 +221,7 @@ func (s apxServer) fetchDataPackageFromAPServer(ctx context.Context, game string
 }
 
 // Stitch together to avoid doing any json ops on the already encoded datapackage
-func (s apxServer) sendDataPackages(ctx context.Context, client *websocket.Conn, games []string) error {
+func (s ApxRoom) sendDataPackages(ctx context.Context, client *websocket.Conn, games []string) error {
 	if s.datapackages.singleRepOptimization {
 		if len(games) == 1 {
 			raw, ok := s.datapackages.singleResponses[games[0]]

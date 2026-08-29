@@ -21,7 +21,7 @@ type PrintJSONPeek struct {
 	Type      string `json:"type"`
 }
 
-func (s apxServer) handleAuthedConnect(ctx context.Context, connState *connectionState, raw map[string]any) error {
+func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionState, raw map[string]any) error {
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return fmt.Errorf("marshalling connect message: %w", err)
@@ -61,7 +61,7 @@ func (s apxServer) handleAuthedConnect(ctx context.Context, connState *connectio
 	return nil
 }
 
-func (s apxServer) handleConnect(ctx context.Context, connState *connectionState, raw map[string]any) error {
+func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, raw map[string]any) error {
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return fmt.Errorf("marshalling connect message: %w", err)
@@ -117,7 +117,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 		}
 	}
 
-	if s.passwordless != true {
+	if s.perSlotPasswords == true {
 		password, ok := s.passwords.Get(slotEntry[1])
 		if !(ok && msg.Password != nil && password == *msg.Password) {
 			errorMsg := ConnectionRefusedMessage{
@@ -188,7 +188,7 @@ func (s apxServer) handleConnect(ctx context.Context, connState *connectionState
 	return nil
 }
 
-func (s apxServer) handleSay(ctx context.Context, connState *connectionState, raw map[string]any) error {
+func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw map[string]any) error {
 	// Only need 1 field, don't bother re and unmarshaling for struct
 	if text, ok := raw["text"].(string); ok && text != "" {
 		trimmed := strings.ToLower(strings.TrimSpace(text))
@@ -209,7 +209,7 @@ func (s apxServer) handleSay(ctx context.Context, connState *connectionState, ra
 	return nil
 }
 
-func (s apxServer) handleConnectUpdate(ctx context.Context, connState *connectionState, raw map[string]any) error {
+func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionState, raw map[string]any) error {
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return fmt.Errorf("marshalling connectupdate message: %w", err)
@@ -228,7 +228,7 @@ func (s apxServer) handleConnectUpdate(ctx context.Context, connState *connectio
 	return nil
 }
 
-func (s apxServer) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage, apPort int) (*websocket.Conn, int, *string, error) {
+func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage, apPort int) (*websocket.Conn, int, *string, error) {
 	// Fix password when talking to ap server (only needed when using per-slot passwords)
 	if s.config.LobbyEnabled {
 		if s.roomInfo.Password {

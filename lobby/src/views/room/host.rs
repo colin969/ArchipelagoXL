@@ -1,6 +1,7 @@
 use askama::Template;
 use askama_web::WebTemplate;
-use rocket::State;
+use rocket::{FromForm, State};
+use rocket::form::Form;
 
 use crate::{Context, LobbyConfig, TplContext, db::{self, Generation, GenerationStatus, Room, RoomId}, session::LoggedInSession};
 use crate::error::Result;
@@ -12,6 +13,9 @@ pub struct ApxRoomInfo {
     pub normal_id: u16,
     pub reduced_id: u16,
     pub disabled: bool,
+    pub per_slot_passwords: bool,
+    pub deathlink_disabled: bool,
+    pub reduced_access: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -21,6 +25,9 @@ pub struct ApxRoomInfoDisplay {
     pub normal_addr: String,
     pub reduced_addr: String,
     pub disabled: bool,
+    pub per_slot_passwords: bool,
+    pub deathlink_disabled: bool,
+    pub reduced_access: bool,
 }
 
 #[derive(Template, WebTemplate)]
@@ -66,6 +73,9 @@ async fn host_room<'a>(
         normal_addr: format!("ap{}.{}", info.normal_id, lobby_config.apx_ws_root),
         reduced_addr: format!("ap{}.{}", info.reduced_id, lobby_config.apx_ws_root),
         disabled: info.disabled,
+        per_slot_passwords: info.per_slot_passwords,
+        deathlink_disabled: info.deathlink_disabled,
+        reduced_access: info.reduced_access,
     });
 
 
@@ -78,14 +88,22 @@ async fn host_room<'a>(
     })
 }
 
-#[rocket::get("/room/<room_id>/host/start")]
-#[tracing::instrument(skip(session, ctx, lobby_config, generation_out_dir))]
+#[derive(FromForm)]
+pub struct HostStartForm {
+    pub per_slot_passwords: Option<bool>,
+    pub deathlink_disabled: Option<bool>,
+    pub reduced_access: Option<bool>,
+}
+
+#[rocket::post("/room/<room_id>/host/start", data = "<form>")]
+#[tracing::instrument(skip(session, ctx, lobby_config, generation_out_dir, form))]
 async fn host_room_start(
     room_id: RoomId,
     session: LoggedInSession,
     ctx: &State<Context>,
     lobby_config: &State<LobbyConfig>,
     generation_out_dir: &State<crate::jobs::GenerationOutDir>,
+    form: Form<HostStartForm>,
 ) -> Result<rocket::response::Redirect> {
     let mut conn = ctx.db_pool.get().await?;
     let room = db::get_room(room_id, &mut conn).await?;
@@ -94,6 +112,10 @@ async fn host_room_start(
     if !is_my_room {
         Err(anyhow::anyhow!("Cannot host a room that isn't yours"))?
     }
+
+    let per_slot_passwords = form.per_slot_passwords.unwrap_or(false);
+    let deathlink_disabled = form.deathlink_disabled.unwrap_or(false);
+    let reduced_access = form.reduced_access.unwrap_or(false);
 
     let client = reqwest::Client::new();
 
@@ -104,6 +126,11 @@ async fn host_room_start(
         let resp = client
             .post(format!("{}/api/room/{}/start", lobby_config.apx_root, room_id))
             .header("X-API-Key", &lobby_config.apx_api_key)
+            .json(&serde_json::json!({
+                "per_slot_passwords": per_slot_passwords,
+                "deathlink_disabled": deathlink_disabled,
+                "reduced_access": reduced_access,
+            }))
             .send()
             .await?;
 
@@ -144,16 +171,18 @@ async fn host_room_start(
     let part = reqwest::multipart::Part::bytes(file_bytes)
         .file_name(filename)
         .mime_str("application/zip")?;
-    let form = reqwest::multipart::Form::new()
+    let multipart = reqwest::multipart::Form::new()
         .part("file", part)
         .text("lobby_room_id", room.id.to_string())
-        .text("passwordless", "true");
+        .text("per_slot_passwords", per_slot_passwords.to_string())
+        .text("deathlink_disabled", deathlink_disabled.to_string())
+        .text("reduced_access", reduced_access.to_string());
 
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{}/api/room", lobby_config.apx_root))
         .header("X-API-Key", &lobby_config.apx_api_key)
-        .multipart(form)
+        .multipart(multipart)
         .send()
         .await?;
 

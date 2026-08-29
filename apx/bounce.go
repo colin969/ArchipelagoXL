@@ -31,7 +31,7 @@ func newBounceInfoStore() *bounceInfoStore {
 	return &bounceInfoStore{
 		counts: make(map[int]int),
 		// Default off
-		deathlinkProbability: 0,
+		deathlinkProbability: 1,
 		excluded:             make(map[int]map[string]struct{}),
 		// Why is Sub a duration by Add a time?
 		lastDeathlink: time.Now().Add(-deathlinkThrottle),
@@ -115,7 +115,7 @@ func (ds *bounceInfoStore) Add(slotId int) {
 	ds.counts[slotId]++
 }
 
-func (s apxServer) handleBounce(ctx context.Context, connState *connectionState, raw map[string]any) error {
+func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, raw map[string]any) error {
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return fmt.Errorf("marshalling bounce message: %w", err)
@@ -146,7 +146,7 @@ func (s apxServer) handleBounce(ctx context.Context, connState *connectionState,
 	return nil
 }
 
-func (s apxServer) handleDeathLink(ctx context.Context, connState *connectionState, msg BounceMessage) error {
+func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState, msg BounceMessage) error {
 	// Validate this is a valid packet. Some apworlds send bad packets, some can't handle being sent bad packets.
 	data, err := json.Marshal(msg.Data)
 	if err != nil {

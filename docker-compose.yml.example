@@ -175,7 +175,7 @@ services:
       AP_ADMIN_API_KEY: "ap_changeme"
       TLS_CERT_FILE: ""
       TLS_KEY_FILE: ""
-      PASSWORDLESS: false
+      PER_SLOT_PASSWORDS: false
       LOKI_ENDPOINT: "http://loki:3100"
       GOEXPERIMENT: "jsonv2"
     env_file:

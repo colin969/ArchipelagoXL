@@ -92,23 +92,23 @@ func newDebugTap(slotCount int) *debugTap {
 	return &debugTap{slots: make([]debugTapSlot, slotCount+1)}
 }
 
-type apxServer struct {
-	passwordless bool
-	lastActivity *atomic.Int64
-	logf         func(f string, v ...any)
-	config       *Config
-	roomInfo     RoomInfoMessage
-	roomPlayers  *RoomPlayers // Immutable
-	passwords    *passwordStore
-	fullFeed     *fullFeedStore
-	bounceInfo   *bounceInfoStore
-	connections  *connectionRegistry
-	datapackages *DataPackageStore
-	metrics      *metrics
-	lobbyRoomId  string
-	apPort       int
-	debugTap     *debugTap
-	lokiLogger   *LokiLogger
+type ApxRoom struct {
+	perSlotPasswords bool
+	lastActivity     *atomic.Int64
+	logf             func(f string, v ...any)
+	config           *Config
+	roomInfo         RoomInfoMessage
+	roomPlayers      *RoomPlayers // Immutable
+	passwords        *passwordStore
+	fullFeed         *fullFeedStore
+	bounceInfo       *bounceInfoStore
+	connections      *connectionRegistry
+	datapackages     *DataPackageStore
+	metrics          *metrics
+	lobbyRoomId      string
+	apPort           int
+	debugTap         *debugTap
+	lokiLogger       *LokiLogger
 }
 
 // No strict lock, but this MUST be immutable to be safe
@@ -299,7 +299,7 @@ const (
 )
 
 type apxHandler struct {
-	server  *apxServer
+	server  *ApxRoom
 	reduced bool
 	id      int
 }
@@ -309,7 +309,7 @@ func (h apxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.server.serveConn(w, r, h.reduced)
 }
 
-func (s apxServer) serveConn(w http.ResponseWriter, r *http.Request, reduced bool) {
+func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Adds about 32mb memory usage per 1k connections, debatble CPU usage
 		CompressionMode:    websocket.CompressionContextTakeover,
@@ -393,7 +393,7 @@ func (s apxServer) serveConn(w http.ResponseWriter, r *http.Request, reduced boo
 	}
 }
 
-func (s apxServer) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw map[string]any) error {
+func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw map[string]any) error {
 	// Shovel logs to any debug listeners
 	if connState.authenticated && s.debugTap != nil && s.debugTap.HasListeners(connState.registeredClient.slotId) {
 		if raw, err := json.Marshal(raw); err == nil {
