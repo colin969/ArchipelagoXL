@@ -519,7 +519,7 @@ function refreshSphere1ToPing() {
         button.innerHTML = '<i class="fa-solid fa-copy"></i>';
         button.onclick = function () {
             navigator.clipboard.writeText(
-                mentions + " you have not completed your sphere 1 checks. If you're reading this I haven't bothered to update the text for this yet."
+                mentions + " you have checks you haven’t done that have been available since the start, please do them :)"
             );
         };
         li.appendChild(button);

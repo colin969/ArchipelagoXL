@@ -463,6 +463,10 @@ async function showYamlModal(yamlId) {
     const viewerDiv = h("div", { className: "yaml-viewer" }, h("pre", null, codeEl));
 
     const titleActions = [];
+    const hasIssues = yaml.results.some(r => (r.outcome === "fail" || r.outcome === "error") && r.severity !== "info");
+    if (hasIssues) {
+        titleActions.push(h("button", { className: "small", onclick: () => copyIssues(yaml) }, "Copy issues"));
+    }
     if (!IS_LOCKED && CAN_EDIT) {
         titleActions.push(h("button", { className: "small accent", onclick: () => enterEditMode(yamlId) }, "Edit"));
         titleActions.push(h("button", { className: "small danger", onclick: () => confirmDeleteYaml(yamlId) }, "Delete"));
@@ -813,6 +817,34 @@ async function onStatusChange(sel) {
     } finally {
         for (const s of allSelects) s.disabled = false;
     }
+}
+
+const SEVERITY_LABELS = {
+    error: "Required",
+    warning: "Suggested",
+};
+
+function copyIssues(yaml) {
+    const lines = yaml.results
+        .filter(r => (r.outcome === "fail" || r.outcome === "error") && r.severity !== "info")
+        .map(r => {
+            const severity = SEVERITY_LABELS[r.severity] ?? r.severity;
+            const parts = [`[${severity}] ${r.rule_name}`];
+            if (r.detail) parts.push(`: ${r.detail}`);
+            return parts.join("");
+        });
+
+    if (lines.length === 0) {
+        showToast("No issues to copy");
+        return;
+    }
+
+    const mention = yaml.discord_id ? `<@${yaml.discord_id}>` : 'Unknown User';
+    const text = [mention, ...lines].join("\n");
+
+    navigator.clipboard.writeText(text)
+        .then(() => showToast(`Copied ${lines.length} issue(s)`, "info"))
+        .catch(() => showToast("Failed to copy to clipboard"));
 }
 
 document.getElementById("yaml-modal").addEventListener("close", () => {
