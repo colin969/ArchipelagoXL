@@ -12,7 +12,7 @@ use crate::utils::{NamedBuf, ZipFile};
 use crate::views::api;
 use crate::views::filters;
 use crate::yaml::{compute_ap_slot_names, YamlValidationResult};
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 use askama::Template;
 use askama_web::WebTemplate;
 use diesel_async::scoped_futures::ScopedFutureExt;
@@ -119,7 +119,14 @@ pub async fn room<'a>(
     };
 
     Ok(RoomTpl {
-        base: TplContext::from_session("room", session, ctx, lobby_config, Some(room.settings.name.clone())).await,
+        base: TplContext::from_session(
+            "room",
+            session,
+            ctx,
+            lobby_config,
+            Some(room.settings.name.clone()),
+        )
+        .await,
         player_count: yamls.len(),
         unique_player_count,
         unique_game_count,

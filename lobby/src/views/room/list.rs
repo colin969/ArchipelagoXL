@@ -6,7 +6,7 @@ use askama_web::WebTemplate;
 use rocket::get;
 use rocket::State;
 
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "room/list.html")]
@@ -42,7 +42,14 @@ async fn my_rooms<'a>(
     .await?;
 
     Ok(ListRoomsTpl {
-        base: TplContext::from_session("rooms", session.0, ctx, lobby_config, Some("All Rooms".to_string())).await,
+        base: TplContext::from_session(
+            "rooms",
+            session.0,
+            ctx,
+            lobby_config,
+            Some("All Rooms".to_string()),
+        )
+        .await,
         rooms,
         current_page,
         max_pages,

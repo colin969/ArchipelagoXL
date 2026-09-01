@@ -60,7 +60,7 @@ pub struct Context {
 
 #[derive(Debug, Clone)]
 pub struct LobbyConfig {
-    admin_rooms_only: bool
+    admin_rooms_only: bool,
 }
 
 const CSS_VERSION: &str = std::env!("CSS_VERSION");
@@ -81,7 +81,13 @@ pub struct TplContext<'a> {
 }
 
 impl<'a> TplContext<'a> {
-    pub async fn from_session(module: &'a str, session: Session, ctx: &Context, lobby_config: &LobbyConfig, page_title: Option<String>) -> Self {
+    pub async fn from_session(
+        module: &'a str,
+        session: Session,
+        ctx: &Context,
+        lobby_config: &LobbyConfig,
+        page_title: Option<String>,
+    ) -> Self {
         Self {
             cur_module: module,
             is_admin: session.is_admin,
@@ -171,9 +177,7 @@ fn get_lobby_config() -> LobbyConfig {
         .map(|v| matches!(v.to_lowercase().as_str(), "true"))
         .unwrap_or(false);
 
-    return LobbyConfig {
-        admin_rooms_only
-    }
+    LobbyConfig { admin_rooms_only }
 }
 
 #[rocket::main]

@@ -32,7 +32,7 @@ use wq::{JobId, JobStatus};
 
 use crate::error::Result;
 use crate::utils::RenamedFile;
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "room/gen.html")]
@@ -65,7 +65,14 @@ async fn gen_room<'a>(
     let current_gen = db::get_generation_for_room(room_id, &mut conn).await?;
 
     Ok(GenRoomTpl {
-        base: TplContext::from_session("room", session.0, ctx, lobby_config, Some(format!("{} - Generation", room.settings.name))).await,
+        base: TplContext::from_session(
+            "room",
+            session.0,
+            ctx,
+            lobby_config,
+            Some(format!("{} - Generation", room.settings.name)),
+        )
+        .await,
         generation_checklist,
         room,
         current_gen,

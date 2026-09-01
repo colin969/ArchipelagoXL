@@ -22,7 +22,7 @@ use crate::index_manager::IndexManager;
 use crate::session::{AdminSession, LoggedInSession};
 use crate::utils::{RenamedFile, ZipFile};
 use crate::views::filters;
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "apworld/main.html")]
@@ -47,7 +47,14 @@ async fn list_worlds<'a>(
     apworlds.sort_by_key(|(_, (world, _))| world.display_name.to_lowercase());
 
     Ok(WorldsListTpl {
-        base: TplContext::from_session("apworlds", session, ctx, lobby_config, Some("Apworlds".to_string())).await,
+        base: TplContext::from_session(
+            "apworlds",
+            session,
+            ctx,
+            lobby_config,
+            Some("Apworlds".to_string()),
+        )
+        .await,
         index,
         apworlds,
     })

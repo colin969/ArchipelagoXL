@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::db::{self, Room, RoomFilter};
 use crate::error::Result;
 use crate::session::Session;
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 use askama::Template;
 use askama_web::WebTemplate;
 use diesel::IntoSql;
@@ -138,7 +138,14 @@ async fn help<'a>(
     lobby_config: &State<LobbyConfig>,
 ) -> Result<HelpTpl<'a>> {
     Ok(HelpTpl {
-        base: TplContext::from_session("index", session, ctx, lobby_config, Some("Help".to_string())).await,
+        base: TplContext::from_session(
+            "index",
+            session,
+            ctx,
+            lobby_config,
+            Some("Help".to_string()),
+        )
+        .await,
     })
 }
 
