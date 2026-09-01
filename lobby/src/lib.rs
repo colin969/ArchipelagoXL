@@ -104,6 +104,11 @@ impl<'a> TplContext<'a> {
             ),
         }
     }
+
+    /// Whether this session may reach the room creation form.
+    pub fn can_create_room(&self) -> bool {
+        !self.admin_rooms_only || self.is_admin
+    }
 }
 
 #[catch(401)]
