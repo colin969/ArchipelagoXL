@@ -171,13 +171,35 @@ impl From<MetricsRoute> for Vec<Route> {
     }
 }
 
-fn get_lobby_config() -> LobbyConfig {
-    let admin_rooms_only = std::env::var("ADMIN_ROOMS_ONLY")
-        .ok()
-        .map(|v| matches!(v.to_lowercase().as_str(), "true"))
-        .unwrap_or(false);
+/// Reads a boolean config option from the environment, falling back to `default`
+/// when it is unset or empty.
+fn env_bool(name: &str, default: bool) -> bool {
+    let value = match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => return default,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            panic!("{name} must be valid UTF-8, got a value that is not")
+        }
+        Ok(value) => value,
+    };
 
-    LobbyConfig { admin_rooms_only }
+    parse_bool(name, &value, default)
+}
+
+/// The value half of [`env_bool`], split out so it is testable without mutating
+/// process-wide environment state.
+fn parse_bool(name: &str, value: &str, default: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => default,
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        other => panic!("{name} must be a boolean (true/false/1/0/yes/no/on/off), got {other:?}"),
+    }
+}
+
+fn get_lobby_config() -> LobbyConfig {
+    LobbyConfig {
+        admin_rooms_only: env_bool("ADMIN_ROOMS_ONLY", false),
+    }
 }
 
 #[rocket::main]
@@ -337,4 +359,34 @@ pub async fn main() -> crate::error::Result<()> {
         .unwrap();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bool;
+
+    #[test]
+    fn parses_the_documented_spellings() {
+        for value in ["true", "TRUE", "True", "1", "yes", "on", " true "] {
+            assert!(parse_bool("TEST", value, false), "{value:?} should be true");
+        }
+        for value in ["false", "FALSE", "0", "no", "off", " false "] {
+            assert!(
+                !parse_bool("TEST", value, true),
+                "{value:?} should be false"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_falls_back_to_the_default() {
+        assert!(parse_bool("TEST", "", true));
+        assert!(!parse_bool("TEST", "  ", false));
+    }
+
+    #[test]
+    #[should_panic(expected = "TEST must be a boolean")]
+    fn an_unrecognized_value_aborts_rather_than_defaulting() {
+        parse_bool("TEST", "ture", false);
+    }
 }
