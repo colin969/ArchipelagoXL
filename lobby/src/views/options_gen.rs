@@ -590,13 +590,13 @@ async fn edit_yaml<'a>(
     };
 
     let index = index_manager.index.read().await;
-    let (apworld_name, latest_version) = index
+    let (apworld_name, latest_version, display_name) = index
         .worlds
         .iter()
         .find(|(_, world)| world.name == game_name)
         .map(|(name, world)| {
             let latest = world.versions.keys().max().unwrap().clone();
-            (name.clone(), latest)
+            (name.clone(), latest, world.display_name.clone())
         })
         .ok_or_else(|| anyhow!("Game '{}' not found", game_name))?;
 
@@ -694,7 +694,14 @@ async fn edit_yaml<'a>(
     };
 
     Ok(OptionsTpl {
-        base: TplContext::from_session("options", session, ctx, lobby_config, None).await,
+        base: TplContext::from_session(
+            "options",
+            session,
+            ctx,
+            lobby_config,
+            Some(format!("Options Generator - {}", display_name)),
+        )
+        .await,
         apworlds,
         versions,
         selected_apworld: Some(apworld_name),
