@@ -1,4 +1,4 @@
-use diesel::prelude::*;
+use diesel::{prelude::*};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use serde::{Deserialize, Serialize, Serializer};
 use uuid::Uuid;
@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 
 use crate::schema::{
     review_preset_rules, review_presets, room_review_config, team_members, team_rooms, teams,
-    yaml_review_notes, yaml_review_status,
+    yaml_review_notes, yaml_review_status, yaml_analysis_status
 };
 
 #[derive(Queryable, Selectable, Serialize, Debug)]
@@ -83,6 +83,29 @@ pub struct UpdatePresetRule {
     pub last_edited_by: Option<i64>,
     pub last_edited_at: Option<DateTime<Utc>>,
     pub last_edited_by_name: Option<String>,
+}
+
+#[derive(Queryable, Selectable, Serialize, Debug)]
+#[diesel(table_name = yaml_analysis_status)]
+pub struct YamlAnalysisStatus {
+    pub room_id: Uuid,
+    pub yaml_id: Uuid,
+    pub status: String,
+    pub success: i32,
+    pub total_checks: i32,
+    pub starting_checks: i32,
+    pub changed_at: DateTime<Utc>,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = yaml_analysis_status)]
+struct NewYamlAnalysisStatus {
+    room_id: Uuid,
+    yaml_id: Uuid,
+    status: String,
+    success: i32,
+    total_checks: i32,
+    starting_checks: i32,
 }
 
 pub async fn list_presets(conn: &mut AsyncPgConnection) -> anyhow::Result<Vec<PresetSummary>> {
@@ -700,4 +723,119 @@ pub async fn list_presets_for_teams(
         .into_iter()
         .map(|(id, name)| PresetSummary { id, name })
         .collect())
+}
+
+pub async fn set_yaml_analysis_status(
+    room_id: Uuid,
+    yaml_id: Uuid,
+    status: &str,
+    success: i32,
+    total_checks: i32,
+    starting_checks: i32,
+    conn: &mut AsyncPgConnection,
+) -> anyhow::Result<YamlAnalysisStatus> {
+    Ok(diesel::insert_into(yaml_analysis_status::table)
+        .values(&NewYamlAnalysisStatus {
+            room_id,
+            yaml_id,
+            status: status.to_string(),
+            success,
+            total_checks,
+            starting_checks,
+        })
+        .on_conflict((yaml_analysis_status::room_id, yaml_analysis_status::yaml_id))
+        .do_update()
+        .set((
+            yaml_analysis_status::status.eq(status),
+            yaml_analysis_status::success.eq(success),
+            yaml_analysis_status::total_checks.eq(total_checks),
+            yaml_analysis_status::starting_checks.eq(starting_checks),
+            yaml_analysis_status::changed_at.eq(diesel::dsl::now),
+        ))
+        .returning(YamlAnalysisStatus::as_returning())
+        .get_result(conn)
+        .await?)
+}
+
+pub async fn get_yaml_analysis_status(
+    room_id: Uuid,
+    yaml_id: Uuid,
+    conn: &mut AsyncPgConnection,
+) -> anyhow::Result<Option<YamlAnalysisStatus>> {
+    Ok(yaml_analysis_status::table
+        .find((room_id, yaml_id))
+        .select(YamlAnalysisStatus::as_select())
+        .get_result(conn)
+        .await
+        .optional()?)
+}
+
+pub async fn get_room_analysis_statuses(
+    room_id: Uuid,
+    conn: &mut AsyncPgConnection,
+) -> anyhow::Result<Vec<YamlAnalysisStatus>> {
+    Ok(yaml_analysis_status::table
+        .filter(yaml_analysis_status::room_id.eq(room_id))
+        .select(YamlAnalysisStatus::as_select())
+        .load(conn)
+        .await?)
+}
+
+pub async fn reset_yaml_analysis_status(
+    room_id: Uuid,
+    yaml_id: Uuid,
+    conn: &mut AsyncPgConnection,
+) -> anyhow::Result<()> {
+    diesel::delete(
+        yaml_analysis_status::table
+            .filter(yaml_analysis_status::room_id.eq(room_id))
+            .filter(yaml_analysis_status::yaml_id.eq(yaml_id)),
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+#[derive(QueryableByName, Debug)]
+pub struct UnanalyzedYamlRow {
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub room_id: Uuid,
+    #[diesel(sql_type = diesel::sql_types::Uuid)]
+    pub yaml_id: Uuid,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub apworlds_json: String,
+}
+
+pub async fn get_unanalyzed_yamls(
+    conn: &mut AsyncPgConnection,
+) -> anyhow::Result<Vec<UnanalyzedYamlRow>> {
+    Ok(diesel::sql_query(
+        "SELECT DISTINCT ON (y.room_id, y.id)
+            y.room_id::uuid,
+            y.id::uuid AS yaml_id,
+            array_to_json(y.apworlds)::text AS apworlds_json
+         FROM yamls y
+         INNER JOIN team_rooms tr ON tr.room_id = y.room_id
+         LEFT JOIN yaml_analysis_status yas
+           ON yas.yaml_id = y.id
+          AND yas.room_id = y.room_id
+         WHERE yas.yaml_id IS NULL",
+    )
+    .load(conn)
+    .await?)
+}
+
+pub async fn get_yaml_apworlds(
+    yaml_id: Uuid,
+    conn: &mut AsyncPgConnection,
+) -> anyhow::Result<String> {
+    let row = diesel::sql_query(
+        "SELECT room_id::uuid, id::uuid AS yaml_id, array_to_json(apworlds)::text AS apworlds_json
+         FROM yamls WHERE id = $1",
+    )
+    .bind::<diesel::sql_types::Uuid, _>(yaml_id)
+    .get_result::<UnanalyzedYamlRow>(conn)
+    .await?;
+
+    Ok(row.apworlds_json)
 }

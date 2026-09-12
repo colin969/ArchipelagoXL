@@ -104,6 +104,29 @@ services:
       lobby:
         condition: service_healthy
 
+  yaml-analyzer:
+    build:
+      dockerfile: taskcluster/docker/ap-worker/Dockerfile
+      context: .
+      args:
+        SRC: /
+        DOCKER_SRC: taskcluster/docker/ap-worker/
+    volumes:
+      - ./ap-worker:/ap/ap-worker/
+      - ./tmp/apworlds_index:/ap/index
+      - ./analysis-fixed-yamls:/ap/analysis-fixed-yamls
+    working_dir: /ap/archipelago
+    user: "${USER_ID}:${GID}"
+    environment:
+      LOBBY_ROOT_URL: http://lobby:8000
+      LOBBY_API_KEY: changeme
+      APTOOLS_ROOT_URL: http://community-ap-tools:8010
+      YAML_ANALYSIS_QUEUE_TOKEN: changeme
+    command: watchexec -w /ap/ap-worker -r /ap/archipelago/.venv/bin/python3 analysis_wq.py /ap/supported_worlds /ap/index/worlds/ /ap/analysis-fixed-yamls
+    depends_on:
+      lobby:
+        condition: service_healthy
+
   generator:
     build:
       dockerfile: taskcluster/docker/ap-worker/Dockerfile
@@ -187,13 +210,14 @@ services:
       - ./apx:/apx
 
   community-ap-tools:
-    build:
-      dockerfile: community-ap-tools/Dockerfile
-      context: .
-      args:
-        SRC: /
-        DOCKER_SRC: community-ap-tools/
+    tty: true
+    build: taskcluster/docker/rust-builder
+    working_dir: /builds/worker/checkout
+    command: sh -c "watchexec -w community-ap-tools -w Cargo.toml -w Cargo.lock -w Rocket.community.toml -w wq -r 'cargo run -p community-ap-tools'"
     environment:
+      CARGO_HOME: /builds/cargo
+      CARGO_TARGET_DIR: /builds/target
+      VALKEY_URL: redis://valkey:6379?protocol=resp3
       LOBBY_ROOT_URL: "http://lobby:8000"
       LOBBY_PUBLIC_URL: "http://localhost:8000" # Used for lobby links in HTML pages
       LOBBY_API_KEY: "changeme"
@@ -202,17 +226,25 @@ services:
       AP_ADMIN_API_KEY: "ap_changeme"
       APX_API_ROOT: "http://apx:9001"
       APX_API_KEY: "changeme"
+      YAML_ANALYSIS_QUEUE_TOKEN: "changeme"
       ROCKET_SECRET_KEY: "changemechangemechangemechangemechangeme1234"
       ROCKET_PORT: "8010"
       ROCKET_ADDRESS: "0.0.0.0"
+    user: "${USER_ID}:${GID}"
     volumes:
-      - ./Rocket.community.toml:/app/Rocket.toml:ro
+      - .:/builds/worker/checkout
+      - ./target:/builds/target
+      - ./cargo:/builds/cargo
     env_file:
       - ./.env.community
     ports:
       - "127.0.0.1:8010:8010"
     depends_on:
+      vol-setup:
+        condition: service_completed_successfully
       postgres:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
 
   prometheus:

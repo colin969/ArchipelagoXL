@@ -199,6 +199,27 @@ pub struct WorkQueue<
 }
 
 impl<
+    P: Serialize + DeserializeOwned + Send + Sync,
+    R: Serialize + DeserializeOwned + Send + Sync + Clone,
+> Clone for WorkQueue<P, R>
+{
+    fn clone(&self) -> Self {
+        Self {
+            queue_key: self.queue_key.clone(),
+            claims_key: self.claims_key.clone(),
+            results_key: self.results_key.clone(),
+            stats_key: self.stats_key.clone(),
+            pool: self.pool.clone(),
+            redis_client: self.redis_client.clone(),
+            reclaim_timeout: self.reclaim_timeout,
+            claim_timeout: self.claim_timeout,
+            result_callback: self.result_callback.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<
         P: Serialize + DeserializeOwned + Send + Sync + 'static,
         R: Serialize + DeserializeOwned + Send + Sync + 'static + Clone,
     > WorkQueue<P, R>

@@ -42,5 +42,5 @@ EOF
 fi
 
 echo "== Starting Community AP Tools =="
-"$DC" up -d --build community-ap-tools
+"$DC" up -d community-ap-tools
 echo "== Community AP Tools are Ready =="

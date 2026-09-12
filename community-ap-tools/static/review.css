@@ -277,7 +277,7 @@ th.sortable:hover { color: #fff; }
 th.sortable .sort-arrow { margin-left: 4px; }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: #1e1e1e; }
-td.issues .has-errors { color: #f66; font-weight: bold; }
+.has-errors { color: #f66; font-weight: bold; }
 td.issues .has-warnings { color: #fc4; }
 td.issues .has-info { color: #6cf; }
 td.issues .zero { color: #555; }

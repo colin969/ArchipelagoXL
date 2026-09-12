@@ -66,9 +66,12 @@ const CHECK_LABELS = {
 const STATUS_TYPES = [["unreviewed", "Unreviewed"], ["reported", "Reported"], ["nok", "NOK"], ["ok", "OK"]];
 
 const SORT_COLUMNS = [
-    ["player", "Player"], ["discord", "Discord"], ["game", "Game"],
+    ["player", "Player"], ["discord", "Discord"], ["game", "Game"], ["checks", "Checks"],
     ["issues", "Issues"], ["status", "Status"], ["created", "Created"],
 ];
+
+const AFTER_ANALYSIS_SORT_COLUMNS = [
+]
 
 let lastEvalData = null;
 let reviewStatuses = {};
@@ -303,6 +306,16 @@ function sortTable() {
 function compareYamls(a, b) {
     const va = getSortValue(a, sortColumn);
     const vb = getSortValue(b, sortColumn);
+
+    // Make sure error is always at the bottom for Checks col sort
+    if (sortColumn === "checks") {
+        const aBottom = va === Infinity;
+        const bBottom = vb === Infinity;
+        if (aBottom && bBottom) return 0;
+        if (aBottom) return 1;
+        if (bBottom) return -1;
+    }
+
     const cmp = typeof va === "number" ? va - vb : va < vb ? -1 : va > vb ? 1 : 0;
     return sortAsc ? cmp : -cmp;
 }
@@ -316,6 +329,12 @@ function getSortValue(yaml, col) {
             const c = countBySeverity(yaml.results);
             return c.error * 10000 + c.warning * 100 + c.info;
         }
+        case "checks": {
+            if (yaml.analysis_status == null || yaml.analysis_status !== "success") {
+                return Infinity; // Always sort to bottom
+            }
+            return yaml.analysis_total_checks ?? Infinity;
+        }
         case "status": {
             const st = reviewStatuses[yaml.yaml_id] || { status: "unreviewed" };
             const order = { nok: 0, unreviewed: 1, reported: 2, ok: 3 };
@@ -323,6 +342,96 @@ function getSortValue(yaml, col) {
         }
         case "created": return yaml.created_at || "";
         default: return 0;
+    }
+}
+
+function renderAnalysisCell(yaml) {
+    // Pending
+    if (yaml.analysis_status == null) {
+        return h("td", { className: "analysis-cell muted" }, "-");
+    }
+    // Success
+    if (yaml.analysis_status === "success") {
+        return h("td", { className: "analysis-cell" },
+            `${yaml.analysis_total_checks} (${yaml.analysis_starting_checks})`
+        );
+    }
+    // Failure
+    return h("td", { className: "analysis-cell" },
+        h("span", { className: "has-errors" }, "Error")
+    );
+}
+
+function renderAnalysisSection(yaml) {
+    if (yaml.analysis_status == null) {
+        return h("div", { className: "analysis-info muted" }, "Analysis pending...");
+    }
+
+    if (yaml.analysis_status === "success") {
+        return h("div", { className: "analysis-info" },
+            h("div", null,
+                h("span", { className: "analysis-label" }, "Starting checks: "),
+                h("strong", null, String(yaml.analysis_starting_checks)),
+            ),
+            h("div", null,
+                h("span", { className: "analysis-label" }, "Total checks: "),
+                h("strong", null, String(yaml.analysis_total_checks)),
+            ),
+            h("button", {
+                className: "small",
+                onclick: () => retryAnalysis(yaml.yaml_id),
+            }, "Re-analyse"),
+        );
+    }
+
+    return h("div", { className: "analysis-info analysis-error" },
+        h("span", { className: "has-errors" }, `Analysis ${yaml.analysis_status}`),
+        " ",
+        h("button", {
+            className: "small",
+            onclick: () => retryAnalysis(yaml.yaml_id),
+        }, "Re-analyze"),
+    );
+}
+
+async function retryAnalysis(yamlId) {
+    const btn = document.querySelector(`.analysis-info .small[onclick]`);
+    if (btn) {
+        btn.disabled = true;
+    }
+
+    const resp = await fetch(`/api/review/${ROOM_ID}/yaml/${yamlId}/analyze`, {
+        method: "POST",
+    });
+    if (!resp.ok) {
+        showToast("Failed to queue analysis: " + await resp.text());
+        return;
+    }
+
+    // Clear the analysis state locally so it shows as pending
+    if (lastEvalData) {
+        const yaml = lastEvalData.yamls.find(y => y.yaml_id === yamlId);
+        if (yaml) {
+            yaml.analysis_status = null;
+            yaml.analysis_success = null;
+            yaml.analysis_total_checks = null;
+            yaml.analysis_starting_checks = null;
+        }
+    }
+
+    alert("Queued yaml for re-analysis");
+
+    // Re-render the modal section and table cell to reflect pending state
+    const yaml = lastEvalData?.yamls.find(y => y.yaml_id === yamlId);
+    if (yaml) {
+        const section = document.querySelector(".analysis-info, .analysis-info.analysis-error");
+        if (section) section.replaceWith(renderAnalysisSection(yaml));
+
+        const row = document.querySelector(`tr[data-yaml-id="${yamlId}"]`);
+        if (row) {
+            const analysisCell = row.querySelector(".analysis-cell");
+            if (analysisCell) analysisCell.replaceWith(renderAnalysisCell(yaml));
+        }
     }
 }
 
@@ -339,13 +448,15 @@ function renderResults(data) {
     }
 
     const thead = h("thead", null,
-        h("tr", null, ...SORT_COLUMNS.map(([col, label]) => {
-            const th = h("th", { className: "sortable", "data-sort-col": col, onclick: () => toggleSort(col) }, label);
-            if (col === sortColumn) {
-                th.append(h("span", { className: "sort-arrow" }, sortAsc ? '\u25B2' : '\u25BC'));
-            }
-            return th;
-        })),
+        h("tr", null,
+            ...SORT_COLUMNS.map(([col, label]) => {
+                const th = h("th", { className: "sortable", "data-sort-col": col, onclick: () => toggleSort(col) }, label);
+                if (col === sortColumn) {
+                    th.append(h("span", { className: "sort-arrow" }, sortAsc ? '\u25B2' : '\u25BC'));
+                }
+                return th;
+            }),
+        ),
     );
 
     const tbody = h("tbody", null);
@@ -361,6 +472,7 @@ function renderResults(data) {
             playerCell,
             h("td", null, "@" + yaml.discord_handle),
             h("td", null, yaml.game),
+            renderAnalysisCell(yaml),
             h("td", { className: "issues" },
                 h("span", { className: counts.error > 0 ? "has-errors" : "zero" }, String(counts.error)),
                 " / ",
@@ -483,6 +595,7 @@ async function showYamlModal(yamlId) {
             ...titleActions,
         ),
         h("div", { className: "subtitle" }, yaml.game + " - @" + yaml.discord_handle),
+        renderAnalysisSection(yaml),   // <-- add this line
         ...renderResultItems(yaml.results),
         mainArea,
     );
@@ -820,8 +933,8 @@ async function onStatusChange(sel) {
 }
 
 const SEVERITY_LABELS = {
-    error: "Required",
-    warning: "Suggested",
+    error: "You **must** make the following change",
+    warning: "It is recommended but not required to make the following change",
 };
 
 function copyIssues(yaml) {
@@ -840,7 +953,7 @@ function copyIssues(yaml) {
     }
 
     const mention = yaml.discord_id ? `<@${yaml.discord_id}>` : 'Unknown User';
-    const text = [mention, ...lines].join("\n");
+    const text = [`${mention} - ${yaml.game}`, ...lines].join("\n");
 
     navigator.clipboard.writeText(text)
         .then(() => showToast(`Copied ${lines.length} issue(s)`, "info"))

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use anyhow::anyhow;
+use deadpool_redis::Pool as RedisPool;
 use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -12,6 +13,7 @@ use uuid::Uuid;
 use crate::{Config, TRACKER_CACHE_TTL, TrackerInfoCache, fetch_full_feed_slots, fetch_deathlinks, fetch_exclusions, fetch_incomplete_sphere1s};
 use crate::auth::{AdminSession, LoggedInSession, ModeratorSession};
 use crate::error;
+use crate::jobs::YamlAnalysisQueue;
 use crate::guards::{ApRoom, LobbyRoom, MergedSlotInfo};
 use crate::review::Role;
 use crate::review::db;
@@ -418,6 +420,25 @@ async fn delete_note(
     Ok(())
 }
 
+#[rocket::post("/review/<room_id>/yaml/<yaml_id>/analyze")]
+async fn queue_analysis(
+    session: LoggedInSession,
+    room_id: Uuid,
+    yaml_id: Uuid,
+    pool: &State<DieselPool<AsyncPgConnection>>,
+    queue: &State<YamlAnalysisQueue>,
+    redis_pool: &State<RedisPool>,
+) -> crate::error::Result<()> {
+    let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+    session
+        .require_room_role(room_id, Role::Reviewer, &mut conn)
+        .await?;
+
+    crate::jobs::priority_queue_yaml(room_id, yaml_id, queue, pool, redis_pool).await?;
+
+    Ok(())
+}
+
 #[allow(unused_variables)]
 #[rocket::get("/dashboard/<lobby_room_id>/tracker_info")]
 async fn get_tracker_info(
@@ -561,6 +582,7 @@ pub fn routes() -> Vec<rocket::Route> {
         set_review_status,
         proxy_yaml_edit,
         proxy_yaml_delete,
+        queue_analysis,
         get_notes,
         add_note,
         delete_note,

@@ -92,9 +92,9 @@ class LobbyQueue:
             except RuntimeError:
                 break
             except Exception as e:
-                print(f"Error while claiming job from lobby: {e}. Retrying in 1s...")
+                print(f"Error while claiming job from lobby: {e}. Retrying in 5s...")
                 sys.stdout.flush()
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)
                 continue
 
             try:

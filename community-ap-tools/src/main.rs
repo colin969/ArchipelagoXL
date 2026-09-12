@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow};
+use anyhow::Context as _;
 use askama::Template;
 use askama_web::WebTemplate;
 use auth::{ModeratorSession, Session};
@@ -19,6 +20,7 @@ use rocket::fs::{FileServer, relative};
 use rocket_oauth2::OAuth2;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use wq::rocket_routes::QueueTokens;
 
 mod auth;
 mod datapackage;
@@ -27,10 +29,13 @@ mod filters;
 mod guards;
 mod review;
 mod schema;
+mod jobs;
+mod queues;
 
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
 
-use crate::guards::{MergedSlotInfo, TrackerInfo};
+use crate::{guards::{MergedSlotInfo, TrackerInfo}, jobs::get_yaml_analysis_callback};
+use crate::jobs::{start_unanalyzed_yaml_poller, YamlAnalysisQueue};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations/");
 
@@ -934,11 +939,8 @@ async fn main() -> crate::error::Result<()> {
         std::env::var("AP_ROOM_HOST").expect("Provide an `AP_ROOM_HOST` env variable");
     let ap_admin_api_key =
         std::env::var("AP_ADMIN_API_KEY").expect("Provide an `AP_ADMIN_AP_KEY` env variable");
-
-    let ap_api_root = std::env::var("AP_API_ROOT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or_else(|| Url::from_str(&format!("{}", ap_room_host)).unwrap());
+    let valkey_url =
+        std::env::var("VALKEY_URL").expect("Provide a VALKEY_URL env variable");
     let ap_api_root = std::env::var("AP_API_ROOT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -955,7 +957,7 @@ async fn main() -> crate::error::Result<()> {
     let db_url = std::env::var("DATABASE_URL").expect("Provide a `DATABASE_URL` env variable");
     let db_pool = common::db::get_database_pool(&db_url, MIGRATIONS).await?;
 
-    let mut config = Config {
+    let config = Config {
         lobby_root_url: lobby_root_url.parse()?,
         lobby_public_url,
         lobby_api_key,
@@ -965,6 +967,33 @@ async fn main() -> crate::error::Result<()> {
         apx_api_root,
         apx_api_key,
     };
+
+    let redis_cfg = deadpool_redis::Config::from_url(&valkey_url);
+    let redis_pool = redis_cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
+
+    let queue_tokens = QueueTokens(HashMap::from([
+        (
+            "yaml_analysis",
+            std::env::var("YAML_ANALYSIS_QUEUE_TOKEN").context("YAML_ANALYSIS_QUEUE_TOKEN")?,
+        ),
+    ]));
+
+    let yaml_analysis_queue = YamlAnalysisQueue::builder("generation_queue")
+        .with_callback(get_yaml_analysis_callback(
+            db_pool.clone(),
+            redis_pool.clone()
+        ))
+        .with_reclaim_timeout(Duration::from_secs(60))
+        .build(&valkey_url)
+        .await
+        .expect("Failed to create job queue for yaml analysis");
+    
+    yaml_analysis_queue.start_reclaim_checker();
+    start_unanalyzed_yaml_poller(
+        db_pool.clone(),
+        redis_pool.clone(),
+        yaml_analysis_queue.clone(),
+    );
 
     rocket::build()
         .mount(
@@ -991,7 +1020,8 @@ async fn main() -> crate::error::Result<()> {
                 debug_slot_tap,
             ],
         )
-        .mount("/static", FileServer::from(relative!("static")))
+        .mount("/queues", queues::routes())
+        .mount("/static", FileServer::new(relative!("static")))
         .mount("/auth", auth::routes())
         .mount("/", review::page::routes())
         .mount("/api", review::api::routes())
@@ -1000,6 +1030,9 @@ async fn main() -> crate::error::Result<()> {
         .manage(rocket::Config::figment())
         .manage(config)
         .manage(db_pool)
+        .manage(yaml_analysis_queue)
+        .manage(queue_tokens)
+        .manage(redis_pool)
         .manage(TrackerInfoCache(Arc::new(tokio::sync::Mutex::new(None))))
         .manage(ApRoomCache(Arc::new(Mutex::new(None))))
         .manage(RoomOwnerCache(Mutex::new(HashMap::new())))

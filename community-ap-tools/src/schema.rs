@@ -76,6 +76,19 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    yaml_analysis_status (room_id, yaml_id) {
+        room_id -> Uuid,
+        yaml_id -> Uuid,
+        status -> Text,
+        success -> Int4,
+        total_checks -> Int4,
+        starting_checks -> Int4,
+        changed_at -> Timestamptz,
+
+    }
+}
+
 diesel::joinable!(review_preset_rules -> review_presets (preset_id));
 diesel::joinable!(review_presets -> teams (team_id));
 diesel::joinable!(room_review_config -> review_presets (preset_id));
@@ -89,5 +102,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     team_members,
     team_rooms,
     yaml_review_notes,
-    yaml_review_status
+    yaml_review_status,
+    yaml_analysis_status,
 );

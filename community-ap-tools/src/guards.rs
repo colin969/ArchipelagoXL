@@ -170,7 +170,7 @@ impl<'r> FromRequest<'r> for LobbyRoomId {
         // This feels hacky but if it works it works
         let param_index = route
             .uri
-            .unmounted_origin
+            .unmounted()
             .path()
             .split('/')
             .filter(|s| !s.is_empty())

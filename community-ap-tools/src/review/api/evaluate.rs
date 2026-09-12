@@ -3,7 +3,7 @@ use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use rayon::prelude::*;
 use rocket::{State, routes, serde::json::Json};
-use saphyr::{LoadableYamlNode, YamlOwned as Value};
+use saphyr::{LoadableYamlNode, YamlOwned as Value, ScalarOwned};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -28,7 +28,7 @@ struct EvaluateRequest {
 
 #[derive(Serialize)]
 struct EvaluateResponse {
-    yamls: Vec<YamlEvalResult>,
+    yamls: Vec<YamlEvalResultWithAnalysis>,
 }
 
 #[derive(Serialize)]
@@ -42,6 +42,42 @@ struct YamlEvalResult {
     games: Vec<String>,
     created_at: String,
     results: Vec<RuleResultResponse>,
+}
+
+#[derive(Serialize)]
+struct YamlEvalResultWithAnalysis {
+    yaml_id: Uuid,
+    player_name: String,
+    discord_handle: String,
+    discord_id: String,
+    game: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    games: Vec<String>,
+    created_at: String,
+    results: Vec<RuleResultResponse>,
+    analysis_status: Option<String>,
+    analysis_success: Option<i32>,
+    analysis_total_checks: Option<i32>,
+    analysis_starting_checks: Option<i32>,
+}
+
+impl YamlEvalResult {
+    fn with_analysis(self, analysis: Option<&db::YamlAnalysisStatus>) -> YamlEvalResultWithAnalysis {
+        YamlEvalResultWithAnalysis {
+            yaml_id: self.yaml_id,
+            player_name: self.player_name,
+            discord_handle: self.discord_handle,
+            discord_id: self.discord_id,
+            game: self.game,
+            games: self.games,
+            created_at: self.created_at,
+            results: self.results,
+            analysis_status: analysis.map(|a| a.status.clone()),
+            analysis_success: analysis.map(|a| a.success),
+            analysis_total_checks: analysis.map(|a| a.total_checks),
+            analysis_starting_checks: analysis.map(|a| a.starting_checks),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -136,9 +172,22 @@ async fn evaluate(
         .map(|r| r.as_ref())
         .collect();
 
-    let results: Vec<YamlEvalResult> = bulk_yamls
+    let yaml_analysis = db::get_room_analysis_statuses(room_id, &mut conn).await?;
+    let analysis_map: std::collections::HashMap<Uuid, db::YamlAnalysisStatus> = yaml_analysis
+        .into_iter()
+        .map(|a| (a.yaml_id, a))
+        .collect();
+
+        let results: Vec<YamlEvalResultWithAnalysis> = bulk_yamls
         .par_iter()
-        .map(|yaml| evaluate_single_yaml(yaml, &custom_rules, &active_builtins, &room_yamls))
+        .map(|yaml| {
+            let analysis = analysis_map.get(&yaml.id);
+            evaluate_single_yaml(yaml, &custom_rules, &active_builtins, &room_yamls, analysis)
+        })
+        .map(|r| {
+            let analysis = analysis_map.get(&r.yaml_id);
+            r.with_analysis(analysis)
+        })
         .collect();
 
     Ok(Json(EvaluateResponse { yamls: results }))
@@ -169,6 +218,7 @@ fn evaluate_single_yaml(
     custom_rules: &[Rule],
     active_builtins: &[&dyn builtin::BuiltinRule],
     room_yamls: &[RoomYaml],
+    analysis: Option<&db::YamlAnalysisStatus>,
 ) -> YamlEvalResult {
     let parsed = Value::load_from_str(&info.content)
         .ok()
@@ -195,7 +245,7 @@ fn evaluate_single_yaml(
         };
     };
 
-    let resolved = triggers::resolve_triggers(&yaml);
+    let mut resolved = triggers::resolve_triggers(&yaml);
 
     let game_names = extract_game_names(&resolved);
     let game_names = if game_names.is_empty() {
@@ -204,6 +254,23 @@ fn evaluate_single_yaml(
         game_names
     };
     let multi_game = game_names.len() > 1;
+
+    if let Some(a) = analysis {
+        for game_name in &game_names {
+            if let Some(game_section) = resolved.as_mapping_get_mut(game_name) {
+                if let Some(map) = game_section.as_mapping_mut() {
+                    map.insert(
+                        Value::Value(ScalarOwned::String("_checks".into())),
+                        Value::Value(ScalarOwned::Integer(a.total_checks as i64)),
+                    );
+                    map.insert(
+                        Value::Value(ScalarOwned::String("_starting_checks".into())),
+                        Value::Value(ScalarOwned::Integer(a.starting_checks as i64)),
+                    );
+                }
+            }
+        }
+    }    
 
     let mut all_results: Vec<RuleResultResponse> = Vec::new();
 

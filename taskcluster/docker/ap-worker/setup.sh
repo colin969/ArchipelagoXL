@@ -56,3 +56,4 @@ ln -s /ap/ap-worker/gen_wq.py /ap/archipelago/gen_wq.py
 ln -s /ap/ap-worker/self_check.py /ap/archipelago/self_check.py
 ln -s /ap/ap-worker/ap_tests.py /ap/archipelago/ap_tests.py
 ln -s /ap/ap-worker/options_gen_wq.py /ap/archipelago/options_gen_wq.py
+ln -s /ap/ap-worker/analysis_wq.py /ap/archipelago/analysis_wq.py
