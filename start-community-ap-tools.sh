@@ -43,4 +43,5 @@ fi
 
 echo "== Starting Community AP Tools =="
 "$DC" up -d community-ap-tools
+"$DC" up -d yaml-analyzer
 echo "== Community AP Tools are Ready =="
