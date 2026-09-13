@@ -188,9 +188,7 @@ services:
       LOBBY_ENABLED: true
       LOBBY_ROOT_URL: http://lobby:8000
       LOBBY_API_KEY: "changeme"
-      WS_PORT: "9002
-      NORMAL_PORT: "10001"
-      REDUCED_PORT: "10002"
+      WS_PORT: "9002"
       APX_API_LISTENADDR: "0.0.0.0:9001"
       APX_API_KEY: "changeme"
       AP_ROOM_HOST: "ap-webhost"
@@ -201,11 +199,8 @@ services:
       PER_SLOT_PASSWORDS: false
       LOKI_ENDPOINT: "http://loki:3100"
       GOEXPERIMENT: "jsonv2"
-    env_file:
-      - ./.env.community
     ports:
       - "9002:9002"
-      - "127.0.0.1:9001:9001"
     volumes:
       - ./apx:/apx
 
