@@ -251,10 +251,12 @@ services:
     image: prom/prometheus
     environment:
       APX_API_KEY: "changeme"
+      LOBBY_API_KEY: "changeme"
     # Cursed, I know, but it works
     entrypoint: >
       sh -c "mkdir -p /etc/prometheus/secrets &&
              echo -n $$APX_API_KEY > /etc/prometheus/secrets/apx-api-key.txt &&
+              echo -n $$LOBBY_API_KEY > /etc/prometheus/secrets/lobby-api-key.txt &&
              /bin/prometheus --config.file=/etc/prometheus/prometheus.yaml"
     volumes:
       - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
