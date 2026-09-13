@@ -216,12 +216,14 @@ services:
       LOBBY_ROOT_URL: "http://lobby:8000"
       LOBBY_PUBLIC_URL: "http://localhost:8000" # Used for lobby links in HTML pages
       LOBBY_API_KEY: "changeme"
+      AP_API_ROOT: "http://ap-webhost:9888"
       AP_ROOM_HOST: "ap-webhost"
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/aplobby
       AP_ADMIN_API_KEY: "ap_changeme"
       APX_API_ROOT: "http://apx:9001"
       APX_API_KEY: "changeme"
       YAML_ANALYSIS_QUEUE_TOKEN: "changeme"
+      ROCKET_CONFIG: "Rocket.community.toml"
       ROCKET_SECRET_KEY: "changemechangemechangemechangemechangeme1234"
       ROCKET_PORT: "8010"
       ROCKET_ADDRESS: "0.0.0.0"
