@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::config::DiscordConfig;
 use crate::error::Result;
 use crate::session::{is_banned, Session};
-use crate::{Context, Discord};
+use crate::{Context, Discord, LobbyConfig};
 use http::HeaderValue;
 use reqwest::Url;
 use rocket::http::CookieJar;
@@ -49,6 +49,7 @@ async fn login_discord_callback(
     token: TokenResponse<Discord>,
     cookies: &CookieJar<'_>,
     config: &State<DiscordConfig>,
+    lobby_config: &State<LobbyConfig>,
     ctx: &State<Context>,
 ) -> Result<Redirect> {
     let token = token.access_token();
@@ -75,6 +76,14 @@ async fn login_discord_callback(
     let user_id = user.id.parse()?;
     session.user_id = Some(user_id);
     session.is_admin = config.admins.contains(&discord_id);
+    let db_room_creation_allowed =
+        crate::db::get_room_creation_allowed(discord_id, &mut conn).await?;
+    let room_creation_allowed = if lobby_config.admin_rooms_only {
+        session.is_admin || db_room_creation_allowed
+    } else {
+        true
+    };
+    session.room_creation_allowed = room_creation_allowed;
     session.is_logged_in = true;
     session.save(cookies).unwrap();
 

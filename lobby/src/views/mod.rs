@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::db::{self, Room, RoomFilter};
 use crate::error::Result;
 use crate::session::Session;
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 use askama::Template;
 use askama_web::WebTemplate;
 use diesel::IntoSql;
@@ -17,6 +17,7 @@ use rocket::serde::json::Json;
 use rocket::{get, State};
 use serde::Serialize;
 
+pub mod admin;
 pub mod api;
 pub mod apworlds;
 pub mod auth;
@@ -138,7 +139,14 @@ async fn help<'a>(
     lobby_config: &State<LobbyConfig>,
 ) -> Result<HelpTpl<'a>> {
     Ok(HelpTpl {
-        base: TplContext::from_session("index", session, ctx, lobby_config, Some("Help".to_string())).await,
+        base: TplContext::from_session(
+            "index",
+            session,
+            ctx,
+            lobby_config,
+            Some("Help".to_string()),
+        )
+        .await,
     })
 }
 
@@ -172,5 +180,6 @@ struct Asset;
 pub fn routes() -> Vec<rocket::Route> {
     let mut all_routes = routes![root, dist, favicon, help, health];
     all_routes.extend(room::routes());
+    all_routes.extend(admin::routes());
     all_routes
 }

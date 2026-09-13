@@ -15,6 +15,7 @@ use uuid::Uuid;
 pub struct Session {
     pub is_admin: bool,
     pub is_logged_in: bool,
+    pub room_creation_allowed: bool,
     pub user_id: Option<i64>,
     pub redirect_on_login: Option<String>,
     pub uuid: uuid::Uuid,
@@ -24,6 +25,7 @@ pub struct Session {
 pub struct SessionRecovery {
     pub is_admin: bool,
     pub is_logged_in: bool,
+    pub room_creation_allowed: bool,
     pub user_id: Option<i64>,
 }
 
@@ -32,6 +34,7 @@ impl From<SessionRecovery> for Session {
         Session {
             is_admin: val.is_admin,
             is_logged_in: val.is_logged_in,
+            room_creation_allowed: val.room_creation_allowed,
             user_id: val.user_id,
             redirect_on_login: None,
             uuid: uuid::Uuid::new_v4(),
@@ -83,6 +86,7 @@ impl Session {
                 let default_session = Session {
                     is_admin: false,
                     is_logged_in: false,
+                    room_creation_allowed: false,
                     uuid: Uuid::new_v4(),
                     user_id: None,
                     redirect_on_login: Some("/".to_string()),
@@ -115,6 +119,7 @@ impl Session {
                     return Session {
                         is_admin: true,
                         is_logged_in: true,
+                        room_creation_allowed: true,
                         uuid: Uuid::new_v4(),
                         user_id: None,
                         redirect_on_login: None,
@@ -129,6 +134,7 @@ impl Session {
             return Session {
                 is_admin: true,
                 is_logged_in: true,
+                room_creation_allowed: true,
                 uuid: Uuid::new_v4(),
                 user_id: None,
                 redirect_on_login: None,
@@ -162,6 +168,7 @@ impl Session {
         let new_session = Session {
             is_admin: false,
             is_logged_in: false,
+            room_creation_allowed: false,
             uuid: Uuid::new_v4(),
             user_id: None,
             redirect_on_login: None,

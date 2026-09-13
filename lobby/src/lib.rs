@@ -73,8 +73,8 @@ const JS_VERSION: &str = std::env!("JS_VERSION");
 #[derive(Clone)]
 pub struct TplContext<'a> {
     is_admin: bool,
+    room_creation_allowed: bool,
     is_logged_in: bool,
-    admin_rooms_only: bool,
     cur_module: &'a str,
     user_id: Option<i64>,
     err_msg: Vec<String>,
@@ -85,17 +85,23 @@ pub struct TplContext<'a> {
 }
 
 impl<'a> TplContext<'a> {
-    pub async fn from_session(module: &'a str, session: Session, ctx: &Context, lobby_config: &LobbyConfig, page_title: Option<String>) -> Self {
+    pub async fn from_session(
+        module: &'a str,
+        session: Session,
+        ctx: &Context,
+        _lobby_config: &LobbyConfig,
+        page_title: Option<String>,
+    ) -> Self {
         Self {
             cur_module: module,
             is_admin: session.is_admin,
+            room_creation_allowed: session.room_creation_allowed,
             is_logged_in: session.is_logged_in,
             user_id: session.user_id,
             err_msg: session.retrieve_errors(ctx).await.unwrap(),
             warning_msg: session.retrieve_warnings(ctx).await.unwrap(),
             css_version: CSS_VERSION,
             js_version: JS_VERSION,
-            admin_rooms_only: lobby_config.admin_rooms_only,
             page_title: page_title.map_or_else(
                 || "Archipelago Lobby".to_string(),
                 |name| format!("Archipelago Lobby - {}", name),

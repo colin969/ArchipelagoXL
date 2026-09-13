@@ -4,11 +4,13 @@ use anyhow::anyhow;
 use chrono::{NaiveDateTime, Utc};
 use http::header::CONTENT_DISPOSITION;
 use rocket::{
-    delete, get,
+    delete,
+    form::Form,
+    get,
     http::{Header, Status},
     post, put, routes,
     serde::json::Json,
-    State,
+    FromForm, State,
 };
 use serde::{Deserialize, Serialize};
 
@@ -761,6 +763,43 @@ async fn change_yaml_owner(
     Ok(())
 }
 
+#[derive(Deserialize, Debug, FromForm)]
+pub struct RoomCreationAllowedUserRequest {
+    pub id: String,
+}
+
+#[post("/admin/room_creation", data = "<body>")]
+#[tracing::instrument(skip(_session, ctx))]
+pub async fn add_room_creation_allowed_user(
+    _session: AdminSession,
+    body: Form<RoomCreationAllowedUserRequest>,
+    ctx: &State<Context>,
+) -> ApiResult<()> {
+    let discord_id = body.id.parse::<i64>().map_err(|_| ApiError {
+        error: anyhow::anyhow!("Invalid Discord ID"),
+        status: Status::BadRequest,
+    })?;
+    let mut conn = ctx.db_pool.get().await?;
+    db::set_room_creation_allowed(discord_id, true, &mut conn).await?;
+    Ok(())
+}
+
+#[post("/admin/room_creation/remove", data = "<body>")]
+#[tracing::instrument(skip(_session, ctx))]
+pub async fn remove_room_creation_allowed_user(
+    _session: AdminSession,
+    body: Form<RoomCreationAllowedUserRequest>,
+    ctx: &State<Context>,
+) -> ApiResult<()> {
+    let discord_id = body.id.parse::<i64>().map_err(|_| ApiError {
+        error: anyhow::anyhow!("Invalid Discord ID"),
+        status: Status::BadRequest,
+    })?;
+    let mut conn = ctx.db_pool.get().await?;
+    db::set_room_creation_allowed(discord_id, false, &mut conn).await?;
+    Ok(())
+}
+
 pub fn routes() -> Vec<rocket::Route> {
     routes![
         download_bundle,
@@ -778,5 +817,7 @@ pub fn routes() -> Vec<rocket::Route> {
         edit_yaml,
         delete_yaml_api,
         change_yaml_owner,
+        add_room_creation_allowed_user,
+        remove_room_creation_allowed_user,
     ]
 }

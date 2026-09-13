@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block menu %}
+    {% call menu::menu_item("Admin", "", "/admin", false, "admin-menu") %}{% endcall %}
+    {% call menu::menu_item("Room Creation", "", "/admin/room_creation", true, "allowed-users-menu") %}{% endcall %}
+{% endblock %}
+
+{% block main %}
+
+<noscript>
+    Gotta enable javascript for this to work, sorry
+</noscript>
+
+<h3>Add Allowed User</h2>
+<form id="options-form">
+    <div class="option-row">
+        <label for="id">Discord ID</label>
+        <input type="text" id="id" name="id" placeholder="Enter Discord ID" autocomplete="off" required />
+        <button type="submit">Add</button>
+    </div>
+</form>
+
+<hr>
+
+<h3>Allowed Users</h3>
+<table class="styled" id="allowed-users">
+    <thead>
+        <tr>
+            <th>Username</th>
+            <th>Discord ID</th>
+            <th>Action</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for user in self.allowed_users %}
+        <tr data-user-id="{{ user.id }}">
+            <td>{{ user.username }}</td>
+            <td>{{ user.id }}</td>
+            <td>
+                <form class="remove-user-form" data-user-id="{{ user.id }}" data-user-handle="{{ user.username }}">
+                    <button type="submit">Remove</button>
+                </form>            
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/menu.js?{{ base.js_version }}"></script>
+
+<script>
+    document.getElementById("options-form").addEventListener("submit", async function(event) {
+        event.preventDefault();
+        const formData = new FormData(this);
+
+        try {
+            const response = await fetch("/api/admin/room_creation", {
+                method: "POST",
+                body: formData,
+            });
+
+            if (response.ok) {
+                location.reload();
+            } else {
+                const err = await response.text();
+                alert("Failed to add user: " + err);
+            }
+        } catch (e) {
+            alert("Error: " + e.message);
+        }
+    });
+
+    document.getElementById("allowed-users").addEventListener("submit", async function(event) {
+        event.preventDefault();
+        const form = event.target.closest(".remove-user-form");
+        if (!form) return;
+
+        const userId = form.dataset.userId;
+        const userHandle = form.dataset.userHandle;
+
+        if (!confirm(`Remove ${userHandle} (${userId}) from allowed users?`)) return;
+
+        const formData = new FormData();
+        formData.append("id", userId);
+
+        try {
+            const response = await fetch("/api/admin/room_creation/remove", {
+                method: "POST",
+                body: formData,
+            });
+
+            if (response.ok) {
+                location.reload();
+            } else {
+                const err = await response.text();
+                alert("Failed to remove user: " + err);
+            }
+        } catch (e) {
+            alert("Error: " + e.message);
+        }
+    });
+
+</script>
+{% endblock %}
+
+{% block styles %}
+<link rel="stylesheet" href="/static/css/help.css?{{ base.css_version }}">
+<style>
+#options-form {
+    height: unset !important
+}
+</style>
+{% endblock %}

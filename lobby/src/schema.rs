@@ -17,6 +17,7 @@ diesel::table! {
     discord_users (id) {
         id -> Int8,
         username -> Varchar,
+        room_creation_allowed -> Bool
     }
 }
 

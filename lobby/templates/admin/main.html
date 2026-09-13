@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block menu %}
+    {% call menu::menu_item("Admin", "", "/admin", true, "admin-menu") %}{% endcall %}
+    {% call menu::menu_item("Room Creation", "", "/admin/room_creation", false, "allowed-users-menu") %}{% endcall %}
+{% endblock %}
+
+{% block main %}
+
+<p>Admin page</p>
+
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/menu.js?{{ base.js_version }}"></script>
+{% endblock %}

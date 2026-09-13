@@ -11,7 +11,7 @@ use rocket::response::Redirect;
 use rocket::State;
 use rocket::{get, post};
 
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 
 use crate::views::room_settings::{
     validate_room_form, CreateRoomForm, RoomSettingsBuilder, RoomSettingsType,
@@ -34,11 +34,23 @@ pub async fn create_room<'a>(
     ctx: &State<Context>,
     lobby_config: &State<LobbyConfig>,
 ) -> Result<EditRoom<'a>> {
-    if lobby_config.admin_rooms_only && !session.is_admin() {
-        return Err(anyhow::anyhow!("Room creation is restricted to admins only").into());
+    if lobby_config.admin_rooms_only {
+        let mut conn = ctx.db_pool.get().await?;
+        let is_allowed = session.is_admin()
+            || db::get_room_creation_allowed(session.user_id(), &mut conn).await?;
+        if !is_allowed {
+            return Err(anyhow::anyhow!("Room creation is restricted to admins only").into());
+        }
     }
     let current_user_id = session.user_id();
-    let base = TplContext::from_session("create-room", session.0, ctx, lobby_config, Some("Create New Room".to_string())).await;
+    let base = TplContext::from_session(
+        "create-room",
+        session.0,
+        ctx,
+        lobby_config,
+        Some("Create New Room".to_string()),
+    )
+    .await;
     let index = index_manager.index.read().await;
 
     let form_builder = if let Some(template_id) = from_template {
@@ -73,8 +85,13 @@ pub async fn create_room_submit<'a>(
     session: LoggedInSession,
     lobby_config: &State<LobbyConfig>,
 ) -> Result<Redirect> {
-    if lobby_config.admin_rooms_only && !session.is_admin() {
-        return Err(anyhow::anyhow!("Room creation is restricted to admins only").into());
+    if lobby_config.admin_rooms_only {
+        let mut conn = ctx.db_pool.get().await?;
+        let is_allowed = session.is_admin()
+            || db::get_room_creation_allowed(session.user_id(), &mut conn).await?;
+        if !is_allowed {
+            return Err(anyhow::anyhow!("Room creation is restricted to admins only").into());
+        }
     }
     redirect_to.set("/create-room");
 
@@ -122,7 +139,14 @@ pub async fn edit_room<'a>(
     }
 
     let index = index_manager.index.read().await;
-    let base = TplContext::from_session("room", session.0, ctx, lobby_config, Some(format!("{} - Edit Room", room.settings.name))).await;
+    let base = TplContext::from_session(
+        "room",
+        session.0,
+        ctx,
+        lobby_config,
+        Some(format!("{} - Edit Room", room.settings.name)),
+    )
+    .await;
 
     Ok(EditRoom {
         room_settings_form: RoomSettingsBuilder::new_with_room(
