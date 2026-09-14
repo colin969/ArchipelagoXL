@@ -1009,6 +1009,44 @@ td:hover span[title]::after, .show-discord-names span[title]::after
       border-bottom: none
       margin: 0
 
+.tooltip-icon
+  margin-left: 0.5em
+  color: hsla(0, 0%, 100%, 0.7)
+  cursor: help
+  position: relative
+  outline: none
+  overflow: visible
+
+  .tooltip-box
+    position: absolute
+    top: 100%
+    margin-top: 0.5em
+    padding: 0.75em 1em
+    background: #1a1a2e
+    border: 1px solid #333
+    color: white
+    font-family: sans-serif
+    font-size: 0.85em
+    font-weight: normal
+    font-style: normal
+    line-height: 1.4
+    border-radius: 4px
+    box-shadow: 0 2px 8px hsla(0, 0%, 0%, 0.4)
+    white-space: pre-wrap
+    width: max-content
+    max-width: calc(100vw - 250px)
+    z-index: 10000
+    opacity: 0
+    pointer-events: none
+
+  &:hover .tooltip-box,
+  &:focus .tooltip-box
+    opacity: 1
+
+  @media (max-width: 768px)
+    .tooltip-box
+      max-width: calc(100vw - 100px)
+
 #options-form
   label
     display: block

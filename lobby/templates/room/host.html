@@ -61,15 +61,15 @@
         </tbody>
     </table>
     <form id="host-options-form" method="POST" action="/room/{{ self.room.id }}/host/start">
-        <input type="checkbox" id="per_slot_passwords" name="per_slot_passwords" value="true" {% if apx.per_slot_passwords %}checked{% endif %}>
-        <label for="per_slot_passwords">Per-slot passwords</label>
-
-        <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true" {% if apx.deathlink_disabled %}checked{% endif %}>
-        <label for="deathlink_disabled">Disable deathlink</label>
-
-        <input type="checkbox" id="reduced_access" name="reduced_access" value="true" {% if apx.reduced_access %}checked{% endif %}>
-        <label for="reduced_access">Reduced access</label>
-
+        <input type="checkbox" id="per_slot_passwords" name="per_slot_passwords" value="true">
+        <label for="per_slot_passwords">Per-slot passwords<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Players will need to use their own personally assigned password.&#10;The host must generate them from the dashboard first. (Dashboard button available after hosting has started)"></i></label>
+        
+        <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true">
+        <label for="deathlink_disabled">Disable deathlink<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Deathlink messages will not be sent to other clients by default. (Sets probability to 0%)"></i></label>
+        
+        <input type="checkbox" id="reduced_access" name="reduced_access" value="true">
+        <label for="reduced_access">Reduced access<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Restricts players to only the Reduced connection address.&#10;This means they won't receive PrintJSON messages unrelated to their slot.&#10;You can manually override this per player on the dashboard. (Dashboard button available after hosting has started)"></i></label>
+        
         <button type="submit" class="button-emulator validation-button">Resume hosting</button>
         <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/delete" onclick="return handleButtonClick(event, 'Are you sure you want to delete this hosted room? This cannot be undone.')">Delete hosted room</a>
     </form>
@@ -126,14 +126,14 @@
         {% if current_gen.status == GenerationStatus::Done %}
         <form id="host-options-form" method="POST" action="/room/{{ self.room.id }}/host/start">
             <input type="checkbox" id="per_slot_passwords" name="per_slot_passwords" value="true">
-            <label for="per_slot_passwords">Per-slot passwords</label>
-        
+            <label for="per_slot_passwords">Per-slot passwords<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Players will need to use their own personally assigned password.&#10;The host must generate them from the dashboard first. (Dashboard button available after hosting has started)"></i></label>
+            
             <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true">
-            <label for="deathlink_disabled">Disable deathlink</label>
-        
+            <label for="deathlink_disabled">Disable deathlink<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Deathlink messages will not be sent to other clients by default. (Sets probability to 0%)"></i></label>
+            
             <input type="checkbox" id="reduced_access" name="reduced_access" value="true">
-            <label for="reduced_access">Reduced access</label>
-        
+            <label for="reduced_access">Reduced access<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Restricts players to only the Reduced connection address.&#10;This means they won't receive PrintJSON messages unrelated to their slot.&#10;You can manually override this per player on the dashboard. (Dashboard button available after hosting has started)"></i></label>
+            
             <button type="submit" class="button-emulator validation-button">Start hosting</button>
         </form>
         {% else %}
@@ -150,4 +150,40 @@
 
 {% block scripts %}
 <script src="/static/js/room.js?{{ base.js_version }}" defer></script>
+<script>
+    document.querySelectorAll('.tooltip-icon').forEach(icon => {
+        const text = icon.dataset.tooltip;
+        if (!text) return;
+
+        const tip = document.createElement('span');
+        tip.className = 'tooltip-box';
+        tip.textContent = text;
+        icon.appendChild(tip);
+
+        const position = () => {
+            tip.style.left = '';
+
+            const iconRect = icon.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+
+            let left = (icon.offsetWidth - tipRect.width) / 2;
+
+            const absLeft = iconRect.left + left;
+            const leftMargin = window.innerWidth <= 768 ? 60 : 230;
+            const rightMargin = 20;
+            if (absLeft < leftMargin) {
+                left -= absLeft - leftMargin;
+            }
+            if (absLeft + tipRect.width > window.innerWidth - rightMargin) {
+                left -= (absLeft + tipRect.width) - (window.innerWidth - rightMargin);
+            }
+
+            tip.style.left = left + 'px';
+        };
+
+        icon.addEventListener('mouseenter', position);
+        icon.addEventListener('focus', position);
+        icon.onclick = (e) => e.preventDefault();
+    });
+</script>
 {% endblock %}
