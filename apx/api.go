@@ -802,7 +802,10 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	passwordStore := newPasswordStore()
 	fullFeedStore := newFullFeedStore()
 	connRegistry := newConnectionRegistry()
-	datapackageCache := newDataPackageStore(true) // TODO: Add config flag
+
+	// Only use memory costly optimizations when more than 50 datapackages in the room
+	var useDatapackageOptimization = len(roomInfo.DatapackageChecksums) > 50
+	datapackageCache := newDataPackageStore(useDatapackageOptimization) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
 	if perSlotPasswords == true {
