@@ -363,6 +363,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	room.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
 	room.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
 	room.HandleFunc("/debug/slot/{slotId}", srv.handleDebugTap)
+	// Alt names need more work to be listable and deletable, will reset on restart for now
+	room.HandleFunc("/alt_connect_name", srv.handleAltConnectName).Methods(http.MethodPost)
 
 	// Check every 2m, kill after 2h
 	srv.startRoomKiller(time.Duration(2)*time.Minute, time.Duration(2)*time.Hour)
@@ -799,12 +801,13 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		log.Fatalf("prefetching spheres: %v", err)
 	}
 
+	altConnectNames := newAltConnectNames()
 	passwordStore := newPasswordStore()
 	fullFeedStore := newFullFeedStore()
 	connRegistry := newConnectionRegistry()
 
-	// Only use memory costly optimizations when more than 50 datapackages in the room
-	var useDatapackageOptimization = len(roomInfo.DatapackageChecksums) > 50
+	// Only use memory costly optimizations when at least 50 datapackages in the room
+	var useDatapackageOptimization = len(roomInfo.DatapackageChecksums) >= 50
 	datapackageCache := newDataPackageStore(useDatapackageOptimization) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
@@ -841,6 +844,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		config:           rm.config,
 		roomInfo:         *roomInfo,
 		roomPlayers:      roomPlayers,
+		altConnectNames:  altConnectNames,
 		passwords:        passwordStore,
 		fullFeed:         fullFeedStore,
 		connections:      connRegistry,
@@ -1333,6 +1337,51 @@ func (rm *RoomManager) handleDebugTap(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type AltConnectNameRequest struct {
+	SlotName string `json:"slot_name"`
+	AltName  string `json:"alt_name"`
+}
+
+func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+
+	var req AltConnectNameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.SlotName == "" || req.AltName == "" {
+		http.Error(w, "slot_name and alt_name are required", http.StatusBadRequest)
+		return
+	}
+
+	_, exists := room.apx.roomPlayers.auth[req.SlotName]
+	if !exists {
+		http.Error(w, "slot not found", http.StatusNotFound)
+		return
+	}
+
+	_, exists = room.apx.roomPlayers.auth[req.AltName]
+	if exists {
+		http.Error(w, "alt name is already taken by real slot name", http.StatusNotFound)
+		return
+	}
+
+	existingAlt := room.apx.altConnectNames.GetAltName(req.AltName)
+	if existingAlt != nil && *existingAlt != req.SlotName {
+		http.Error(w, "alt name is already taken by another slot", http.StatusConflict)
+		return
+	}
+
+	room.apx.altConnectNames.SetAltName(req.SlotName, req.AltName)
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
 	for _, locID := range locIDs {
 		if !checkedLocations[locID] {
@@ -1580,7 +1629,7 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 }
 
 func (r *RoomRegistry) AllocateAndRegisterHandlerPair(normal, reduced *apxHandler) error {
-	const minID = 1000
+	const minID = 10000
 	const maxID = 50000
 	const rangeSize = maxID - minID + 1
 

@@ -175,6 +175,63 @@ td {
             location.reload();
         }
 
+        function openAltConnectNamePopup(slotName) {
+            const popup = getPopup();
+
+            const title = document.createElement("div");
+            title.innerText = "Set alt connect name for slot: " + slotName;
+            title.style.marginBottom = "10px";
+
+            const form = document.createElement("form");
+            form.action = "javascript:void(0);";
+
+            const altNameLabel = document.createElement("div");
+            altNameLabel.innerText = "Alt name:";
+
+            const altNameInput = document.createElement("input");
+            altNameInput.type = "text";
+            altNameInput.required = true;
+            altNameInput.style.display = "block";
+            altNameInput.style.marginBottom = "10px";
+
+            const submitButton = document.createElement("button");
+            submitButton.innerText = "Set Alt Name";
+            submitButton.style.display = "block";
+            submitButton.style.marginTop = "10px";
+
+            form.appendChild(altNameLabel);
+            form.appendChild(altNameInput);
+            form.appendChild(submitButton);
+
+            form.addEventListener("submit", async () => {
+                const altName = altNameInput.value.trim();
+                if (!altName) return;
+
+                try {
+                    const response = await fetch(`/api/dashboard/${window.lobby_room_id}/alt_connect_name`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ slot_name: slotName, alt_name: altName }),
+                    });
+
+                    if (response.ok) {
+                        alert("Alt name set");
+                        popup.close();
+                    } else {
+                        const err = await response.text();
+                        alert("Failed to set alt name: " + err);
+                    }
+                } catch (e) {
+                    alert("Error: " + e.message);
+                }
+            });
+
+            popup.appendChild(title);
+            popup.appendChild(form);
+            altNameInput.focus();
+        }
+
+
         function openDeathBlock(slotId, slotName, slotGame, isBlocked) {
             const popup = getPopup();
 

@@ -92,6 +92,33 @@ func newDebugTap(slotCount int) *debugTap {
 	return &debugTap{slots: make([]debugTapSlot, slotCount+1)}
 }
 
+type ConnectNames struct {
+	mu    sync.RWMutex
+	names map[string]string
+}
+
+func newAltConnectNames() *ConnectNames {
+	return &ConnectNames{
+		names: make(map[string]string),
+	}
+}
+
+func (cn *ConnectNames) SetAltName(realName string, connectName string) {
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	cn.names[connectName] = realName
+}
+
+func (cn *ConnectNames) GetAltName(connectName string) *string {
+	cn.mu.RLock()
+	defer cn.mu.RUnlock()
+	realName, ok := cn.names[connectName]
+	if ok {
+		return &realName
+	}
+	return nil
+}
+
 type ApxRoom struct {
 	perSlotPasswords bool
 	lastActivity     *atomic.Int64
@@ -99,6 +126,7 @@ type ApxRoom struct {
 	config           *Config
 	roomInfo         RoomInfoMessage
 	roomPlayers      *RoomPlayers // Immutable
+	altConnectNames  *ConnectNames
 	passwords        *passwordStore
 	fullFeed         *fullFeedStore
 	bounceInfo       *bounceInfoStore

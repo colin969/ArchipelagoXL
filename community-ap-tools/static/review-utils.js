@@ -314,6 +314,13 @@ function createTrackerTable(tableId)
                 }
             },
             {
+                label: "Set Alt Name",
+                action: function (event, row) {
+                    const { name } = row.getData();
+                    openAltConnectNamePopup(name);
+                }
+            },
+            {
                 label: "Copy Patch URL",
                 disabled: function (component) {
                     return !component.getData().has_patch;

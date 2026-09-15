@@ -902,6 +902,49 @@ async fn debug_slot_tap(
     })))
 }
 
+#[derive(Deserialize, Serialize)]
+struct AltConnectNameRequest {
+    slot_name: String,
+    alt_name: String,
+}
+
+#[rocket::post("/api/dashboard/<lobby_room_id>/alt_connect_name", data = "<request>")]
+async fn set_alt_connect_name(
+    _session: ModeratorSession,
+    lobby_room_id: &str,
+    request: Json<AltConnectNameRequest>,
+    config: &State<Config>,
+) -> crate::error::Result<()> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+    
+    let url = apx_api_root.join(&format!(
+        "/api/{}/alt_connect_name",
+        lobby_room_id
+    ))?;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(url)
+        .header("X-API-Key", apx_api_key)
+        .json(&request.into_inner())
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let msg = response.text().await.unwrap_or_default();
+        Err(anyhow!("Failed to set alt connect name: {}", msg))?;
+    }
+
+    Ok(())
+}
+
+
 #[rocket::get("/")]
 fn index() -> Redirect {
     Redirect::to("/rooms")
@@ -1018,6 +1061,7 @@ async fn main() -> crate::error::Result<()> {
                 remove_full_feed,
                 debug_slot_page,
                 debug_slot_tap,
+                set_alt_connect_name,
             ],
         )
         .mount("/queues", queues::routes())
