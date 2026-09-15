@@ -40,7 +40,6 @@ pub struct RoomTpl<'a> {
     is_closed: bool,
     has_room_url: bool,
     is_my_room: bool,
-    room_info: Option<db::RoomInfo>,
     current_user_has_yaml_in_room: bool,
     apx_room_info: Option<ApxRoomInfoDisplay>,
     game_display_names: HashMap<String, String>,
@@ -64,9 +63,7 @@ impl RoomTpl<'_> {
     }
 }
 
-#[get("/room/<room_id>")]
-#[tracing::instrument(skip(ctx, session, index_manager))]
-pub async fn room<'a>(
+pub async fn room_inner<'a>(
     room_id: RoomId,
     ctx: &State<Context>,
     session: Session,
@@ -156,12 +153,47 @@ pub async fn room<'a>(
         room,
         yamls,
         is_my_room,
-        room_info,
         current_user_has_yaml_in_room: user_has_yaml,
         game_display_names,
         truncated_names,
         apx_room_info,
     })
+}
+
+#[get("/room/<room_id>")]
+#[tracing::instrument(skip(ctx, session, index_manager))]
+pub async fn room<'a>(
+    room_id: RoomId,
+    ctx: &State<Context>,
+    session: Session,
+    index_manager: &State<IndexManager>,
+    lobby_config: &State<LobbyConfig>,
+) -> Result<RoomTpl<'a>> {
+    room_inner(room_id, ctx, session, index_manager, lobby_config).await
+}
+
+#[get("/room/<room_id>/as/<user_id>")]
+#[tracing::instrument(skip(ctx, session, index_manager))]
+pub async fn room_as_user<'a>(
+    room_id: RoomId,
+    user_id: i64,
+    ctx: &State<Context>,
+    session: Session,
+    index_manager: &State<IndexManager>,
+    lobby_config: &State<LobbyConfig>,
+) -> Result<RoomTpl<'a>> {
+    if !session.is_admin {
+        return Err(anyhow::anyhow!("Admin only").into());
+    }
+
+    // Impersonate: override the session's user_id for the view
+    let impersonated_session = Session {
+        user_id: Some(user_id),
+        is_admin: false,
+        ..session
+    };
+
+    room_inner(room_id, ctx, impersonated_session, index_manager, lobby_config).await
 }
 
 #[derive(rocket::form::FromForm)]
@@ -639,6 +671,7 @@ fn embed_server_info_in_patch(patch_data: Vec<u8>, room_info: &db::RoomInfo) -> 
 pub fn routes() -> Vec<rocket::Route> {
     rocket::routes![
         room,
+        room_as_user,
         upload_yaml,
         delete_bundle,
         delete_yaml,
