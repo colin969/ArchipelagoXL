@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{
@@ -10,13 +11,15 @@ use anyhow::anyhow;
 use askama::Template;
 use askama_web::WebTemplate;
 use auth::{ModeratorSession, Session};
-use guards::{ApRoom, ApxRoomInfo, LobbyRoom, SlotPasswords};
+use guards::{ApRoom, ApxRoomInfo, LobbyRoom};
 use reqwest::{
     Url,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use rocket::fs::{FileServer, relative};
-use rocket::{Request, State, catch, response::Redirect, routes, serde::json::Json};
+use rocket::http::{ContentType, Header};
+use rocket::response::{self, Redirect, Responder, Response};
+use rocket::{Request, State, catch, routes, serde::json::Json};
 use rocket::{catchers, tokio};
 use rocket_oauth2::OAuth2;
 use serde::{Deserialize, Serialize};
@@ -99,6 +102,21 @@ pub struct DeathlinksIndexTpl {
     lobby_root_url: String,
     slots: Vec<DeathlinksSlot>,
     total_deaths: i32,
+}
+
+struct JsonDownload {
+    json: String,
+    filename: String,
+}
+
+impl<'r> Responder<'r, 'static> for JsonDownload {
+    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
+        Response::build()
+            .header(ContentType::JSON)
+            .header(Header::new("Content-Disposition", self.filename))
+            .sized_body(self.json.len(), Cursor::new(self.json))
+            .ok()
+    }
 }
 
 #[catch(401)]

@@ -5,6 +5,7 @@ use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use rocket::{State, routes, serde::json::Json};
 use serde::Deserialize;
 
+use crate::JsonDownload;
 use crate::auth::{AdminSession, LoggedInSession};
 use crate::review::Role;
 use crate::review::builtin;
@@ -182,6 +183,75 @@ async fn delete_preset_rule(
     Ok(())
 }
 
+#[rocket::get("/presets/<id>/export")]
+async fn export_preset(
+    session: LoggedInSession,
+    id: i32,
+    pool: &State<DieselPool<AsyncPgConnection>>,
+) -> crate::error::Result<JsonDownload> {
+    let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+    session
+        .require_preset_role(id, Role::Viewer, &mut conn)
+        .await?;
+    let rules = db::list_rules_for_preset(id, &mut conn).await?;
+
+    let json =
+        serde_json::to_string_pretty(&rules).map_err(|e| anyhow!("Serialization error: {}", e))?;
+
+    let filename = format!("attachment; filename=\"preset_{}_rules.json\"", id);
+
+    Ok(JsonDownload { json, filename })
+}
+
+#[derive(Deserialize)]
+struct ImportPresetRuleEntry {
+    rule: serde_json::Value,
+    position: i32,
+}
+
+#[rocket::post("/presets/<id>/import", data = "<body>")]
+async fn import_preset(
+    session: LoggedInSession,
+    id: i32,
+    body: Json<Vec<ImportPresetRuleEntry>>,
+    pool: &State<DieselPool<AsyncPgConnection>>,
+) -> crate::error::Result<Json<Vec<db::PresetRule>>> {
+    let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+    session
+        .require_preset_role(id, Role::RuleEditor, &mut conn)
+        .await?;
+
+    let entries = body.into_inner();
+
+    // Validate all rules before making any changes
+    for entry in &entries {
+        let parsed: Rule = serde_json::from_value(entry.rule.clone())
+            .map_err(|e| anyhow!("Invalid rule: {}", e))?;
+        parsed.validate().map_err(|e| anyhow!("{}", e))?;
+    }
+
+    let now = Utc::now();
+    let mut created = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        let rule = db::create_rule(
+            NewPresetRule {
+                preset_id: id,
+                rule: entry.rule,
+                position: entry.position,
+                last_edited_by: Some(session.user_id()),
+                last_edited_at: Some(now),
+                last_edited_by_name: Some(session.username().to_string()),
+            },
+            &mut conn,
+        )
+        .await?;
+        created.push(rule);
+    }
+
+    Ok(Json(created))
+}
+
 pub fn routes() -> Vec<rocket::Route> {
     routes![
         list_presets,
@@ -194,5 +264,7 @@ pub fn routes() -> Vec<rocket::Route> {
         create_preset_rule,
         update_preset_rule,
         delete_preset_rule,
+        import_preset,
+        export_preset,
     ]
 }

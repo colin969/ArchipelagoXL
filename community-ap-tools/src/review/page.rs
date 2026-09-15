@@ -136,7 +136,7 @@ async fn review_page(
         room_id: room_uuid.to_string(),
         room_name: room_info.name,
         assigned_preset_id: room_config.map(|c| c.preset_id),
-        lobby_root_url: config.lobby_root_url.to_string(),
+        lobby_root_url: config.lobby_public_url.as_ref().unwrap_or(&config.lobby_root_url.to_string()).to_string(),
         is_locked: room_info.locked,
         user_id: session.user_id(),
         user_role,

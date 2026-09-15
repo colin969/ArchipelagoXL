@@ -30,6 +30,8 @@
                         <td>
                             <a href="/presets/{{ preset.id }}" class="button">Edit</a>
                             {% if base.is_super_admin %}
+                            <button class="secondary" data-export-id="{{ preset.id }}">Export</button>
+                            <button class="secondary" data-import-id="{{ preset.id }}">Import</button>
                             <button class="danger" data-preset-id="{{ preset.id }}" data-preset-name="{{ preset.name }}">Delete</button>
                             {% endif %}
                         </td>
@@ -39,11 +41,15 @@
             </table>
         {% endif %}
     </div>
+
+    <input type="file" id="import-file-input" accept=".json" style="display:none">
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+// TODO: Fix padding on edit button?
+
 const IS_SUPER_ADMIN = {{ base.is_super_admin }};
 
 async function createPreset(e) {
@@ -70,6 +76,42 @@ document.querySelectorAll("button[data-preset-id]").forEach(btn => {
             window.location.reload();
         });
     });
+});
+
+document.querySelectorAll("button[data-export-id]").forEach(btn => {
+    btn.addEventListener("click", () => {
+        window.location.href = `/api/presets/${btn.dataset.exportId}/export`;
+    });
+});
+
+const fileInput = document.getElementById("import-file-input");
+let pendingImportId = null;
+
+document.querySelectorAll("button[data-import-id]").forEach(btn => {
+    btn.addEventListener("click", () => {
+        pendingImportId = btn.dataset.importId;
+        fileInput.value = "";
+        fileInput.click();
+    });
+});
+
+fileInput.addEventListener("change", async () => {
+    if (!fileInput.files.length || !pendingImportId) return;
+    const file = fileInput.files[0];
+    let data;
+    try {
+        data = JSON.parse(await file.text());
+    } catch {
+        showToast("Invalid JSON file");
+        return;
+    }
+    const resp = await fetch(`/api/presets/${pendingImportId}/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+    });
+    if (!resp.ok) { showToast("Failed to import preset: " + await resp.text()); return; }
+    showToast("Preset imported successfully");
 });
 </script>
 {% endblock %}

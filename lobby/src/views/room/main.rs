@@ -186,7 +186,7 @@ pub async fn room_as_user<'a>(
         return Err(anyhow::anyhow!("Admin only").into());
     }
 
-    // Impersonate: override the session's user_id for the view
+    // override the session's user_id for the view
     let impersonated_session = Session {
         user_id: Some(user_id),
         is_admin: false,
