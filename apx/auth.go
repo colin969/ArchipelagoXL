@@ -38,6 +38,12 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 		msg.SlotData = &slotDataDefault
 	}
 
+	// Update msg from alt connect name
+	realName := s.altConnectNames.GetAltName(msg.Name)
+	if realName != nil {
+		msg.Name = *realName
+	}
+
 	log.Printf("reconnect (authed): game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
 		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, msg.SlotData)
 
