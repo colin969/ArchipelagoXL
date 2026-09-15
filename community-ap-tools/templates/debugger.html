@@ -54,7 +54,7 @@
         });
 
         const status = document.getElementById('status');
-        const ws = new WebSocket('/api/debug/slot/{{slot_id}}');
+        const ws = new WebSocket('/api/dashboard/{{room_id}}/debug/slot/{{slot_id}}');
 
         ws.onopen = () => status.textContent = '● Connected';
         ws.onclose = () => status.textContent = '● Disconnected';

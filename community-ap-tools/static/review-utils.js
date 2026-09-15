@@ -384,7 +384,7 @@ function createTrackerTable(tableId)
                 label: "Open Debug Viewer",
                 action: function (event, row) {
                     const { id } = row.getData();
-                    window.open(`/debug_slot/${id}`, '_blank');
+                    window.open(`/dashboard/${window.lobby_room_id}/debug_slot/${id}`, '_blank');
                 }
             }
         ],
