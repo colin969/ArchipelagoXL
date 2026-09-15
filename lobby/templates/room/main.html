@@ -34,12 +34,17 @@
     <p class="message info">Room URL: <a href="{{ room.settings.room_url }}">{{ room.settings.room_url }}</a></p>
 {% endif %}
 
-{% match room_info %}
-{% when Some with (info) %}
+{% match apx_room_info %}
+{% when Some with (apx) %}
     {% if current_user_has_yaml_in_room %}
-    <p class="message info" style="font-family: 'Courier New', monospace;">
-        <strong>Server: &nbsp;</strong>{{ info.host }}:{{ info.port }}
-    </p>
+    {% if !apx.disabled %}
+    <div class="message info" style="font-family: 'Courier New', monospace;">
+        {% if !apx.reduced_access %}
+        <div><strong style="display: inline-block; width: 16ch">Server:</strong>{{ apx.normal_addr }}</div>
+        {% endif %}
+        <div><strong style="display: inline-block; width: 16ch">{% if !apx.reduced_access %}Reduced&nbsp;{% endif %}Server:</strong>{{ apx.reduced_addr }}</div>
+    </div>
+    {% endif %}
     <table class="styled" id="my-slots">
     <thead>
         <tr>
@@ -56,14 +61,22 @@
         <tr>
             <td>{{ self.get_truncated_name(yaml.player_name) }}</td>
             <td>{{ self.get_game_display_name(yaml.game) }}</td>
-            <td style="font-family: 'Courier New', monospace;">{% match yaml.password %}{% when Some with (pwd) %}{{ pwd }}{% when None %}Not Yet Available{% endmatch %}</td>
+            <td style="font-family: 'Courier New', monospace;">
+                {% if apx.per_slot_passwords %}
+                {% match yaml.password %}
+                    {% when Some with (pwd) %}{{ pwd }}
+                    {% when None %}Not Available Yet
+                    {% endmatch %}
+                {% else %}
+                    Not Required
+                {% endif %}
+            </td>
             <td>{% if yaml.patch.is_some() %}<a href="/room/{{room.id}}/patch/{{yaml.id}}">Download</a>{% else %}-{% endif %}</td>
         </tr>
         {% endif %}
     {% endfor %}
     </tbody>
 </table>
-
 <hr>
     {% endif %}
 {% when None %}

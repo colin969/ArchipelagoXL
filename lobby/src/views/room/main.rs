@@ -11,8 +11,9 @@ use crate::session::{LoggedInSession, Session};
 use crate::utils::{NamedBuf, ZipFile};
 use crate::views::api;
 use crate::views::filters;
+use crate::views::room::host::{ApxRoomInfoDisplay, fetch_apx_room_info};
 use crate::yaml::{compute_ap_slot_names, YamlValidationResult};
-use crate::{Context, TplContext, LobbyConfig};
+use crate::{Context, LobbyConfig, TplContext};
 use askama::Template;
 use askama_web::WebTemplate;
 use diesel_async::scoped_futures::ScopedFutureExt;
@@ -41,6 +42,7 @@ pub struct RoomTpl<'a> {
     is_my_room: bool,
     room_info: Option<db::RoomInfo>,
     current_user_has_yaml_in_room: bool,
+    apx_room_info: Option<ApxRoomInfoDisplay>,
     game_display_names: HashMap<String, String>,
     // Map from original player name to AP truncated slot name
     truncated_names: HashMap<String, String>,
@@ -118,8 +120,33 @@ pub async fn room<'a>(
         HashMap::new()
     };
 
+    let apx_room_info = fetch_apx_room_info(
+        &lobby_config.apx_root,
+        &lobby_config.apx_api_key,
+        &room.id.to_string(),
+    )
+    .await
+    .unwrap_or(None)
+    .map(|info| ApxRoomInfoDisplay {
+        lobby_room_id: info.lobby_room_id,
+        ap_room_id: info.ap_room_id,
+        normal_addr: format!("ap{}.{}", info.normal_id, lobby_config.apx_ws_root),
+        reduced_addr: format!("ap{}.{}", info.reduced_id, lobby_config.apx_ws_root),
+        disabled: info.disabled,
+        per_slot_passwords: info.per_slot_passwords,
+        deathlink_disabled: info.deathlink_disabled,
+        reduced_access: info.reduced_access,
+    });
+
     Ok(RoomTpl {
-        base: TplContext::from_session("room", session, ctx, lobby_config, Some(room.settings.name.clone())).await,
+        base: TplContext::from_session(
+            "room",
+            session,
+            ctx,
+            lobby_config,
+            Some(room.settings.name.clone()),
+        )
+        .await,
         player_count: yamls.len(),
         unique_player_count,
         unique_game_count,
@@ -133,6 +160,7 @@ pub async fn room<'a>(
         current_user_has_yaml_in_room: user_has_yaml,
         game_display_names,
         truncated_names,
+        apx_room_info,
     })
 }
 

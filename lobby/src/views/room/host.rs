@@ -256,7 +256,7 @@ async fn host_room_delete(
     Ok(rocket::response::Redirect::to(format!("/room/{}/host", room_id)))
 }
 
-async fn fetch_apx_room_info(
+pub async fn fetch_apx_room_info(
   apx_root: &str,
   apx_api_key: &str,
   lobby_room_id: &str,
