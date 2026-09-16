@@ -364,7 +364,14 @@ function renderAnalysisCell(yaml) {
 
 function renderAnalysisSection(yaml) {
     if (yaml.analysis_status == null) {
-        return h("div", { className: "analysis-info muted" }, "Analysis pending...");
+        return h("div", { className: "analysis-info muted" },
+            "Analysis pending...",
+            " ",
+            h("button", {
+                className: "small",
+                onclick: () => retryAnalysis(yaml.yaml_id),
+            }, "Prioritise"),
+        );
     }
 
     if (yaml.analysis_status === "success") {

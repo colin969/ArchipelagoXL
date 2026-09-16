@@ -683,8 +683,16 @@ td {
         function getPopup() {
             const popup = document.createElement("dialog");
             popup.id = "popup"
-            popup.onclick = (event) => { event.target == popup && popup.close(); return true; }
-
+            popup.onclick = (event) => {
+                const rect = popup.getBoundingClientRect();
+                const clickedOutside =
+                    event.clientX < rect.left ||
+                    event.clientX > rect.right ||
+                    event.clientY < rect.top ||
+                    event.clientY > rect.bottom;
+                if (clickedOutside) popup.close();
+                return true;
+            };
 
             const body = document.getElementById("main");
             body.append(popup);
