@@ -171,8 +171,6 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		}
 	}
 
-	connState.authenticated = true
-
 	if len(connState.pendingDatapackGames) > 0 {
 		if err := s.sendDataPackages(ctx, connState.clientConn, connState.pendingDatapackGames); err != nil {
 			s.logf("error sending pending datapackages: %v", err)
@@ -184,6 +182,14 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	if err != nil {
 		return fmt.Errorf("connecting to AP: %w", err)
 	}
+	if game == nil {
+		// Conn refused by server
+		connState.authFailCount += 1
+		if connState.authFailCount > 10 {
+			return connState.clientConn.Close(websocket.StatusNormalClosure, "ConnectionRefused")
+		}
+		return nil
+	}
 	connState.apConn = apConn
 	client := registeredClient{
 		slotId:     slotId,
@@ -192,7 +198,8 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		clientConn: connState.clientConn,
 		reduced:    connState.reduced,
 	}
-	s.connections.Register(slotId, &client, msg.Tags)
+	s.connections.Register(slotId, &client, *game, msg.Tags)
+	connState.authenticated = true
 	connState.registeredClient = &client
 
 	log.Printf("Connected to %s", msg.Name)
@@ -243,7 +250,7 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage, apPort int) (*websocket.Conn, int, *string, error) {
 	// Fix password when talking to ap server (only needed when using per-slot passwords)
 	if s.config.LobbyEnabled {
-		if s.roomInfo.Password {
+		if s.roomInfo.HasPassword() {
 			connectMsg.Password = &s.config.APPassword
 		} else {
 			connectMsg.Password = nil
@@ -302,7 +309,14 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 				Game string `json:"game"`
 			} `json:"slot_info"`
 		}
-		if err := json.Unmarshal(raw, &msg); err != nil || msg.Cmd != "Connected" {
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			continue
+		}
+		if msg.Cmd == "ConnectionRefused" {
+			apConn.CloseNow()
+			return nil, 0, nil, nil
+		}
+		if msg.Cmd != "Connected" {
 			continue
 		}
 		slotId = msg.Slot

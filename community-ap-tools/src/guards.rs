@@ -56,6 +56,7 @@ pub struct MergedSlotInfo {
     pub incomplete_sphere1: bool,
     pub deathlinks_sent: i32,
     pub deathlink_excluded: bool,
+    pub slot_bounces_excluded: bool,
     pub full_feed: bool,
 }
 

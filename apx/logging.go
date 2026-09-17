@@ -18,6 +18,7 @@ const (
 	LogSourceClient LogSource = "client"
 	LogSourceApx    LogSource = "apx"
 	LogSourceServer LogSource = "server"
+	LogSourceApi    LogSource = "api"
 
 	LogLevelDebug LogLevel = "debug"
 	LogLevelInfo  LogLevel = "info"
@@ -63,6 +64,36 @@ func NewLokiLogger(endpoint, roomId string) *LokiLogger {
 	return l
 }
 
+func (l *LokiLogger) formatLine(level LogLevel, msg []byte, slot *string) []byte {
+	buf := linePool.Get().(*[]byte)
+	*buf = (*buf)[:0]
+
+	levelVal, _ := json.Marshal(string(level))
+	msg = bytes.TrimSpace(msg)
+
+	*buf = append(*buf, '{')
+	if slot != nil {
+		slotVal, _ := json.Marshal(*slot)
+		*buf = append(*buf, `"_slot":`...)
+		*buf = append(*buf, slotVal...)
+		*buf = append(*buf, ',')
+	}
+	*buf = append(*buf, `"_level":`...)
+	*buf = append(*buf, levelVal...)
+
+	if len(msg) > 1 && msg[0] == '{' && msg[len(msg)-1] == '}' {
+		*buf = append(*buf, ',')
+		*buf = append(*buf, msg[1:]...) // strip leading '{'
+	} else {
+		msgVal, _ := json.Marshal(string(msg))
+		*buf = append(*buf, `,"msg":`...)
+		*buf = append(*buf, msgVal...)
+		*buf = append(*buf, '}')
+	}
+
+	return *buf
+}
+
 // Log level info by default
 func (l *LokiLogger) Log(slot string, source LogSource, msg []byte) {
 	l.LogAt(slot, source, LogLevelInfo, msg)
@@ -70,42 +101,20 @@ func (l *LokiLogger) Log(slot string, source LogSource, msg []byte) {
 
 // Log with a specific level
 func (l *LokiLogger) LogAt(slot string, source LogSource, level LogLevel, msg []byte) {
-	buf := linePool.Get().(*[]byte)
-	*buf = (*buf)[:0]
-
-	slotVal, _ := json.Marshal(slot)
-	levelVal, _ := json.Marshal(string(level))
-
-	// If json, merge with keys, if not json, wrap in msg
-	msg = bytes.TrimSpace(msg)
-	if len(msg) > 1 && msg[0] == '{' && msg[len(msg)-1] == '}' {
-		// Merge _slot and _level into existing JSON object
-		*buf = append(*buf, `{"_slot":`...)
-		*buf = append(*buf, slotVal...)
-		*buf = append(*buf, `,"_level":`...)
-		*buf = append(*buf, levelVal...)
-		*buf = append(*buf, ',')
-		*buf = append(*buf, msg[1:]...) // strip leading '{'
-	} else {
-		// Wrap plain text under "msg"
-		msgVal, _ := json.Marshal(string(msg))
-		*buf = append(*buf, `{"_slot":`...)
-		*buf = append(*buf, slotVal...)
-		*buf = append(*buf, `,"_level":`...)
-		*buf = append(*buf, levelVal...)
-		*buf = append(*buf, `,"msg":`...)
-		*buf = append(*buf, msgVal...)
-		*buf = append(*buf, '}')
-	}
-
+	line := l.formatLine(level, msg, &slot)
 	select {
-	case l.ch <- lokiEntry{
-		source:    source,
-		line:      *buf,
-		timestamp: time.Now(),
-	}:
+	case l.ch <- lokiEntry{source: source, line: line, timestamp: time.Now()}:
 	default:
-		linePool.Put(buf)
+		linePool.Put(&line)
+	}
+}
+
+func (l *LokiLogger) LogApi(level LogLevel, msg []byte) {
+	line := l.formatLine(level, msg, nil)
+	select {
+	case l.ch <- lokiEntry{source: LogSourceApi, line: line, timestamp: time.Now()}:
+	default:
+		linePool.Put(&line)
 	}
 }
 

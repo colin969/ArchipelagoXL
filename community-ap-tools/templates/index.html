@@ -231,6 +231,40 @@ td {
             altNameInput.focus();
         }
 
+        function openLimitBounceToSlot(slotId, slotName, slotGame, isLimited) {
+            const popup = getPopup();
+
+            const confirmationText = document.createElement("div");
+            const action = isLimited ? "Allow bounces to other slots from " : "Limit bounces to own slot from "
+            confirmationText.innerText = action + slotName + " playing " + slotGame + ". Are you sure?";
+
+            const buttonContainer = document.createElement("div");
+            buttonContainer.className = "button-row";
+
+            const yesButton = document.createElement("button")
+            yesButton.innerText = "Yes"
+            yesButton.addEventListener("click", async () => {
+                const method = isBlocked ? 'DELETE' : 'POST';
+                const response = await fetch(`/api/dashboard/${window.lobby_room_id}/slot_bounce_exclusions/${slotId}`, { method });
+                if (response.ok) {
+                    forceReviewTableRefresh();
+                    popup.remove();
+                } else {
+                    alert("Failed to toggle - " + response.statusText);
+                    popup.remove();
+                }
+            })
+
+            const noButton = document.createElement("button")
+            noButton.innerText = "No"
+            noButton.addEventListener("click", () => popup.remove())
+
+            buttonContainer.appendChild(yesButton)
+            buttonContainer.appendChild(noButton)
+
+            popup.appendChild(confirmationText)
+            popup.appendChild(buttonContainer)
+        }
 
         function openDeathBlock(slotId, slotName, slotGame, isBlocked) {
             const popup = getPopup();

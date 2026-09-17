@@ -23,7 +23,8 @@ type bounceInfoStore struct {
 	deathlinkProbability float64
 	// Slots that aren't allowed to send certain tags
 	// Absurd typing, but should be O(1) because it's all keys in a map, fite me
-	excluded      map[int]map[string]struct{}
+	excludedByTag map[int]map[string]struct{}
+	ownSlotOnly   map[int]struct{}
 	lastDeathlink time.Time
 }
 
@@ -32,9 +33,10 @@ func newBounceInfoStore() *bounceInfoStore {
 		counts: make(map[int]int),
 		// Default off
 		deathlinkProbability: 1,
-		excluded:             make(map[int]map[string]struct{}),
+		excludedByTag:        make(map[int]map[string]struct{}),
 		// Why is Sub a duration by Add a time?
 		lastDeathlink: time.Now().Add(-deathlinkThrottle),
+		ownSlotOnly:   make(map[int]struct{}),
 	}
 }
 
@@ -58,12 +60,12 @@ func (ds *bounceInfoStore) SetProbability(probability float64) {
 	ds.deathlinkProbability = probability
 }
 
-func (ds *bounceInfoStore) GetExclusions() map[int][]string {
+func (ds *bounceInfoStore) GetTagExclusions() map[int][]string {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 	// Make a safe copy of it to return
-	result := make(map[int][]string, len(ds.excluded))
-	for slot, tags := range ds.excluded {
+	result := make(map[int][]string, len(ds.excludedByTag))
+	for slot, tags := range ds.excludedByTag {
 		tagList := make([]string, 0, len(tags))
 		for tag := range tags {
 			tagList = append(tagList, tag)
@@ -73,28 +75,54 @@ func (ds *bounceInfoStore) GetExclusions() map[int][]string {
 	return result
 }
 
-func (ds *bounceInfoStore) Exclude(slotId int, tag string) {
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
-	if ds.excluded[slotId] == nil {
-		ds.excluded[slotId] = make(map[string]struct{})
-	}
-	ds.excluded[slotId][tag] = struct{}{}
-}
-
-func (ds *bounceInfoStore) Unexclude(slotId int, tag string) {
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
-	delete(ds.excluded[slotId], tag)
-	if len(ds.excluded[slotId]) == 0 {
-		delete(ds.excluded, slotId)
-	}
-}
-
-func (ds *bounceInfoStore) IsExcluded(slotId int, tag string) bool {
+func (ds *bounceInfoStore) GetSlotExclusions() []int {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
-	_, ok := ds.excluded[slotId][tag]
+	// Make a safe copy of it to return
+	return slices.Collect(maps.Keys(ds.ownSlotOnly))
+}
+
+func (ds *bounceInfoStore) LimitToOwnSlot(slotId int) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	ds.ownSlotOnly[slotId] = struct{}{}
+}
+
+func (ds *bounceInfoStore) RemoveLimitToOwnSlot(slotId int) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	delete(ds.ownSlotOnly, slotId)
+}
+
+func (ds *bounceInfoStore) IsLimitedToOwnSlot(slotId int) bool {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	_, ok := ds.ownSlotOnly[slotId]
+	return ok
+}
+
+func (ds *bounceInfoStore) ExcludeByTag(slotId int, tag string) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if ds.excludedByTag[slotId] == nil {
+		ds.excludedByTag[slotId] = make(map[string]struct{})
+	}
+	ds.excludedByTag[slotId][tag] = struct{}{}
+}
+
+func (ds *bounceInfoStore) UnexcludeByTag(slotId int, tag string) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	delete(ds.excludedByTag[slotId], tag)
+	if len(ds.excludedByTag[slotId]) == 0 {
+		delete(ds.excludedByTag, slotId)
+	}
+}
+
+func (ds *bounceInfoStore) IsExcludedByTag(slotId int, tag string) bool {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	_, ok := ds.excludedByTag[slotId][tag]
 	return ok
 }
 
@@ -138,7 +166,7 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 
 	// Strip any excluded tags
 	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
-		return s.bounceInfo.IsExcluded(connState.registeredClient.slotId, tag)
+		return s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, tag)
 	})
 
 	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg)
@@ -174,10 +202,10 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 
 	// Strip any excluded tags
 	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
-		return s.bounceInfo.IsExcluded(connState.registeredClient.slotId, tag)
+		return s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, tag)
 	})
 
-	if s.bounceInfo.IsExcluded(connState.registeredClient.slotId, "DeathLink") {
+	if s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, "DeathLink") {
 		log.Printf("deathlink blocked for excluded slot %q", *connState.slotName)
 		return nil
 	}

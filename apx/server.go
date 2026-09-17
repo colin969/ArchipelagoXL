@@ -119,12 +119,48 @@ func (cn *ConnectNames) GetAltName(connectName string) *string {
 	return nil
 }
 
+type RoomInfoStore struct {
+	mu  sync.RWMutex
+	msg RoomInfoMessage
+	// immutable
+	DatapackageChecksums map[string]string
+}
+
+func newRoomInfoStore(msg RoomInfoMessage) *RoomInfoStore {
+	checksums := make(map[string]string, len(msg.DatapackageChecksums))
+	maps.Copy(checksums, msg.DatapackageChecksums)
+	return &RoomInfoStore{
+		msg:                  msg,
+		DatapackageChecksums: checksums,
+	}
+}
+
+func (ris *RoomInfoStore) Load() RoomInfoMessage {
+	ris.mu.RLock()
+	defer ris.mu.RUnlock()
+	msg := ris.msg
+	msg.Time = float64(time.Now().UnixNano()) / 1e9
+	return msg
+}
+
+func (ris *RoomInfoStore) Store(msg RoomInfoMessage) {
+	ris.mu.Lock()
+	defer ris.mu.Unlock()
+	ris.msg = msg
+}
+
+func (ris *RoomInfoStore) HasPassword() bool {
+	ris.mu.RLock()
+	defer ris.mu.RUnlock()
+	return ris.msg.Password
+}
+
 type ApxRoom struct {
 	perSlotPasswords bool
 	lastActivity     *atomic.Int64
 	logf             func(f string, v ...any)
 	config           *Config
-	roomInfo         RoomInfoMessage
+	roomInfo         *RoomInfoStore
 	roomPlayers      *RoomPlayers // Immutable
 	altConnectNames  *ConnectNames
 	passwords        *passwordStore
@@ -148,33 +184,60 @@ type registeredClient struct {
 	reduced    bool
 }
 
+func removeClient(clients []*registeredClient, target *registeredClient) []*registeredClient {
+	i := slices.Index(clients, target)
+	if i < 0 {
+		return clients
+	}
+	return slices.Delete(clients, i, i+1)
+}
+
 // Stores data from all connected clients which is needed globally
 type connectionRegistry struct {
 	mu      sync.RWMutex
 	clients map[int][]*registeredClient
 	// Tags being covered here means registeredClient can stay immutable
-	tags map[*registeredClient][]string
+	tags          map[*registeredClient][]string
+	clientsByGame map[string][]*registeredClient
+	clientsByTag  map[string][]*registeredClient
 }
 
 func newConnectionRegistry() *connectionRegistry {
 	return &connectionRegistry{
-		clients: make(map[int][]*registeredClient),
-		tags:    make(map[*registeredClient][]string),
+		clients:       make(map[int][]*registeredClient),
+		tags:          make(map[*registeredClient][]string),
+		clientsByGame: make(map[string][]*registeredClient),
+		clientsByTag:  make(map[string][]*registeredClient),
 	}
 }
 
-func (cr *connectionRegistry) Register(slotId int, client *registeredClient, tags []string) {
+func (cr *connectionRegistry) Register(slotId int, client *registeredClient, game string, tags []string) {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 	cr.clients[slotId] = append(cr.clients[slotId], client)
 	cr.tags[client] = tags
+	cr.clientsByGame[game] = append(cr.clientsByGame[game], client)
+	for _, tag := range tags {
+		cr.clientsByTag[tag] = append(cr.clientsByTag[tag], client)
+	}
 }
 
 // There HAS to be a safer way of doing this surely
 func (cr *connectionRegistry) UpdateTags(client *registeredClient, tags []string) {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
+	// Remove from old tag indices
+	for _, tag := range cr.tags[client] {
+		cr.clientsByTag[tag] = removeClient(cr.clientsByTag[tag], client)
+		if len(cr.clientsByTag[tag]) == 0 {
+			delete(cr.clientsByTag, tag)
+		}
+	}
+	// Add to new tag indices
 	cr.tags[client] = tags
+	for _, tag := range tags {
+		cr.clientsByTag[tag] = append(cr.clientsByTag[tag], client)
+	}
 }
 
 func (cr *connectionRegistry) Kick(slotId int) {
@@ -182,9 +245,12 @@ func (cr *connectionRegistry) Kick(slotId int) {
 	defer cr.mu.Unlock()
 
 	// Disconnect all clients to this slot
-	clients := cr.clients[slotId]
-	for _, client := range clients {
+	for _, client := range cr.clients[slotId] {
 		client.cancel()
+		cr.clientsByGame[*client.game] = removeClient(cr.clientsByGame[*client.game], client)
+		for _, tag := range cr.tags[client] {
+			cr.clientsByTag[tag] = removeClient(cr.clientsByTag[tag], client)
+		}
 		delete(cr.tags, client)
 	}
 	delete(cr.clients, slotId)
@@ -205,31 +271,63 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 		delete(cr.clients, client.slotId)
 	}
 
-	delete(cr.tags, client)
-	if len(cr.clients[client.slotId]) == 0 {
-		delete(cr.clients, client.slotId)
+	game := *client.game
+	cr.clientsByGame[game] = removeClient(cr.clientsByGame[game], client)
+	if len(cr.clientsByGame[game]) == 0 {
+		delete(cr.clientsByGame, game)
 	}
+	for _, tag := range cr.tags[client] {
+		cr.clientsByTag[tag] = removeClient(cr.clientsByTag[tag], client)
+		if len(cr.clientsByTag[tag]) == 0 {
+			delete(cr.clientsByTag, tag)
+		}
+	}
+	delete(cr.tags, client)
 }
 
 func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, bounceInfo *bounceInfoStore, slotId int, msg BounceMessage) {
 	// Strip excluded tags
 	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
-		return bounceInfo.IsExcluded(slotId, tag)
+		return bounceInfo.IsExcludedByTag(slotId, tag)
 	})
-	cr.BroadcastBounce(ctx, msg)
+	cr.BroadcastBounce(ctx, msg, bounceInfo, slotId)
 }
 
-func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMessage) {
-	msgTagSet := buildTagSet(msg.Tags)
+func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int) {
+	// Most will match 2 clients, but give a tiny bit of give
+	targets := make([]*registeredClient, 0, 4)
+	seen := make(map[*registeredClient]struct{}, 4)
+	senderLimited := bounceInfo.IsLimitedToOwnSlot(senderSlot)
+
+	addTarget := func(c *registeredClient) {
+		if _, ok := seen[c]; ok {
+			return
+		}
+		seen[c] = struct{}{}
+		if senderLimited && c.slotId != senderSlot {
+			return
+		} else if c.slotId != senderSlot && bounceInfo.IsLimitedToOwnSlot(c.slotId) {
+			return
+		}
+		targets = append(targets, c)
+	}
 
 	// Lock because client tags are mutable
 	cr.mu.RLock()
-	var targets []*registeredClient
-	for _, clients := range cr.clients {
-		for _, c := range clients {
-			if hasTagOverlap(cr.tags[c], msgTagSet) || hasSlotOverlap(c.slotId, msg.Slots) || hasGameOverlap(*c.game, msg.Games) {
-				targets = append(targets, c)
-			}
+
+	for _, tag := range msg.Tags {
+		for _, c := range cr.clientsByTag[tag] {
+			addTarget(c)
+		}
+	}
+	for _, game := range msg.Games {
+		for _, c := range cr.clientsByGame[game] {
+			addTarget(c)
+		}
+	}
+	for _, slotId := range msg.Slots {
+		for _, c := range cr.clients[slotId] {
+			addTarget(c)
 		}
 	}
 	cr.mu.RUnlock()
@@ -298,8 +396,9 @@ func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId 
 	}
 	cr.mu.RUnlock()
 
+	wrappedMsg := []any{message}
 	for _, c := range targets {
-		_ = wsjson.Write(ctx, c.clientConn, []any{message})
+		_ = wsjson.Write(ctx, c.clientConn, wrappedMsg)
 	}
 }
 
@@ -358,7 +457,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 	defer cancel()
 
 	// Send RoomInfo as opening message
-	if err := wsjson.Write(ctx, c, []any{s.roomInfo}); err != nil {
+	if err := wsjson.Write(ctx, c, []any{s.roomInfo.Load()}); err != nil {
 		s.logf("failed to send RoomInfo: %v", err)
 		return
 	}
@@ -484,15 +583,6 @@ func hasSlotOverlap(slotID int, slots []int) bool {
 
 func hasGameOverlap(game string, games []string) bool {
 	return slices.Contains(games, game)
-}
-
-// Turns an array into an O(1) map
-func buildTagSet(tags []string) map[string]struct{} {
-	set := make(map[string]struct{}, len(tags))
-	for _, t := range tags {
-		set[t] = struct{}{}
-	}
-	return set
 }
 
 func (dt *debugTap) HasListeners(slotId int) bool {

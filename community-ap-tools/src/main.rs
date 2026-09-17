@@ -76,6 +76,9 @@ pub struct Deathlink {
 #[derive(Deserialize, Debug)]
 struct ExclusionsResponse(HashMap<usize, Vec<String>>);
 
+#[derive(Deserialize, Debug)]
+struct SlotExclusionsResponse(Vec<usize>);
+
 #[derive(Deserialize, Serialize)]
 struct ProbabilityResponse {
     probability: f64,
@@ -234,6 +237,33 @@ async fn fetch_exclusions(
 
     let data: ExclusionsResponse = response.json().await?;
     Ok(data.0)
+}
+
+async fn fetch_slot_exclusions(
+    config: &Config,
+    room_id: &str,
+) -> crate::error::Result<HashSet<usize>> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!(
+            "{}/api/{}/slot_bounce_exclusions",
+            apx_api_root, room_id
+        ))
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?;
+
+    let data: SlotExclusionsResponse = response.json().await?;
+    Ok(data.0.into_iter().collect())
 }
 
 async fn fetch_incomplete_sphere1s(
@@ -406,6 +436,80 @@ async fn proxy_remove_exclusion(
         .delete(format!(
             "{}api/{}/bounce_exclusions/{}/{}",
             apx_api_root, lobby_room_id, slot_id, tag_name
+        ))
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?;
+
+    // Invalidate tracker info cache
+    *cache.0.lock().await = None;
+
+    Ok(rocket::http::Status::from_code(response.status().as_u16())
+        .unwrap_or(rocket::http::Status::InternalServerError))
+}
+
+#[rocket::post("/api/dashboard/<lobby_room_id>/slot_bounce_exclusions/<slot_id>")]
+async fn proxy_add_slot_exclusion(
+    _session: ModeratorSession,
+    lobby_room_id: &str,
+    slot_id: i32,
+    config: &State<Config>,
+    cache: &State<TrackerInfoCache>,
+) -> crate::error::Result<(
+    rocket::http::Status,
+    rocket::serde::json::Json<serde_json::Value>,
+)> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!(
+            "{}api/{}/slot_bounce_exclusions/{}",
+            apx_api_root, lobby_room_id, slot_id
+        ))
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?;
+
+    // Invalidate tracker info cache
+    *cache.0.lock().await = None;
+
+    let status = rocket::http::Status::from_code(response.status().as_u16())
+        .unwrap_or(rocket::http::Status::InternalServerError);
+    let body: serde_json::Value = response.json().await?;
+
+    Ok((status, rocket::serde::json::Json(body)))
+}
+
+#[rocket::delete("/api/dashboard/<lobby_room_id>/slot_bounce_exclusions/<slot_id>")]
+async fn proxy_remove_slot_exclusion(
+    _session: ModeratorSession,
+    lobby_room_id: &str,
+    slot_id: i32,
+    config: &State<Config>,
+    cache: &State<TrackerInfoCache>,
+) -> crate::error::Result<rocket::http::Status> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .delete(format!(
+            "{}api/{}/slot_bounce_exclusions/{}",
+            apx_api_root, lobby_room_id, slot_id
         ))
         .header("X-API-Key", apx_api_key)
         .send()
@@ -1120,6 +1224,8 @@ async fn main() -> crate::error::Result<()> {
                 deathlinks,
                 proxy_add_exclusion,
                 proxy_remove_exclusion,
+                proxy_add_slot_exclusion,
+                proxy_remove_slot_exclusion,
                 get_deathlink_probability,
                 set_deathlink_probability,
                 release,

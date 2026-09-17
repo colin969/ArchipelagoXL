@@ -10,7 +10,7 @@ use rocket::{State, routes, serde::json::Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Config, TRACKER_CACHE_TTL, TrackerInfoCache, fetch_full_feed_slots, fetch_deathlinks, fetch_exclusions, fetch_incomplete_sphere1s};
+use crate::{Config, TRACKER_CACHE_TTL, TrackerInfoCache, fetch_deathlinks, fetch_exclusions, fetch_full_feed_slots, fetch_incomplete_sphere1s, fetch_slot_exclusions};
 use crate::auth::{AdminSession, LoggedInSession, ModeratorSession};
 use crate::error;
 use crate::jobs::YamlAnalysisQueue;
@@ -466,6 +466,7 @@ async fn get_tracker_info(
     let full_feed_slots = fetch_full_feed_slots(config, &room_id).await.unwrap_or_default();
     let deathlinks = fetch_deathlinks(config, &room_id).await.unwrap_or_default();
     let exclusions = fetch_exclusions(config, &room_id).await.unwrap_or_default();
+    let slot_exclusons = fetch_slot_exclusions(config, &room_id).await.unwrap_or_default();
     let incomplete_sphere1s: HashSet<usize> = fetch_incomplete_sphere1s(config, &room_id)    
         .await
         .unwrap_or_default()
@@ -485,6 +486,7 @@ async fn get_tracker_info(
                 deathlinks_sent: *deathlinks.get(&slot.id).unwrap_or(&0),
                 deathlink_excluded: exclusions.get(&slot.id).map_or(false, |slots| slots.contains(&deathlink_tag)),
                 incomplete_sphere1: incomplete_sphere1s.contains(&slot.id),
+                slot_bounces_excluded: slot_exclusons.contains(&slot.id),
                 id: slot.id,
                 name: slot.name,
                 game: slot.game,

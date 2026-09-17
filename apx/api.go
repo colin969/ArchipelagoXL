@@ -337,6 +337,10 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		store:    store,
 	}
 
+	roomLoggedHandler := func(h http.HandlerFunc) http.HandlerFunc {
+		return srv.logRequestMiddleware(h).ServeHTTP
+	}
+
 	r := mux.NewRouter()
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
 	api := r.PathPrefix("/api").Subrouter()
@@ -350,21 +354,23 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	room := api.PathPrefix("/{roomId}").Subrouter()
 	room.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
-	room.HandleFunc("/release/{slotName}", srv.handleRelease).Methods(http.MethodGet)
-	room.HandleFunc("/refresh_passwords", srv.handlePasswordRefresh).Methods(http.MethodPost)
+	room.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
+	room.HandleFunc("/refresh_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
 	room.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
 	room.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
 	room.HandleFunc("/full_feed", srv.handleFullFeed).Methods(http.MethodGet)
-	room.HandleFunc("/full_feed/{slotId}", srv.handleFullFeedUser).Methods(http.MethodPost, http.MethodDelete)
+	room.HandleFunc("/full_feed/{slotId}", roomLoggedHandler(srv.handleFullFeedUser)).Methods(http.MethodPost, http.MethodDelete)
 	room.HandleFunc("/bounce_exclusions", srv.handleBounceExclusionsList).Methods(http.MethodGet)
-	room.HandleFunc("/bounce_exclusions/{slotId}/{tag}", srv.handleBounceExclusions).Methods(http.MethodPost, http.MethodDelete)
+	room.HandleFunc("/bounce_exclusions/{slotId}/{tag}", roomLoggedHandler(srv.handleBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
+	room.HandleFunc("/slot_bounce_exclusions", srv.handleSlotBounceExclusionsList).Methods(http.MethodGet)
+	room.HandleFunc("/slot_bounce_exclusions/{slotId}", roomLoggedHandler(srv.handleSlotBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
 	room.HandleFunc("/deathlink_probability", srv.handleProbability).Methods(http.MethodGet, http.MethodPost)
 	room.HandleFunc("/spheres", srv.handleAllSpheres).Methods(http.MethodGet)
 	room.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
 	room.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
-	room.HandleFunc("/debug/slot/{slotId}", srv.handleDebugTap)
+	room.HandleFunc("/debug/slot/{slotId}", roomLoggedHandler(srv.handleDebugTap))
 	// Alt names need more work to be listable and deletable, will reset on restart for now
-	room.HandleFunc("/alt_connect_name", srv.handleAltConnectName).Methods(http.MethodPost)
+	room.HandleFunc("/alt_connect_name", roomLoggedHandler(srv.handleAltConnectName)).Methods(http.MethodPost)
 
 	// Check every 2m, kill after 2h
 	srv.startRoomKiller(time.Duration(2)*time.Minute, time.Duration(2)*time.Hour)
@@ -409,6 +415,30 @@ func startWsRouter(cfg *Config, rm *RoomManager) error {
 	}()
 
 	return nil
+}
+
+// Only works on room routes
+func (rm *RoomManager) logRequestMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		roomId := vars["roomId"]
+
+		room, ok := rm.registry.Get(roomId)
+		if ok && room.apx.lokiLogger != nil {
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
+			if err == nil {
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				msg, _ := json.Marshal(map[string]string{
+					"method": r.Method,
+					"path":   r.URL.Path,
+					"body":   string(body),
+				})
+				room.apx.lokiLogger.LogApi(LogLevelDebug, msg)
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
@@ -788,12 +818,12 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		return nil, fmt.Errorf("failed to get %s/api/room/%s/players from AP server, aborting: %w", rm.config.ApApiRoot, apRoomId, err)
 	}
 
-	roomInfo, err := connectAndGetRoomInfo(rm.config.APHost, apPort)
+	roomInfoMsg, err := connectAndGetRoomInfo(rm.config.APHost, apPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get RoomInfo from AP server, aborting: %w", err)
 	}
 	if perSlotPasswords == true {
-		roomInfo.Password = true
+		roomInfoMsg.Password = true
 	}
 
 	spheres, err := fetchRoomSpheres(rm.config.ApApiRoot, apRoomId)
@@ -807,7 +837,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	connRegistry := newConnectionRegistry()
 
 	// Only use memory costly optimizations when at least 50 datapackages in the room
-	var useDatapackageOptimization = len(roomInfo.DatapackageChecksums) >= 50
+	var useDatapackageOptimization = len(roomInfoMsg.DatapackageChecksums) >= 50
 	datapackageCache := newDataPackageStore(useDatapackageOptimization) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
@@ -828,7 +858,9 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 
 	// Room config options
 	if deathlinkDisabled {
-		bounceInfo.deathlinkProbability = 0
+		for slotId := range roomPlayers.slots {
+			bounceInfo.ExcludeByTag(slotId, "DeathLink")
+		}
 	}
 
 	if !reducedAccess {
@@ -837,12 +869,13 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		}
 	}
 
+	roomInfoStore := newRoomInfoStore(*roomInfoMsg)
 	// Create APX room
 	apx := &ApxRoom{
 		lastActivity:     &lastActivity,
 		logf:             log.Printf,
 		config:           rm.config,
-		roomInfo:         *roomInfo,
+		roomInfo:         roomInfoStore,
 		roomPlayers:      roomPlayers,
 		altConnectNames:  altConnectNames,
 		passwords:        passwordStore,
@@ -884,6 +917,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		log.Printf("initial checked locations fetch failed: %v", err)
 	}
 	room.startCheckedLocationPoller(ctx, rm.config.ApApiRoot, apRoomId, 30*time.Second)
+	room.startRoomInfoPoller(ctx, rm.config.APHost, 30*time.Second)
 
 	var normalId, reducedId int
 	if normalIdPtr != nil {
@@ -1055,7 +1089,7 @@ func (rm *RoomManager) handleBounceExclusionsList(w http.ResponseWriter, r *http
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(room.apx.bounceInfo.GetExclusions())
+	json.NewEncoder(w).Encode(room.apx.bounceInfo.GetTagExclusions())
 }
 
 func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Request) {
@@ -1079,12 +1113,47 @@ func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Req
 
 	switch r.Method {
 	case http.MethodPost:
-		room.apx.bounceInfo.Exclude(slotId, tag)
+		room.apx.bounceInfo.ExcludeByTag(slotId, tag)
 		json.NewEncoder(w).Encode(map[string]any{"excluded": true})
 
 	case http.MethodDelete:
-		room.apx.bounceInfo.Unexclude(slotId, tag)
+		room.apx.bounceInfo.UnexcludeByTag(slotId, tag)
 		json.NewEncoder(w).Encode(map[string]any{"excluded": false})
+	}
+}
+
+func (rm *RoomManager) handleSlotBounceExclusionsList(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(room.apx.bounceInfo.GetSlotExclusions())
+}
+
+func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	vars := mux.Vars(r)
+	slotId, err := strconv.Atoi(vars["slotId"])
+	if err != nil {
+		http.Error(w, "invalid slotId", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		room.apx.bounceInfo.LimitToOwnSlot(slotId)
+		json.NewEncoder(w).Encode(map[string]any{"limited": true})
+
+	case http.MethodDelete:
+		room.apx.bounceInfo.RemoveLimitToOwnSlot(slotId)
+		json.NewEncoder(w).Encode(map[string]any{"limited": false})
 	}
 }
 
@@ -1391,15 +1460,33 @@ func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
 	return false
 }
 
-// TODO: Cancel on context cancel
-func (rm *HostedRoom) startCheckedLocationPoller(ctx context.Context, apApiRoot, apRoomId string, interval time.Duration) {
+func (hr *HostedRoom) startRoomInfoPoller(ctx context.Context, apHost string, interval time.Duration) {
 	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			default:
+			case <-ticker.C:
+				msg, err := connectAndGetRoomInfo(apHost, hr.apx.apPort)
+				if err != nil {
+					log.Printf("room %s: failed to refresh RoomInfo: %v", hr.lobbyRoomId, err)
+					continue
+				}
+				// Preserve password override set at startup
+				if hr.apx.perSlotPasswords {
+					msg.Password = true
+				}
+				hr.apx.roomInfo.Store(*msg)
 			}
+		}
+	}()
+}
+
+func (rm *HostedRoom) startCheckedLocationPoller(ctx context.Context, apApiRoot, apRoomId string, interval time.Duration) {
+	go func() {
+		for {
 			if err := rm.refreshCheckedLocations(apApiRoot, apRoomId); err != nil {
 				log.Printf("refreshing checked locations: %v", err)
 			}

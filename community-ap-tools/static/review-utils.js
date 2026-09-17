@@ -332,7 +332,14 @@ function createTrackerTable(tableId)
                 }
             },
             {
-                label: "Toggle DeathBlock",
+                label: "Toggle Limit Bounce to Slot",
+                action: function (event, row) {
+                    const { id, name, game, slot_bounces_excluded } = row.getData();
+                    openLimitBounceToSlot(id, name, game, slot_bounces_excluded);
+                }
+            },
+            {
+                label: "Toggle DeathLink Block",
                 action: function (event, row) {
                     const { id, name, game, deathlink_excluded } = row.getData();
                     openDeathBlock(id, name, game, deathlink_excluded);
@@ -409,6 +416,9 @@ function createTrackerTable(tableId)
                 return !data.deathlink_excluded;
             }, hozAlign: "center", formatter: "tickCross" },
             { title: "Deaths", field: "deathlinks_sent", bottomCalc: "sum" },
+            { title: "Isolated", field: "slot_isolated", mutator: function (value, data) {
+                return !data.slot_bounces_excluded;
+            }, hozAlign: "center", formatter: "tickCross" },
             { title: "FF", field: "full_feed", formatter: "tickCross", hozAlign: "center" },
         ]
     });
