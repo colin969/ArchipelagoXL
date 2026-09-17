@@ -75,7 +75,7 @@ func TestBroadcastBounce(t *testing.T) {
 				bounceInfo.LimitToOwnSlot(tc.senderSlot)
 			}
 
-			reg := newConnectionRegistry()
+			reg := newConnectionRegistry(nil, nil)
 			reg.Register(tc.clientSlot, rc, tc.clientGame, tc.clientTags)
 
 			reg.BroadcastBounce(context.Background(), BounceMessage{
@@ -129,7 +129,7 @@ func newTestWSClient(t *testing.T) (*websocket.Conn, <-chan struct{}) {
 }
 
 func TestConnectionRegistry_SuccessfulConnect(t *testing.T) {
-	cr := newConnectionRegistry()
+	cr := newConnectionRegistry(nil, nil)
 	game := "TestGame"
 	client := &registeredClient{
 		slotId: 1,
@@ -158,7 +158,7 @@ func TestConnectionRegistry_SuccessfulConnect(t *testing.T) {
 }
 
 func TestConnectionRegistry_UnregisterAfterConnect(t *testing.T) {
-	cr := newConnectionRegistry()
+	cr := newConnectionRegistry(nil, nil)
 	game := "TestGame"
 	client := &registeredClient{
 		slotId: 1,
@@ -188,7 +188,7 @@ func TestConnectionRegistry_UnregisterAfterConnect(t *testing.T) {
 }
 
 func TestConnectionRegistry_MultipleConnectsSameSlot(t *testing.T) {
-	cr := newConnectionRegistry()
+	cr := newConnectionRegistry(nil, nil)
 	game := "TestGame"
 	c1 := &registeredClient{slotId: 1, game: &game}
 	c2 := &registeredClient{slotId: 1, game: &game}

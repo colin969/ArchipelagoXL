@@ -9,6 +9,7 @@ type metrics struct {
 	incomingPackets   prometheus.CounterVec
 	bouncePackets     prometheus.CounterVec
 	connectedClients  prometheus.GaugeVec
+	connectedSlots    prometheus.GaugeVec
 	retryStormClients prometheus.CounterVec
 }
 
@@ -34,6 +35,13 @@ func initMetrics() (*prometheus.Registry, *metrics) {
 			prometheus.GaugeOpts{
 				Name: "apx_connections",
 				Help: "Number of connections to room",
+			},
+			[]string{"room"},
+		),
+		connectedSlots: *promauto.With(reg).NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "apx_slots_connected",
+				Help: "Number of slots connected to room",
 			},
 			[]string{"room"},
 		),

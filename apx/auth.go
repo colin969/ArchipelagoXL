@@ -45,7 +45,7 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 	}
 
 	log.Printf("reconnect (authed): game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
-		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, msg.SlotData)
+		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData)
 
 	// If they're trying to switch slots, drop the connection. Shouldn't break anything important.
 	if connState.slotName != nil && *connState.slotName != msg.Name {
@@ -91,7 +91,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	}
 
 	log.Printf("connect: game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
-		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, msg.SlotData)
+		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData)
 
 	connState.slotName = &msg.Name
 

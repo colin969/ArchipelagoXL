@@ -247,7 +247,6 @@ func connectAndGetRoomInfo(apHost string, apPort int) (*RoomInfoMessage, error) 
 			return nil, fmt.Errorf("failed to parse RoomInfo: %w", err)
 		}
 
-		log.Printf("connected to AP server: seed=%q", roomInfo.SeedName)
 		return &roomInfo, nil
 	}
 

@@ -200,25 +200,37 @@ type connectionRegistry struct {
 	tags          map[*registeredClient][]string
 	clientsByGame map[string][]*registeredClient
 	clientsByTag  map[string][]*registeredClient
+	// Just a copy of the static data so we can use it during register / unregister etc
+	lobbyRoomId *string
+	metrics     *metrics
 }
 
-func newConnectionRegistry() *connectionRegistry {
+func newConnectionRegistry(lobbyRoomId *string, metrics *metrics) *connectionRegistry {
 	return &connectionRegistry{
 		clients:       make(map[int][]*registeredClient),
 		tags:          make(map[*registeredClient][]string),
 		clientsByGame: make(map[string][]*registeredClient),
 		clientsByTag:  make(map[string][]*registeredClient),
+		lobbyRoomId:   lobbyRoomId,
+		metrics:       metrics,
 	}
 }
 
 func (cr *connectionRegistry) Register(slotId int, client *registeredClient, game string, tags []string) {
 	cr.mu.Lock()
-	defer cr.mu.Unlock()
 	cr.clients[slotId] = append(cr.clients[slotId], client)
 	cr.tags[client] = tags
 	cr.clientsByGame[game] = append(cr.clientsByGame[game], client)
 	for _, tag := range tags {
 		cr.clientsByTag[tag] = append(cr.clientsByTag[tag], client)
+	}
+
+	slotsConnected := len(cr.clients)
+
+	cr.mu.Unlock()
+
+	if cr.metrics != nil && cr.lobbyRoomId != nil {
+		cr.metrics.connectedSlots.WithLabelValues(*cr.lobbyRoomId).Set(float64(slotsConnected))
 	}
 }
 
@@ -242,7 +254,6 @@ func (cr *connectionRegistry) UpdateTags(client *registeredClient, tags []string
 
 func (cr *connectionRegistry) Kick(slotId int) {
 	cr.mu.Lock()
-	defer cr.mu.Unlock()
 
 	// Disconnect all clients to this slot
 	for _, client := range cr.clients[slotId] {
@@ -254,16 +265,24 @@ func (cr *connectionRegistry) Kick(slotId int) {
 		delete(cr.tags, client)
 	}
 	delete(cr.clients, slotId)
+
+	slotsConnected := len(cr.clients)
+
+	cr.mu.Unlock()
+
+	if cr.metrics != nil && cr.lobbyRoomId != nil {
+		cr.metrics.connectedSlots.WithLabelValues(*cr.lobbyRoomId).Set(float64(slotsConnected))
+	}
 }
 
 func (cr *connectionRegistry) Unregister(client *registeredClient) {
 	cr.mu.Lock()
-	defer cr.mu.Unlock()
 
 	// Remove client from slot names arrays
 	clients := cr.clients[client.slotId]
 	i := slices.Index(clients, client)
 	if i < 0 {
+		cr.mu.Unlock()
 		return
 	}
 	cr.clients[client.slotId] = slices.Delete(clients, i, i+1)
@@ -283,6 +302,14 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 		}
 	}
 	delete(cr.tags, client)
+
+	slotsConnected := len(cr.clients)
+
+	cr.mu.Unlock()
+
+	if cr.metrics != nil && cr.lobbyRoomId != nil {
+		cr.metrics.connectedSlots.WithLabelValues(*cr.lobbyRoomId).Set(float64(slotsConnected))
+	}
 }
 
 func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, bounceInfo *bounceInfoStore, slotId int, msg BounceMessage) {
@@ -386,14 +413,7 @@ func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId 
 	}
 
 	cr.mu.RLock()
-	var targets []*registeredClient
-	for _, clients := range cr.clients {
-		for _, c := range clients {
-			if c.slotId == slotId {
-				targets = append(targets, c)
-			}
-		}
-	}
+	targets := cr.clients[slotId]
 	cr.mu.RUnlock()
 
 	wrappedMsg := []any{message}

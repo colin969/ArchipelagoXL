@@ -445,6 +445,21 @@ function createTrackerTable(tableId)
 
     window.review_table = table;
 
+    const hideGoaled = document.getElementById("hide-goaled");
+    hideGoaled.checked = localStorage.getItem("hide-goaled") === "true";
+    if (hideGoaled.checked) {
+        table.addFilter("status", "!=", "GoalCompleted");
+    }
+
+    hideGoaled.addEventListener("change", function () {
+        localStorage.setItem("hide-goaled", this.checked);
+        if (this.checked) {
+            table.addFilter("status", "!=", "GoalCompleted");
+        } else {
+            table.removeFilter("status", "!=", "GoalCompleted");
+        }
+    });
+
     setInterval(() => {
         table.replaceData(`/api/dashboard/${window.lobby_room_id}/tracker_info`);
     }, 40000);

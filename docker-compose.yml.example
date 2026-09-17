@@ -257,14 +257,14 @@ services:
              /bin/prometheus --config.file=/etc/prometheus/prometheus.yaml"
     volumes:
       - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
-      - ./data/prometheus/data:/prometheus
+      - prometheus-storage:/prometheus
 
   loki:
     image: grafana/loki:3.0.0
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
       - ./loki-config.yaml:/etc/loki/loki-config.yaml:ro
-      - ./data/loki:/loki
+      - loki-storage:/loki
   
   grafana:
     image: grafana/grafana
@@ -274,4 +274,9 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: grafana
     volumes:
-      - ./data/grafana:/etc/grafana/provisioning/datasources
+      - grafana-storage:/var/lib/grafana
+
+volumes:
+  grafana-storage:
+  loki-storage:
+  prometheus-storage:

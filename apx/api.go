@@ -834,7 +834,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	altConnectNames := newAltConnectNames()
 	passwordStore := newPasswordStore()
 	fullFeedStore := newFullFeedStore()
-	connRegistry := newConnectionRegistry()
+	connRegistry := newConnectionRegistry(&lobbyRoomId, rm.metrics)
 
 	// Only use memory costly optimizations when at least 50 datapackages in the room
 	var useDatapackageOptimization = len(roomInfoMsg.DatapackageChecksums) >= 50
