@@ -332,7 +332,7 @@ function createTrackerTable(tableId)
                 }
             },
             {
-                label: "Toggle Limit Bounce to Slot",
+                label: "Toggle Bounce Isolation",
                 action: function (event, row) {
                     const { id, name, game, slot_bounces_excluded } = row.getData();
                     openLimitBounceToSlot(id, name, game, slot_bounces_excluded);
@@ -407,19 +407,17 @@ function createTrackerTable(tableId)
             { title: "Percent", field: "percent", mutator: function (value, data) {
                 return data.checks;
             }, formatter: checksPercentFormatter, sorter: checksPercentSorter, bottomCalc: checksCalc, bottomCalcFormatter: checksPercentFormatter },
-            { title: "Last Active", field: "last_activity", formatter: lastActivityFormatter, sorter: lastActivitySorter },
-            { title: "Discord Handle", field: "discord_handle", cellClick: onDiscordHandleClick, headerFilter: "input" },
             { title: "S1", field: "incomplete_sphere1", mutator: function (value, data) {
                 return !data.incomplete_sphere1;
             }, hozAlign: "center", formatter: "tickCross" }, 
+            { title: "Last Active", field: "last_activity", formatter: lastActivityFormatter, sorter: lastActivitySorter },
+            { title: "Discord Handle", field: "discord_handle", cellClick: onDiscordHandleClick, headerFilter: "input" },
             { title: "Deaths Allowed", field: "death_allowed", mutator: function (value, data) {
                 return !data.deathlink_excluded;
             }, hozAlign: "center", formatter: "tickCross" },
             { title: "Deaths", field: "deathlinks_sent", bottomCalc: "sum" },
-            { title: "Isolated", field: "slot_isolated", mutator: function (value, data) {
-                return !data.slot_bounces_excluded;
-            }, hozAlign: "center", formatter: "tickCross" },
-            { title: "FF", field: "full_feed", formatter: "tickCross", hozAlign: "center" },
+            { title: "Isolated", field: "slot_bounces_excluded", hozAlign: "center", formatter: "tickCross" },
+            { title: "Normal Access", field: "full_feed", formatter: "tickCross", hozAlign: "center" },
         ]
     });
 
@@ -427,6 +425,16 @@ function createTrackerTable(tableId)
         console.log("data loaded");
         // Really shouldn't be using globals here, but eh
         window.review_data = data;
+
+        // Update summary underneath table
+        const total = data.length;
+        const goaled = data.filter(row => row.status === "GoalCompleted").length;
+        const percent = total > 0 ? ((goaled / total) * 100).toFixed(1) : "0.0";
+        const goaledEl = document.getElementById("slot-goaled");
+        if (goaledEl) {
+            goaledEl.textContent = `${goaled} / ${total} (${percent}%)`;
+        }
+
         if (window.slots_loaded_once !== true)
         {
             refreshSlotsToPing();
