@@ -99,15 +99,21 @@ func (ds *DataPackageStore) AddDataPackage(game string, gd GameData) error {
 // MUST be called before server is live to other users. CANNOT be called safely after.
 // TODO: This should really be optimized to not open a conn for each
 func (s ApxRoom) prefetchDataPackages(ctx context.Context) error {
+	var missing []string
 	for game := range s.roomInfo.DatapackageChecksums {
-		if _, ok := s.datapackages.packages[game]; ok {
-			continue // already cached
+		if _, ok := s.datapackages.packages[game]; !ok {
+			missing = append(missing, game)
 		}
-		gd, err := s.fetchDataPackageFromAPServer(ctx, game)
+	}
+
+	if len(missing) > 0 {
+		gameData, err := s.fetchDataPackagesFromAPServer(ctx, missing)
 		if err != nil {
-			return fmt.Errorf("prefetching datapackage for %q: %w", game, err)
+			return fmt.Errorf("prefetching datapackage for %d games: %w", len(missing), err)
 		}
-		s.datapackages.AddDataPackage(game, gd)
+		for game, gd := range gameData {
+			s.datapackages.AddDataPackage(game, gd)
+		}
 	}
 
 	if s.datapackages.singleRepOptimization {
@@ -175,29 +181,28 @@ func (s ApxRoom) handleGetDataPackage(ctx context.Context, connState *connection
 }
 
 // Grab datapackage from AP server and cache locally so we can provide it to clients ourselves
-func (s ApxRoom) fetchDataPackageFromAPServer(ctx context.Context, game string) (GameData, error) {
+func (s ApxRoom) fetchDataPackagesFromAPServer(ctx context.Context, games []string) (map[string]GameData, error) {
 	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, s.apPort), nil)
 	if err != nil {
-		return GameData{}, fmt.Errorf("dialing upstream: %w", err)
+		return nil, fmt.Errorf("dialing upstream: %w", err)
 	}
 	defer apConn.CloseNow()
-	apConn.SetReadLimit(1 << 24)
 
 	var roomInfo []map[string]any
 	if err := wsjson.Read(ctx, apConn, &roomInfo); err != nil {
-		return GameData{}, fmt.Errorf("reading RoomInfo: %w", err)
+		return nil, fmt.Errorf("reading RoomInfo: %w", err)
 	}
 
-	req := GetDataPackageMessage{Cmd: MessageTypeGetDataPackage, Games: []string{game}}
+	req := GetDataPackageMessage{Cmd: MessageTypeGetDataPackage, Games: games}
 	if err := wsjson.Write(ctx, apConn, []any{req}); err != nil {
-		return GameData{}, fmt.Errorf("sending GetDataPackage: %w", err)
+		return nil, fmt.Errorf("sending GetDataPackage: %w", err)
 	}
 
 	apConn.SetReadLimit(wsReadLimit)
 
 	var responses []map[string]any
 	if err := wsjson.Read(ctx, apConn, &responses); err != nil {
-		return GameData{}, fmt.Errorf("reading DataPackage response for %q (may be too large): %w", game, err)
+		return nil, fmt.Errorf("reading DataPackage response from fetch: %w", err)
 	}
 
 	for _, resp := range responses {
@@ -206,18 +211,16 @@ func (s ApxRoom) fetchDataPackageFromAPServer(ctx context.Context, game string) 
 		}
 		raw, err := json.Marshal(resp)
 		if err != nil {
-			return GameData{}, fmt.Errorf("marshalling DataPackage: %w", err)
+			return nil, fmt.Errorf("marshalling DataPackage: %w", err)
 		}
 		var pkg DataPackageMessage
 		if err := json.Unmarshal(raw, &pkg); err != nil {
-			return GameData{}, fmt.Errorf("unmarshalling DataPackage: %w", err)
+			return nil, fmt.Errorf("unmarshalling DataPackage: %w", err)
 		}
-		if gd, ok := pkg.Data.Games[game]; ok {
-			return gd, nil
-		}
+		return pkg.Data.Games, nil
 	}
 
-	return GameData{}, fmt.Errorf("DataPackage response did not contain game %q", game)
+	return nil, fmt.Errorf("DataPackage fetch Response did not contain DataPackages?")
 }
 
 // Stitch together to avoid doing any json ops on the already encoded datapackage
