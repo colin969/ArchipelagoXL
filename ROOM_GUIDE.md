@@ -64,6 +64,7 @@ Here you will have a few different options:
 Once the room is running, these options cannot be changed until the room is closed.
 
 After it's started, you will see both the Normal Addr, and the Reduced Addr on the host page.
+You will also be assigned an admin password for the room (for !admin commands in a text client), which will work regardless of whether you set a password during generation or not. This cannot currently be changed without deleting the room.
 Players in the lobby room will see the these server addresses, a download to any patch files they need, and their per-slot password if enabled.
 
 Stopping / closing a room will save the progress. Only the host can re-open it via the host page. This will also happen after a 2 hour timeout with no activity.
