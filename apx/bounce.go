@@ -199,6 +199,9 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 
 	s.bounceInfo.Add(connState.registeredClient.slotId)
 	log.Printf("deathlink: slot=%q source=%q cause=%v", *connState.slotName, dl.Source, dl.Cause)
+	if s.logDeath != nil {
+		s.logDeath(connState.registeredClient.slotId)
+	}
 
 	// Strip any excluded tags
 	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
@@ -207,17 +210,24 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 
 	if s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, "DeathLink") {
 		log.Printf("deathlink blocked for excluded slot %q", *connState.slotName)
+		// Still send bounced to same client
+		msg.Cmd = "Bounced"
+		_ = connState.SendMessage(ctx, []any{msg})
 		return nil
 	}
 
 	probability := s.bounceInfo.GetProbability()
 	if probability != 1 && rand.Float64() >= probability {
 		log.Println("deathlink dropped by probability func")
+		msg.Cmd = "Bounced"
+		_ = connState.SendMessage(ctx, []any{msg})
 		return nil
 	}
 
 	if !s.bounceInfo.CanSendDeathlink(time.Now()) {
 		log.Println("deathlink dropped by cooldown")
+		msg.Cmd = "Bounced"
+		_ = connState.SendMessage(ctx, []any{msg})
 		return nil
 	}
 

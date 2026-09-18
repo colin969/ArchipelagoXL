@@ -302,6 +302,14 @@ impl<'r> FromRequest<'r> for ApxRoomInfo {
                 .send()
                 .await
         );
+
+        if result.status() == reqwest::StatusCode::NOT_FOUND {
+            return Outcome::Error((
+                Status::NotFound,
+                anyhow::anyhow!("Room {} not found", lobby_room_id).into(),
+            ));
+        }
+
         let apx_room_info: ApxRoomInfo = try_err_outcome!(result.json().await);
 
         Outcome::Success(apx_room_info)

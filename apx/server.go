@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -109,6 +110,12 @@ func (cn *ConnectNames) SetAltName(realName string, connectName string) {
 	cn.names[connectName] = realName
 }
 
+func (cn *ConnectNames) RemoveAltName(connectName string) {
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	delete(cn.names, connectName)
+}
+
 func (cn *ConnectNames) GetAltName(connectName string) *string {
 	cn.mu.RLock()
 	defer cn.mu.RUnlock()
@@ -173,6 +180,7 @@ type ApxRoom struct {
 	apPort           int
 	debugTap         *debugTap
 	lokiLogger       *LokiLogger
+	logDeath         func(slotId int)
 }
 
 // No strict lock, but this MUST be immutable to be safe
@@ -436,6 +444,17 @@ type connectionState struct {
 	// Retry storm may happen before auth, we can read this after connect for metrics
 	isRetryStormClient bool
 	largeDpRequested   int // Max that were requested at once before auth
+}
+
+func (cs *connectionState) SendMessage(ctx context.Context, msg []any) error {
+	if cs.clientConn != nil {
+		err := wsjson.Write(ctx, cs.clientConn, msg)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("client conn not open")
 }
 
 type MessageType string

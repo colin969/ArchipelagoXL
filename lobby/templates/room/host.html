@@ -48,28 +48,23 @@
                 <td><span style="color: orange; font-weight: bold">Closed</span></td>
             </tr>
             <tr>
-                <td class="shrink">AP Room ID:</td>
-                <td style="font-family: 'Courier New', monospace;">{{ apx.ap_room_id }}</td>
-            </tr>
-            <tr>
-                <td class="shrink">Lobby Room ID:</td>
-                <td style="font-family: 'Courier New', monospace;">{{ apx.lobby_room_id }}</td>
-            </tr>
-            <tr>
                 <td colspan=2>The room is registered but not currently running.</td>
             </tr>
         </tbody>
     </table>
     <form id="host-options-form" method="POST" action="/room/{{ self.room.id }}/host/start">
-        <input type="checkbox" id="per_slot_passwords" name="per_slot_passwords" value="true">
+        <input type="checkbox" id="per_slot_passwords" name="per_slot_passwords" value="true"
+            {% if apx.per_slot_passwords %}checked{% endif %}>
         <label for="per_slot_passwords">Per-slot passwords<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Players will need to use their own personally assigned password.&#10;The host must generate them from the dashboard first. (Dashboard button available after hosting has started)"></i></label>
-        
-        <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true">
+                
+        <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true"
+            {% if apx.deathlink_disabled %}checked{% endif %}>
         <label for="deathlink_disabled">Disable deathlink<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Deathlink messages will not be sent to other clients by default. (Sets probability to 0%)"></i></label>
-        
-        <input type="checkbox" id="reduced_access" name="reduced_access" value="true">
+                
+        <input type="checkbox" id="reduced_access" name="reduced_access" value="true"
+            {% if apx.reduced_access %}checked{% endif %}>
         <label for="reduced_access">Reduced access<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Restricts players to only the Reduced connection address.&#10;This means they won't receive PrintJSON messages unrelated to their slot.&#10;You can manually override this per player on the dashboard. (Dashboard button available after hosting has started)"></i></label>
-        
+                
         <button type="submit" class="button-emulator validation-button">Resume hosting</button>
         <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/delete" onclick="return handleButtonClick(event, 'Are you sure you want to delete this hosted room? This cannot be undone.')">Delete hosted room</a>
     </form>
@@ -91,14 +86,18 @@
                 <td class="shrink">Reduced Addr:</td>
                 <td style="font-family: 'Courier New', monospace;">{{ apx.reduced_addr }}</td>
             </tr>
+            {% if let Some(password) = &apx.server_password %}
             <tr>
-                <td class="shrink">AP Room ID:</td>
-                <td style="font-family: 'Courier New', monospace;">{{ apx.ap_room_id }}</td>
+                <td class="shrink">Admin Password:</td>
+                <td>
+                    <span id="admin-password" style="display: none; font-family: 'Courier New', monospace;">{{ password }}</span>
+                    <button type="button" style="width: unset;" onclick="
+                        document.getElementById('admin-password').style.display = 'inline';
+                        this.remove();
+                    ">Click to Reveal</button>
+                </td>
             </tr>
-            <tr>
-                <td class="shrink">Lobby Room ID:</td>
-                <td style="font-family: 'Courier New', monospace;">{{ apx.lobby_room_id }}</td>
-            </tr>
+            {% endif %}
         </tbody>
     </table>
     <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/stop" onclick="return handleButtonClick(event)">Stop hosting</a>

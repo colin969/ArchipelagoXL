@@ -135,6 +135,16 @@ fn unauthorized(req: &Request) -> crate::error::Result<Redirect> {
     )))
 }
 
+#[derive(Responder)]
+enum DashboardResponse {
+    #[response(status = 200)]
+    Ok(RunIndexTpl),
+    #[response(status = 404)]
+    NotFound(String),
+    #[response(status = 410)]
+    Closed(String),
+}
+
 #[allow(unused_variables)]
 #[rocket::get("/dashboard/<lobby_room_id>")]
 async fn dashboard(
@@ -142,8 +152,15 @@ async fn dashboard(
     lobby_room_id: &str,
     lobby_room: LobbyRoom,
     ap_room: ApRoom,
+    apx_room_info: ApxRoomInfo,
     config: &State<Config>,
-) -> crate::error::Result<RunIndexTpl> {
+) -> crate::error::Result<DashboardResponse> {
+    if apx_room_info.disabled {
+        return Ok(DashboardResponse::Closed(
+            format!("Room {} is closed", lobby_room_id),
+        ));
+    }
+
     if lobby_room.yamls.len() != ap_room.tracker_info.slots.len() {
         Err(anyhow!(
             "The AP room slot number doesn't match the lobby, this won't work"
@@ -162,7 +179,7 @@ async fn dashboard(
         lobby_root_url,
     };
 
-    Ok(index)
+    Ok(DashboardResponse::Ok(index))
 }
 
 async fn fetch_full_feed_slots(
@@ -1083,13 +1100,16 @@ async fn debug_slot_tap(
 #[derive(Deserialize, Serialize)]
 struct AltConnectNameRequest {
     slot_name: String,
-    alt_name: String,
 }
 
-#[rocket::post("/api/dashboard/<lobby_room_id>/alt_connect_name", data = "<request>")]
+#[rocket::post(
+    "/api/dashboard/<lobby_room_id>/alt_connect_name/<alt_name>",
+    data = "<request>"
+)]
 async fn set_alt_connect_name(
     _session: ModeratorSession,
     lobby_room_id: &str,
+    alt_name: &str,
     request: Json<AltConnectNameRequest>,
     config: &State<Config>,
 ) -> crate::error::Result<()> {
@@ -1102,7 +1122,11 @@ async fn set_alt_connect_name(
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
-    let url = apx_api_root.join(&format!("/api/{}/alt_connect_name", lobby_room_id))?;
+    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name/", lobby_room_id))?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("Invalid APX URL"))?
+        .push(alt_name);
+
     let client = reqwest::Client::new();
     let response = client
         .post(url)
@@ -1117,6 +1141,70 @@ async fn set_alt_connect_name(
     }
 
     Ok(())
+}
+
+#[rocket::delete("/api/dashboard/<lobby_room_id>/alt_connect_name/<alt_name>")]
+async fn delete_alt_connect_name(
+    _session: ModeratorSession,
+    lobby_room_id: &str,
+    alt_name: &str,
+    config: &State<Config>,
+) -> crate::error::Result<rocket::http::Status> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
+    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name/", lobby_room_id))?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("Invalid APX URL"))?
+        .push(alt_name);
+
+    let response = reqwest::Client::new()
+        .delete(url)
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?;
+
+    Ok(rocket::http::Status::from_code(response.status().as_u16())
+        .unwrap_or(rocket::http::Status::InternalServerError))
+}
+
+#[rocket::get("/api/dashboard/<lobby_room_id>/alt_connect_name/slot/<slot_name>")]
+async fn get_alt_connect_names_by_slot(
+    _session: ModeratorSession,
+    lobby_room_id: &str,
+    slot_name: &str,
+    config: &State<Config>,
+) -> crate::error::Result<Json<Vec<String>>> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
+    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name/slot/", lobby_room_id))?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("Invalid APX URL"))?
+        .push(slot_name);
+
+    let response = reqwest::Client::new()
+        .get(url)
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| anyhow!("APX returned error: {}", e))?;
+
+    let names: Vec<String> = response.json().await?;
+    Ok(Json(names))
 }
 
 #[rocket::get("/")]
@@ -1241,6 +1329,8 @@ async fn main() -> crate::error::Result<()> {
                 debug_slot_page,
                 debug_slot_tap,
                 set_alt_connect_name,
+                delete_alt_connect_name,
+                get_alt_connect_names_by_slot,
             ],
         )
         .mount("/queues", queues::routes())

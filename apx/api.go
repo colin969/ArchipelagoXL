@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,22 +35,6 @@ type SphereResult struct {
 	Checked   int             `json:"checked"`
 }
 
-type RoomStore struct {
-	db *sql.DB
-}
-
-type RoomRecord struct {
-	LobbyRoomId       string
-	ApRoomId          string
-	NormalId          int
-	ReducedId         int
-	CreatedAt         time.Time
-	Disabled          bool
-	PerSlotPasswords  bool
-	DeathlinkDisabled bool
-	ReducedAccess     bool
-}
-
 type RoomManager struct {
 	config   *Config
 	registry *RoomRegistry
@@ -59,99 +42,6 @@ type RoomManager struct {
 	tlsCfg   *tls.Config
 	reg      *prometheus.Registry
 	store    *RoomStore
-}
-
-func NewRoomStore(path string) (*RoomStore, error) {
-	db, err := sql.Open("sqlite3", path)
-	if err != nil {
-		return nil, fmt.Errorf("opening sqlite: %w", err)
-	}
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS rooms (
-				lobby_room_id        TEXT PRIMARY KEY,
-				ap_room_id           TEXT NOT NULL,
-				normal_port          INTEGER NOT NULL,
-				reduced_port         INTEGER NOT NULL,
-				created_at           INTEGER NOT NULL,
-				disabled             INTEGER NOT NULL DEFAULT 0,
-				per_slot_passwords   INTEGER NOT NULL DEFAULT 0,
-				deathlink_disabled   INTEGER NOT NULL DEFAULT 0,
-				reduced_access       INTEGER NOT NULL DEFAULT 0
-		);
-	`); err != nil {
-		return nil, fmt.Errorf("creating table: %w", err)
-	}
-	return &RoomStore{db: db}, nil
-}
-
-func (s *RoomStore) Disable(lobbyRoomId string) error {
-	_, err := s.db.Exec(`UPDATE rooms SET disabled = 1 WHERE lobby_room_id = ?`, lobbyRoomId)
-	return err
-}
-
-func (s *RoomStore) Save(r RoomRecord) error {
-	_, err := s.db.Exec(`
-			INSERT INTO rooms (lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(lobby_room_id) DO UPDATE SET
-					ap_room_id         = excluded.ap_room_id,
-					normal_port        = excluded.normal_port,
-					reduced_port       = excluded.reduced_port,
-					per_slot_passwords = excluded.per_slot_passwords,
-					deathlink_disabled = excluded.deathlink_disabled,
-					reduced_access     = excluded.reduced_access
-	`, r.LobbyRoomId, r.ApRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(), r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess)
-	return err
-}
-
-func (s *RoomStore) Delete(lobbyRoomId string) error {
-	_, err := s.db.Exec(`DELETE FROM rooms WHERE lobby_room_id = ?`, lobbyRoomId)
-	return err
-}
-
-func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
-	var r RoomRecord
-	var ts int64
-	var perSlotPasswords, deathlinkDisabled, reducedAccess int
-	err := s.db.QueryRow(
-		`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, disabled, per_slot_passwords, deathlink_disabled, reduced_access FROM rooms WHERE lobby_room_id = ?`,
-		lobbyRoomId,
-	).Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalId, &r.ReducedId, &ts, &r.Disabled, &perSlotPasswords, &deathlinkDisabled, &reducedAccess)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	r.CreatedAt = time.Unix(ts, 0)
-	r.PerSlotPasswords = perSlotPasswords == 1
-	r.DeathlinkDisabled = deathlinkDisabled == 1
-	r.ReducedAccess = reducedAccess == 1
-	return &r, nil
-}
-
-func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
-	rows, err := s.db.Query(`SELECT lobby_room_id, ap_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access FROM rooms WHERE disabled = 0`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var records []RoomRecord
-	for rows.Next() {
-		var r RoomRecord
-		var ts int64
-		var perSlotPasswords, deathlinkDisabled, reducedAccess int
-		if err := rows.Scan(&r.LobbyRoomId, &r.ApRoomId, &r.NormalId, &r.ReducedId, &ts, &perSlotPasswords, &deathlinkDisabled, &reducedAccess); err != nil {
-			return nil, err
-		}
-		r.CreatedAt = time.Unix(ts, 0)
-		r.PerSlotPasswords = perSlotPasswords == 1
-		r.DeathlinkDisabled = deathlinkDisabled == 1
-		r.ReducedAccess = reducedAccess == 1
-		records = append(records, r)
-	}
-	return records, rows.Err()
 }
 
 type RoomRegistry struct {
@@ -245,6 +135,7 @@ type ApxRoomInfo struct {
 	PerSlotPasswords  bool   `json:"per_slot_passwords"`
 	DeathlinkDisabled bool   `json:"deathlink_disabled"`
 	ReducedAccess     bool   `json:"reduced_access"`
+	ServerPassword    string `json:"server_password,omitempty"`
 }
 
 // e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
@@ -264,6 +155,7 @@ type HostedRoom struct {
 	cancel               context.CancelFunc
 	deathlinkDisabled    bool
 	reducedAccess        bool
+	serverPassword       string
 }
 
 type Deathlink struct {
@@ -364,7 +256,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	room.HandleFunc("/bounce_exclusions/{slotId}/{tag}", roomLoggedHandler(srv.handleBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
 	room.HandleFunc("/slot_bounce_exclusions", srv.handleSlotBounceExclusionsList).Methods(http.MethodGet)
 	room.HandleFunc("/slot_bounce_exclusions/{slotId}", roomLoggedHandler(srv.handleSlotBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
-	room.HandleFunc("/deathlink_probability", srv.handleProbability).Methods(http.MethodGet, http.MethodPost)
+	room.HandleFunc("/deathlink_probability", srv.handleDeathlinkProbability).Methods(http.MethodGet, http.MethodPost)
 	room.HandleFunc("/spheres", srv.handleAllSpheres).Methods(http.MethodGet)
 	room.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
 	room.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
@@ -381,11 +273,17 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 	for _, record := range records {
-		_, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalId, &record.ReducedId,
-			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, true)
+		room, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalId, &record.ReducedId,
+			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 		if err != nil {
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
+			continue
 		}
+		// Restore persistent data
+		srv.restoreBounceTagExclusions(room)
+		srv.restoreSlotBounceExclusions(room)
+		srv.restoreFullFeedSlots(room)
+		srv.restoreSlotDeaths(room)
 	}
 
 	return srv, r, nil
@@ -454,6 +352,7 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
+			ServerPassword:    room.serverPassword,
 		})
 	}
 
@@ -481,9 +380,7 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if room, ok := rm.registry.Get(roomId); ok {
-		log.Printf("handleRoomStatus: running room %s psp=%v dd=%v ra=%v",
-			room.lobbyRoomId, room.apx.perSlotPasswords, room.deathlinkDisabled, room.reducedAccess)
-		json.NewEncoder(w).Encode(ApxRoomInfo{
+		info := ApxRoomInfo{
 			LobbyRoomId:       room.lobbyRoomId,
 			ApRoomId:          room.apRoomId,
 			NormalId:          room.normalHandler.id,
@@ -492,12 +389,12 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
-		})
+			ServerPassword:    room.serverPassword,
+		}
+		json.NewEncoder(w).Encode(info)
 		return
 	}
 
-	log.Printf("handleRoomStatus: disabled record %s psp=%v dd=%v ra=%v",
-		record.LobbyRoomId, record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess)
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId:       record.LobbyRoomId,
 		ApRoomId:          record.ApRoomId,
@@ -555,9 +452,19 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		record.PerSlotPasswords = *startReq.PerSlotPasswords
 	}
 	if startReq.DeathlinkDisabled != nil {
+		if *startReq.DeathlinkDisabled != record.DeathlinkDisabled {
+			if err := rm.store.DeleteBounceTagExclusionsForTag(record.LobbyRoomId, "DeathLink"); err != nil {
+				log.Printf("failed to delete stale DeathLink tag exclusions for %s: %v", record.LobbyRoomId, err)
+			}
+		}
 		record.DeathlinkDisabled = *startReq.DeathlinkDisabled
 	}
 	if startReq.ReducedAccess != nil {
+		if *startReq.ReducedAccess != record.ReducedAccess {
+			if err := rm.store.DeleteFullFeedSlots(record.LobbyRoomId); err != nil {
+				log.Printf("failed to delete stale full feed slots for %s: %v", record.LobbyRoomId, err)
+			}
+		}
 		record.ReducedAccess = *startReq.ReducedAccess
 	}
 
@@ -602,12 +509,18 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 	_ = apPort
 
 	room, err := rm.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalId, &record.ReducedId,
-		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, true)
+		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
 		return
 	}
+
+	// Restore persistent data
+	rm.restoreBounceTagExclusions(room)
+	rm.restoreSlotBounceExclusions(room)
+	rm.restoreFullFeedSlots(room)
+	rm.restoreSlotDeaths(room)
 
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: room.lobbyRoomId,
@@ -644,6 +557,65 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "room_id": roomId})
+}
+
+func (rm *RoomManager) restoreBounceTagExclusions(room *HostedRoom) {
+	exclusions, err := rm.store.LoadBounceTagExclusions(room.lobbyRoomId)
+	if err != nil {
+		log.Printf("failed to load bounce tag exclusions for %s: %v", room.lobbyRoomId, err)
+		return
+	}
+	for slotId, tags := range exclusions {
+		for _, tag := range tags {
+			if tag == "DeathLink" && room.deathlinkDisabled {
+				// Flip back value saved if deathlinkDisabled is set, since the value was flipped when saved
+				room.apx.bounceInfo.UnexcludeByTag(slotId, tag)
+			} else {
+				room.apx.bounceInfo.ExcludeByTag(slotId, tag)
+			}
+		}
+	}
+}
+
+func (rm *RoomManager) restoreSlotBounceExclusions(room *HostedRoom) {
+	slotExclusions, err := rm.store.LoadSlotBounceExclusions(room.lobbyRoomId)
+	if err != nil {
+		log.Printf("failed to load slot bounce exclusions for %s: %v", room.lobbyRoomId, err)
+		return
+	} else {
+		for _, slotId := range slotExclusions {
+			room.apx.bounceInfo.LimitToOwnSlot(slotId)
+		}
+	}
+}
+
+func (rm *RoomManager) restoreFullFeedSlots(room *HostedRoom) {
+	slots, err := rm.store.LoadFullFeedSlots(room.lobbyRoomId)
+	if err != nil {
+		log.Printf("failed to load full feed slots for %s: %v", room.lobbyRoomId, err)
+		return
+	}
+	for _, slotId := range slots {
+		if !room.reducedAccess {
+			// Flip back value saved if reducedAccess is set, since the value was flipped when saved
+			room.apx.fullFeed.Delete(slotId)
+		} else {
+			room.apx.fullFeed.Set(slotId)
+		}
+	}
+}
+
+func (rm *RoomManager) restoreSlotDeaths(room *HostedRoom) {
+	deaths, err := rm.store.LoadSlotDeaths(room.lobbyRoomId)
+	if err != nil {
+		log.Printf("failed to load slot deaths for %s: %v", room.lobbyRoomId, err)
+		return
+	}
+	room.apx.bounceInfo.mu.Lock()
+	defer room.apx.bounceInfo.mu.Unlock()
+	for slotId, count := range deaths {
+		room.apx.bounceInfo.counts[slotId] = count
+	}
 }
 
 func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) {
@@ -783,7 +755,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	}
 
 	room, err := rm.startNewHostedRoom(apResult.RoomID, lobbyRoomId, nil, nil,
-		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, true)
+		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
@@ -801,7 +773,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 }
 
 func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalIdPtr, reducedIdPtr *int,
-	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, save bool) (*HostedRoom, error) {
+	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, deathlinkProbability float64, save bool) (*HostedRoom, error) {
 
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
@@ -828,7 +800,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 
 	spheres, err := fetchRoomSpheres(rm.config.ApApiRoot, apRoomId)
 	if err != nil {
-		log.Fatalf("prefetching spheres: %v", err)
+		return nil, fmt.Errorf("prefetching spheres: %v", err)
 	}
 
 	altConnectNames := newAltConnectNames()
@@ -840,6 +812,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	var useDatapackageOptimization = len(roomInfoMsg.DatapackageChecksums) >= 50
 	datapackageCache := newDataPackageStore(useDatapackageOptimization) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
+	bounceInfo.deathlinkProbability = deathlinkProbability
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
 	if perSlotPasswords == true {
 		slots, err := fetchSlotPasswords(rm.config, lobbyRoomId)
@@ -889,6 +862,11 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		debugTap:         debugTap,
 		lokiLogger:       lokiLogger,
 		perSlotPasswords: perSlotPasswords,
+		logDeath: func(slotId int) {
+			if err := rm.store.IncrementSlotDeathCount(lobbyRoomId, slotId); err != nil {
+				log.Printf("failed to persist death count for room %s slot %d: %v", lobbyRoomId, slotId, err)
+			}
+		},
 	}
 
 	if err := apx.prefetchDataPackages(context.Background()); err != nil {
@@ -912,6 +890,12 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		deathlinkDisabled:    deathlinkDisabled,
 		reducedAccess:        reducedAccess,
 	}
+
+	password, err := fetchApxServerPassword(rm.config, apRoomId)
+	if err != nil {
+		log.Printf("room %s: failed to fetch server password: %v", lobbyRoomId, err)
+	}
+	room.serverPassword = password
 
 	if err := room.refreshCheckedLocations(rm.config.ApApiRoot, apRoomId); err != nil {
 		log.Printf("initial checked locations fetch failed: %v", err)
@@ -1072,13 +1056,36 @@ func (rm *RoomManager) handleFullFeedUser(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// When reducedAccess, Full feed is disabled for all slots by default.
+	// Value saved to db is flipped, so it can be restored flipped if room restarts
+	// Kinda weird but it works
+	isDefaultEnabled := !room.reducedAccess
+
 	switch r.Method {
 	case http.MethodPost:
 		room.apx.fullFeed.Set(slotId)
+		if isDefaultEnabled {
+			if err := rm.store.DeleteFullFeedSlot(room.lobbyRoomId, slotId); err != nil {
+				log.Printf("failed to remove full feed override for room %s slot %d: %v", room.lobbyRoomId, slotId, err)
+			}
+		} else {
+			if err := rm.store.SetFullFeedSlot(room.lobbyRoomId, slotId); err != nil {
+				log.Printf("failed to save full feed slot for room %s slot %d: %v", room.lobbyRoomId, slotId, err)
+			}
+		}
 		json.NewEncoder(w).Encode(map[string]any{"full_feed": true})
 
 	case http.MethodDelete:
 		room.apx.fullFeed.Delete(slotId)
+		if isDefaultEnabled {
+			if err := rm.store.SetFullFeedSlot(room.lobbyRoomId, slotId); err != nil {
+				log.Printf("failed to save full feed removal override for room %s slot %d: %v", room.lobbyRoomId, slotId, err)
+			}
+		} else {
+			if err := rm.store.DeleteFullFeedSlot(room.lobbyRoomId, slotId); err != nil {
+				log.Printf("failed to remove full feed slot for room %s slot %d: %v", room.lobbyRoomId, slotId, err)
+			}
+		}
 		json.NewEncoder(w).Encode(map[string]any{"full_feed": false})
 	}
 }
@@ -1111,13 +1118,36 @@ func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// When deathlinkDisabled, DeathLink is excluded for all slots by default.
+	// Value saved to db is flipped, so it can be restored flipped if room restarts
+	// Kinda weird but it works
+	isDefaultExcluded := tag == "DeathLink" && room.deathlinkDisabled
+
 	switch r.Method {
 	case http.MethodPost:
 		room.apx.bounceInfo.ExcludeByTag(slotId, tag)
+		if isDefaultExcluded {
+			if err := rm.store.RemoveBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
+				log.Printf("failed to remove tag bounce exclusion override for slot %d tag %s: %v", slotId, tag, err)
+			}
+		} else {
+			if err := rm.store.AddBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
+				log.Printf("failed to save tag bounce exclusion for slot %d tag %s: %v", slotId, tag, err)
+			}
+		}
 		json.NewEncoder(w).Encode(map[string]any{"excluded": true})
 
 	case http.MethodDelete:
 		room.apx.bounceInfo.UnexcludeByTag(slotId, tag)
+		if isDefaultExcluded {
+			if err := rm.store.AddBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
+				log.Printf("failed to save tag bounce exclusion override for slot %d tag %s: %v", slotId, tag, err)
+			}
+		} else {
+			if err := rm.store.RemoveBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
+				log.Printf("failed to remove tag bounce exclusion for slot %d tag %s: %v", slotId, tag, err)
+			}
+		}
 		json.NewEncoder(w).Encode(map[string]any{"excluded": false})
 	}
 }
@@ -1149,15 +1179,21 @@ func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http
 	switch r.Method {
 	case http.MethodPost:
 		room.apx.bounceInfo.LimitToOwnSlot(slotId)
+		if err = rm.store.AddSlotBounceExclusion(room.lobbyRoomId, slotId); err != nil {
+			log.Printf("failed to save slot bounce exclusion for room %s slot %d: %v", room.lobbyRoomId, slotId, err)
+		}
 		json.NewEncoder(w).Encode(map[string]any{"limited": true})
 
 	case http.MethodDelete:
 		room.apx.bounceInfo.RemoveLimitToOwnSlot(slotId)
+		if err = rm.store.RemoveSlotBounceExclusion(room.lobbyRoomId, slotId); err != nil {
+			log.Printf("failed to remove slot bounce exclusion for room %s slot %d: %v", room.lobbyRoomId, slotId, err)
+		}
 		json.NewEncoder(w).Encode(map[string]any{"limited": false})
 	}
 }
 
-func (rm *RoomManager) handleProbability(w http.ResponseWriter, r *http.Request) {
+func (rm *RoomManager) handleDeathlinkProbability(w http.ResponseWriter, r *http.Request) {
 	room, ok := rm.roomFromRequest(w, r)
 	if !ok {
 		return
@@ -1184,6 +1220,11 @@ func (rm *RoomManager) handleProbability(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		room.apx.bounceInfo.SetProbability(*body.Probability)
+		if err := rm.store.SaveDeathlinkProbability(room.lobbyRoomId, *body.Probability); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "db: error setting deathlink probability"})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"probability": room.apx.bounceInfo.GetProbability()})
 	}
 }
@@ -1872,4 +1913,32 @@ func maxRoomPlayerId(nameToId map[string]int) int {
 		}
 	}
 	return maxNumber
+}
+
+func fetchApxServerPassword(cfg *Config, apRoomId string) (string, error) {
+	url := fmt.Sprintf("%s/api/room_status/%s", cfg.ApApiRoot, apRoomId)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating room_status request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", cfg.ApApiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching room_status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %d from /api/room_status/%s", resp.StatusCode, apRoomId)
+	}
+
+	var data struct {
+		ApxServerPassword string `json:"apx_server_password"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", fmt.Errorf("decoding room_status: %w", err)
+	}
+
+	return data.ApxServerPassword, nil
 }

@@ -16,6 +16,7 @@ pub struct ApxRoomInfo {
     pub per_slot_passwords: bool,
     pub deathlink_disabled: bool,
     pub reduced_access: bool,
+    pub server_password: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +29,7 @@ pub struct ApxRoomInfoDisplay {
     pub per_slot_passwords: bool,
     pub deathlink_disabled: bool,
     pub reduced_access: bool,
+    pub server_password: Option<String>,
 }
 
 #[derive(Template, WebTemplate)]
@@ -76,6 +78,7 @@ async fn host_room<'a>(
         per_slot_passwords: info.per_slot_passwords,
         deathlink_disabled: info.deathlink_disabled,
         reduced_access: info.reduced_access,
+        server_password: info.server_password,
     });
 
 

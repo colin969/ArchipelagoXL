@@ -133,6 +133,7 @@ pub async fn room_inner<'a>(
         per_slot_passwords: info.per_slot_passwords,
         deathlink_disabled: info.deathlink_disabled,
         reduced_access: info.reduced_access,
+        server_password: None,
     });
 
     Ok(RoomTpl {
