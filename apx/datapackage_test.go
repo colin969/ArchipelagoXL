@@ -7,77 +7,272 @@ import (
 	"testing"
 )
 
-// func TestRetryStormGameKeyCache(t *testing.T) {
-// 	connState := &connectionState{}
+// TestGlobalCacheGetOrAdd verifies basic add and cache hit behaviour
+func TestGlobalCacheGetOrAdd(t *testing.T) {
+	cache := newGlobalDataPackageCache()
 
-// 	s := apxServer{
-// 		roomInfo: RoomInfoMessage{
-// 			DatapackageChecksums: map[string]string{
-// 				"Archipelago": "abc",
-// 				"Clique":      "def",
-// 				"Celeste":     "ghi",
-// 			},
-// 		},
-// 		datapackages: newDataPackageStore(true),
-// 	}
+	encoded := json.RawMessage(`{"item_name_to_id":{},"location_name_to_id":{},"checksum":"abc"}`)
+	itemIDToName := map[int64]string{1: "Sword"}
+	locationIDToName := map[int64]string{100: "Chest"}
 
-// 	// All games req - key should not be empty
-// 	raw := map[string]any{
-// 		"cmd": "GetDataPackage",
-// 	}
-// 	_ = s.handleGetDataPackage(context.Background(), connState, raw)
-// 	if connState.prevDatapackageGamesReq == "" {
-// 		t.Fatal("expected key to be set")
-// 	}
+	// First call — miss, should create wrapper and datapackage
+	w1 := cache.GetOrAdd("abc", "TestGame", encoded, itemIDToName, locationIDToName)
+	if w1 == nil {
+		t.Fatal("expected wrapper, got nil")
+	}
+	if w1.refCount != 1 {
+		t.Fatalf("expected wrapper refCount 1, got %d", w1.refCount)
+	}
+	if w1.datapackage.refCount != 1 {
+		t.Fatalf("expected datapackage refCount 1, got %d", w1.datapackage.refCount)
+	}
 
-// 	// First req - should set different key
-// 	raw2 := map[string]any{
-// 		"cmd":   "GetDataPackage",
-// 		"games": []any{"Archipelago", "Clique"},
-// 	}
-// 	prev := connState.prevDatapackageGamesReq
-// 	_ = s.handleGetDataPackage(context.Background(), connState, raw2)
-// 	if connState.prevDatapackageGamesReq == prev {
-// 		t.Fatal("expected key to be changed")
-// 	}
+	// Second call — hit, should increment wrapper refCount only
+	w2 := cache.GetOrAdd("abc", "TestGame", encoded, itemIDToName, locationIDToName)
+	if w1 != w2 {
+		t.Fatal("expected same wrapper on cache hit")
+	}
+	if w2.refCount != 2 {
+		t.Fatalf("expected wrapper refCount 2, got %d", w2.refCount)
+	}
+	// datapackage refCount must NOT change on wrapper hit
+	if w2.datapackage.refCount != 1 {
+		t.Fatalf("expected datapackage refCount still 1 on wrapper hit, got %d", w2.datapackage.refCount)
+	}
+}
 
-// 	// Second req - identical request, should be same key
-// 	prev = connState.prevDatapackageGamesReq
-// 	_ = s.handleGetDataPackage(context.Background(), connState, raw2)
-// 	if connState.prevDatapackageGamesReq != prev {
-// 		t.Fatal("expected key to be unchanged on retry")
-// 	}
+// TestGlobalCacheSharedDataPackage verifies two games with the same checksum share a datapackage
+func TestGlobalCacheSharedDataPackage(t *testing.T) {
+	cache := newGlobalDataPackageCache()
 
-// 	// Different order - should still be the same key because of sorting
-// 	raw3 := map[string]any{
-// 		"cmd":   "GetDataPackage",
-// 		"games": []any{"Clique", "Archipelago"},
-// 	}
-// 	_ = s.handleGetDataPackage(context.Background(), connState, raw3)
-// 	if connState.prevDatapackageGamesReq != prev {
-// 		t.Fatal("expected sort to normalize order")
-// 	}
+	encoded := json.RawMessage(`{"item_name_to_id":{},"location_name_to_id":{},"checksum":"shared"}`)
 
-// 	// Different games - should be different key
-// 	raw4 := map[string]any{
-// 		"cmd":   "GetDataPackage",
-// 		"games": []any{"Clique", "Archipelago", "Celeste"},
-// 	}
-// 	_ = s.handleGetDataPackage(context.Background(), connState, raw4)
-// 	if connState.prevDatapackageGamesReq == prev {
-// 		t.Fatal("expected key to change for new games")
-// 	}
-// }
+	w1 := cache.GetOrAdd("shared", "GameA", encoded, nil, nil)
+	w2 := cache.GetOrAdd("shared", "GameB", encoded, nil, nil)
 
-// Does not cover single game optimizations, since that has nothing except 2 compares
-func BenchmarkSendDataPackages(b *testing.B) {
+	if w1 == w2 {
+		t.Fatal("expected different wrappers for different games")
+	}
+	if w1.datapackage != w2.datapackage {
+		t.Fatal("expected shared datapackage for same checksum")
+	}
+	if w1.datapackage.refCount != 2 {
+		t.Fatalf("expected datapackage refCount 2, got %d", w1.datapackage.refCount)
+	}
+}
+
+// TestReleaseEvictsWrapper verifies wrapper and datapackage are evicted when refCount hits zero
+func TestReleaseEvictsWrapper(t *testing.T) {
+	cache := newGlobalDataPackageCache()
+	encoded := json.RawMessage(`{}`)
+
+	cache.GetOrAdd("abc", "TestGame", encoded, nil, nil)
+	cache.Release([]string{"abc:TestGame"})
+
+	cache.mu.RLock()
+	_, wrapperExists := cache.byGameKey["abc:TestGame"]
+	_, datapackageExists := cache.byChecksum["abc"]
+	cache.mu.RUnlock()
+
+	if wrapperExists {
+		t.Fatal("expected wrapper to be evicted after release")
+	}
+	if datapackageExists {
+		t.Fatal("expected datapackage to be evicted after release")
+	}
+}
+
+// TestReleaseSharedDataPackageNotEvictedEarly verifies datapackage survives while another wrapper holds it
+func TestReleaseSharedDataPackageNotEvictedEarly(t *testing.T) {
+	cache := newGlobalDataPackageCache()
+	encoded := json.RawMessage(`{}`)
+
+	cache.GetOrAdd("shared", "GameA", encoded, nil, nil)
+	cache.GetOrAdd("shared", "GameB", encoded, nil, nil)
+
+	// Release only GameA's wrapper
+	cache.Release([]string{"shared:GameA"})
+
+	cache.mu.RLock()
+	_, wrapperA := cache.byGameKey["shared:GameA"]
+	_, wrapperB := cache.byGameKey["shared:GameB"]
+	_, datapackageExists := cache.byChecksum["shared"]
+	cache.mu.RUnlock()
+
+	if wrapperA {
+		t.Fatal("expected GameA wrapper to be evicted")
+	}
+	if !wrapperB {
+		t.Fatal("expected GameB wrapper to still exist")
+	}
+	if !datapackageExists {
+		t.Fatal("expected datapackage to survive while GameB wrapper still holds it")
+	}
+
+	// Now release GameB — datapackage should go too
+	cache.Release([]string{"shared:GameB"})
+
+	cache.mu.RLock()
+	_, datapackageExists = cache.byChecksum["shared"]
+	cache.mu.RUnlock()
+
+	if datapackageExists {
+		t.Fatal("expected datapackage to be evicted after all wrappers released")
+	}
+}
+
+// TestReleaseMultipleRoomsHoldingWrapper verifies wrapper survives until all rooms release
+func TestReleaseMultipleRoomsHoldingWrapper(t *testing.T) {
+	cache := newGlobalDataPackageCache()
+	encoded := json.RawMessage(`{}`)
+
+	// Two rooms take the same wrapper
+	cache.GetOrAdd("abc", "TestGame", encoded, nil, nil)
+	cache.GetOrAdd("abc", "TestGame", encoded, nil, nil)
+
+	// First room releases
+	cache.Release([]string{"abc:TestGame"})
+
+	cache.mu.RLock()
+	wrapper, exists := cache.byGameKey["abc:TestGame"]
+	cache.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("expected wrapper to survive after first release")
+	}
+	if wrapper.refCount != 1 {
+		t.Fatalf("expected wrapper refCount 1, got %d", wrapper.refCount)
+	}
+
+	// Second room releases
+	cache.Release([]string{"abc:TestGame"})
+
+	cache.mu.RLock()
+	_, exists = cache.byGameKey["abc:TestGame"]
+	cache.mu.RUnlock()
+
+	if exists {
+		t.Fatal("expected wrapper to be evicted after all rooms released")
+	}
+}
+
+// TestDataPackageStoreAttachWrapper verifies per-room store is populated correctly from wrapper
+func TestDataPackageStoreAttachWrapper(t *testing.T) {
+	cache := newGlobalDataPackageCache()
+	ds := newDataPackageStore(true, cache)
+
+	gd := GameData{
+		Checksum:         "abc",
+		ItemNameToID:     map[string]int64{"Sword": 1},
+		LocationNameToID: map[string]int64{"Chest": 100},
+	}
+
+	if err := ds.AddDataPackage("TestGame", gd); err != nil {
+		t.Fatalf("AddDataPackage failed: %v", err)
+	}
+
+	if _, ok := ds.packages["TestGame"]; !ok {
+		t.Fatal("expected packages to contain TestGame")
+	}
+	if _, ok := ds.encodedGameNameKeys["TestGame"]; !ok {
+		t.Fatal("expected encodedGameNameKeys to contain TestGame")
+	}
+	if _, ok := ds.singleResponses["TestGame"]; !ok {
+		t.Fatal("expected singleResponses to contain TestGame")
+	}
+	if ds.ItemIDToName["TestGame"][1] != "Sword" {
+		t.Fatal("expected ItemIDToName to contain Sword")
+	}
+	if ds.LocationIDToName["TestGame"][100] != "Chest" {
+		t.Fatal("expected LocationIDToName to contain Chest")
+	}
+	if len(ds.gameKeys) != 1 || ds.gameKeys[0] != "abc:TestGame" {
+		t.Fatalf("expected gameKeys to contain abc:TestGame, got %v", ds.gameKeys)
+	}
+}
+
+// TestDataPackageStoreRelease verifies Release() decrements global cache refcounts
+func TestDataPackageStoreRelease(t *testing.T) {
+	cache := newGlobalDataPackageCache()
+	ds := newDataPackageStore(true, cache)
+
+	gd := GameData{Checksum: "abc"}
+	ds.AddDataPackage("TestGame", gd)
+	ds.Release()
+
+	cache.mu.RLock()
+	_, wrapperExists := cache.byGameKey["abc:TestGame"]
+	_, datapackageExists := cache.byChecksum["abc"]
+	cache.mu.RUnlock()
+
+	if wrapperExists {
+		t.Fatal("expected wrapper evicted after store Release()")
+	}
+	if datapackageExists {
+		t.Fatal("expected datapackage evicted after store Release()")
+	}
+}
+
+// TestDataPackageStoreTwoRoomsSharedRelease verifies two stores sharing a wrapper release correctly
+func TestDataPackageStoreTwoRoomsSharedRelease(t *testing.T) {
+	cache := newGlobalDataPackageCache()
+
+	gd := GameData{
+		Checksum:         "abc",
+		ItemNameToID:     map[string]int64{"Sword": 1},
+		LocationNameToID: map[string]int64{"Chest": 100},
+	}
+
+	ds1 := newDataPackageStore(true, cache)
+	ds1.AddDataPackage("TestGame", gd)
+
+	ds2 := newDataPackageStore(true, cache)
+	ds2.AddDataPackage("TestGame", gd)
+
+	// Verify shared wrapper
+	cache.mu.RLock()
+	wrapper := cache.byGameKey["abc:TestGame"]
+	cache.mu.RUnlock()
+	if wrapper.refCount != 2 {
+		t.Fatalf("expected wrapper refCount 2, got %d", wrapper.refCount)
+	}
+
+	// Release first store
+	ds1.Release()
+	cache.mu.RLock()
+	wrapper = cache.byGameKey["abc:TestGame"]
+	cache.mu.RUnlock()
+	if wrapper == nil {
+		t.Fatal("expected wrapper to survive after first store released")
+	}
+	if wrapper.refCount != 1 {
+		t.Fatalf("expected wrapper refCount 1, got %d", wrapper.refCount)
+	}
+
+	// Release second store — everything should be evicted
+	ds2.Release()
+	cache.mu.RLock()
+	_, wrapperExists := cache.byGameKey["abc:TestGame"]
+	_, datapackageExists := cache.byChecksum["abc"]
+	cache.mu.RUnlock()
+
+	if wrapperExists {
+		t.Fatal("expected wrapper evicted after both stores released")
+	}
+	if datapackageExists {
+		t.Fatal("expected datapackage evicted after both stores released")
+	}
+}
+
+// BenchmarkBuildResponse benchmarks the multi-game stitching
+func BenchmarkBuildResponse(b *testing.B) {
 	testDataPackageJSON, err := os.ReadFile("testdata/datapackage.json")
 	if err != nil {
 		panic(err)
 	}
 
-	// Vague simulation of 20 games
-	ds := newDataPackageStore(false)
+	globalCache := newGlobalDataPackageCache()
+	ds := newDataPackageStore(false, globalCache)
 	games := make([]string, 20)
 	for i := range 20 {
 		name := fmt.Sprintf("TestGame%d", i)
@@ -87,27 +282,12 @@ func BenchmarkSendDataPackages(b *testing.B) {
 		games[i] = name
 	}
 
-	s := ApxRoom{
-		datapackages: ds,
-	}
-
-	const header = `[{"cmd":"DataPackage","data":{"games":{`
-	const footer = `}}}]`
+	b.ResetTimer()
 	for b.Loop() {
-		size := len(header) + len(footer) + len(games) - 1
-		for _, game := range games {
-			size += len(s.datapackages.encodedGameNameKeys[game]) + 1 + len(s.datapackages.packages[game])
+		msg, err := ds.buildResponse(games)
+		if err != nil {
+			b.Fatal(err)
 		}
-		msg := make([]byte, 0, size)
-		msg = append(msg, header...)
-		for i, game := range games {
-			if i > 0 {
-				msg = append(msg, ',')
-			}
-			msg = append(msg, s.datapackages.encodedGameNameKeys[game]...)
-			msg = append(msg, ':')
-			msg = append(msg, s.datapackages.packages[game]...)
-		}
-		msg = append(msg, footer...)
+		_ = msg
 	}
 }

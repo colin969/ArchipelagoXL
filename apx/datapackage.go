@@ -4,10 +4,41 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
+
+type cachedDataPackage struct {
+	encoded          json.RawMessage
+	itemIDToName     map[int64]string
+	locationIDToName map[int64]string
+	// Number of cachedGameDataPackage wrappers holding this as a reference
+	refCount int
+}
+
+type cachedGameDataPackage struct {
+	datapackage     *cachedDataPackage
+	checksum        string
+	encodedGameName []byte
+	singleResponse  json.RawMessage
+	// Number of rooms holding this as a reference
+	refCount int
+}
+
+type GlobalDataPackageCache struct {
+	mu         sync.RWMutex
+	byChecksum map[string]*cachedDataPackage
+	byGameKey  map[string]*cachedGameDataPackage
+}
+
+func newGlobalDataPackageCache() *GlobalDataPackageCache {
+	return &GlobalDataPackageCache{
+		byChecksum: make(map[string]*cachedDataPackage),
+		byGameKey:  make(map[string]*cachedGameDataPackage),
+	}
+}
 
 type GameData struct {
 	ItemNameToID     map[string]int64 `json:"item_name_to_id"`
@@ -40,23 +71,89 @@ type EncodedDataPackageObject struct {
 
 // Immutable
 type DataPackageStore struct {
-	singleRepOptimization bool                        // Allow single game requests caching, triples memory usage
-	packages              map[string]json.RawMessage  // Raw encoded datapackages keyed by game name
-	singleResponses       map[string]json.RawMessage  // Pre-built response for single-game requests
-	fullGameResponse      json.RawMessage             // Response for all games at once to avoid allocations
-	encodedGameNameKeys   map[string][]byte           // pre-encoded JSON keys for game names
-	ItemIDToName          map[string]map[int64]string // game -> id -> name
-	LocationIDToName      map[string]map[int64]string // game -> id -> name
+	fullGameResponseOptimization bool // Whether to duplicate allocations for full-game responses as a cpu optimization
+	globalCache                  *GlobalDataPackageCache
+	packages                     map[string]json.RawMessage  // Raw encoded datapackages keyed by game name
+	singleResponses              map[string]json.RawMessage  // Pre-built response for single-game requests
+	fullGameResponse             json.RawMessage             // Response for all games at once to avoid allocations
+	encodedGameNameKeys          map[string][]byte           // pre-encoded JSON keys for game names
+	ItemIDToName                 map[string]map[int64]string // game -> id -> name
+	LocationIDToName             map[string]map[int64]string // game -> id -> name
+	gameKeys                     []string
 }
 
-func newDataPackageStore(singleRepOptimization bool) *DataPackageStore {
+func newDataPackageStore(fullGameResponseOptimization bool, globalCache *GlobalDataPackageCache) *DataPackageStore {
 	return &DataPackageStore{
-		singleRepOptimization: singleRepOptimization,
-		packages:              make(map[string]json.RawMessage),
-		singleResponses:       make(map[string]json.RawMessage),
-		encodedGameNameKeys:   make(map[string][]byte),
-		ItemIDToName:          make(map[string]map[int64]string),
-		LocationIDToName:      make(map[string]map[int64]string),
+		fullGameResponseOptimization: fullGameResponseOptimization,
+		globalCache:                  globalCache,
+		packages:                     make(map[string]json.RawMessage),
+		singleResponses:              make(map[string]json.RawMessage),
+		encodedGameNameKeys:          make(map[string][]byte),
+		ItemIDToName:                 make(map[string]map[int64]string),
+		LocationIDToName:             make(map[string]map[int64]string),
+		gameKeys:                     make([]string, 0),
+	}
+}
+
+func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, encoded json.RawMessage, itemIDToName, locationIDToName map[int64]string) *cachedGameDataPackage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	gameKey := checksum + ":" + game
+	// Cache hit for wrapper, increase ref on cache and return it
+	if wrapper, ok := c.byGameKey[gameKey]; ok {
+		wrapper.refCount++
+		return wrapper
+	}
+
+	// No cache hit for wrapper, try and find cache hit on inner datapackage
+	core, ok := c.byChecksum[checksum]
+	if !ok {
+		// No cache hit, make our own and put it into the cache
+		core = &cachedDataPackage{
+			encoded:          encoded,
+			itemIDToName:     itemIDToName,
+			locationIDToName: locationIDToName,
+		}
+		c.byChecksum[checksum] = core
+	}
+	core.refCount++
+
+	encodedGameName, _ := json.Marshal(game)
+	singleResponse := []byte(`[{"cmd":"DataPackage","data":{"games":{`)
+	singleResponse = append(singleResponse, encodedGameName...)
+	singleResponse = append(singleResponse, ':')
+	singleResponse = append(singleResponse, core.encoded...)
+	singleResponse = append(singleResponse, `}}}]`...)
+
+	// Return wrapper, stick in cache first
+	wrapper := &cachedGameDataPackage{
+		datapackage:     core,
+		checksum:        checksum,
+		encodedGameName: encodedGameName,
+		singleResponse:  singleResponse,
+		refCount:        1,
+	}
+	c.byGameKey[gameKey] = wrapper
+	return wrapper
+}
+
+func (c *GlobalDataPackageCache) Release(gameKeys []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, gameKey := range gameKeys {
+		wrapper, ok := c.byGameKey[gameKey]
+		if !ok {
+			continue
+		}
+		wrapper.refCount--
+		if wrapper.refCount <= 0 {
+			delete(c.byGameKey, gameKey)
+			wrapper.datapackage.refCount--
+			if wrapper.datapackage.refCount <= 0 {
+				delete(c.byChecksum, wrapper.checksum)
+			}
+		}
 	}
 }
 
@@ -65,41 +162,40 @@ func (ds *DataPackageStore) AddDataPackage(game string, gd GameData) error {
 	if err != nil {
 		return err
 	}
-	ds.packages[game] = encodedData
 
-	encodedGameName, _ := json.Marshal(game)
-	ds.encodedGameNameKeys[game] = encodedGameName
-
-	if ds.singleRepOptimization {
-		msg := []byte(`[{"cmd":"DataPackage","data":{"games":{`)
-		msg = append(msg, encodedGameName...)
-		msg = append(msg, ':')
-		msg = append(msg, encodedData...)
-		msg = append(msg, `}}}]`...)
-		ds.singleResponses[game] = msg
-	}
-
-	// Populate global item id to name
 	itemIDToName := make(map[int64]string, len(gd.ItemNameToID))
 	for name, id := range gd.ItemNameToID {
 		itemIDToName[id] = name
 	}
-	ds.ItemIDToName[game] = itemIDToName
-
-	// Populate global location id to name
 	locationIDToName := make(map[int64]string, len(gd.LocationNameToID))
 	for name, id := range gd.LocationNameToID {
 		locationIDToName[id] = name
 	}
-	ds.LocationIDToName[game] = locationIDToName
 
+	wrapper := ds.globalCache.GetOrAdd(gd.Checksum, game, encodedData, itemIDToName, locationIDToName)
+	ds.attachWrapper(game, wrapper)
 	return nil
+}
+
+func (ds *DataPackageStore) Release() {
+	ds.globalCache.Release(ds.gameKeys)
+}
+
+// Store the references from the game data wrapper into our local store
+func (ds *DataPackageStore) attachWrapper(game string, wrapper *cachedGameDataPackage) {
+	ds.packages[game] = wrapper.datapackage.encoded
+	ds.encodedGameNameKeys[game] = wrapper.encodedGameName
+	ds.ItemIDToName[game] = wrapper.datapackage.itemIDToName
+	ds.LocationIDToName[game] = wrapper.datapackage.locationIDToName
+	ds.gameKeys = append(ds.gameKeys, wrapper.checksum+":"+game)
+	ds.singleResponses[game] = wrapper.singleResponse
 }
 
 // MUST be called before server is live to other users. CANNOT be called safely after.
 // TODO: This should really be optimized to not open a conn for each
 func (s ApxRoom) prefetchDataPackages(ctx context.Context) error {
 	var missing []string
+	// Only get ones we haven't already gotten locally
 	for game := range s.roomInfo.DatapackageChecksums {
 		if _, ok := s.datapackages.packages[game]; !ok {
 			missing = append(missing, game)
@@ -111,12 +207,15 @@ func (s ApxRoom) prefetchDataPackages(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("prefetching datapackage for %d games: %w", len(missing), err)
 		}
+		// This will add to global store if missing, then we get the ref
 		for game, gd := range gameData {
-			s.datapackages.AddDataPackage(game, gd)
+			if err := s.datapackages.AddDataPackage(game, gd); err != nil {
+				return fmt.Errorf("adding datapackage for %q: %w", game, err)
+			}
 		}
 	}
 
-	if s.datapackages.singleRepOptimization {
+	if s.datapackages.fullGameResponseOptimization {
 		games := make([]string, 0, len(s.datapackages.packages))
 		for game := range s.datapackages.packages {
 			games = append(games, game)
@@ -225,20 +324,21 @@ func (s ApxRoom) fetchDataPackagesFromAPServer(ctx context.Context, games []stri
 
 // Stitch together to avoid doing any json ops on the already encoded datapackage
 func (s ApxRoom) sendDataPackages(ctx context.Context, client *websocket.Conn, games []string) error {
-	if s.datapackages.singleRepOptimization {
-		if len(games) == 1 {
-			raw, ok := s.datapackages.singleResponses[games[0]]
-			if !ok {
-				return fmt.Errorf("unknown datapackage for %q", games[0])
-			}
-			return client.Write(ctx, websocket.MessageText, raw)
+	if len(games) == 1 {
+		raw, ok := s.datapackages.singleResponses[games[0]]
+		if !ok {
+			return fmt.Errorf("unknown datapackage for %q", games[0])
 		}
+		return client.Write(ctx, websocket.MessageText, raw)
+	}
+
+	if s.datapackages.fullGameResponseOptimization {
 		if len(games) == len(s.datapackages.packages) && s.datapackages.fullGameResponse != nil {
 			return client.Write(ctx, websocket.MessageText, s.datapackages.fullGameResponse)
 		}
 	}
 
-	// Optimization off, or we've got a weird batched request
+	// Optimization off for full game respons, or we've got a weird batched request
 	msg, err := s.datapackages.buildResponse(games)
 	if err != nil {
 		return err

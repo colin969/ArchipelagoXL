@@ -45,9 +45,10 @@ type RoomManager struct {
 }
 
 type RoomRegistry struct {
-	mu          sync.RWMutex
-	rooms       map[string]*HostedRoom
-	idToHandler map[int]*apxHandler
+	mu           sync.RWMutex
+	rooms        map[string]*HostedRoom
+	idToHandler  map[int]*apxHandler
+	datapackages *GlobalDataPackageCache
 }
 
 func (r *RoomRegistry) Get(roomId string) (*HostedRoom, bool) {
@@ -91,6 +92,7 @@ func (r *RoomRegistry) Remove(roomId string) {
 	room, exists := r.rooms[roomId]
 	if exists {
 		room.cancel()
+		room.apx.datapackages.Release()
 		delete(r.idToHandler, room.normalHandler.id)
 		delete(r.idToHandler, room.reducedHandler.id)
 	}
@@ -215,8 +217,9 @@ func (c *slotSphereCache) Set(slotId int, b []byte) {
 
 func newRoomRegistry() *RoomRegistry {
 	return &RoomRegistry{
-		rooms:       make(map[string]*HostedRoom),
-		idToHandler: make(map[int]*apxHandler),
+		rooms:        make(map[string]*HostedRoom),
+		idToHandler:  make(map[int]*apxHandler),
+		datapackages: newGlobalDataPackageCache(),
 	}
 }
 
@@ -842,7 +845,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 
 	// Only use memory costly optimizations when at least 50 datapackages in the room
 	var useDatapackageOptimization = len(roomInfoMsg.DatapackageChecksums) >= 50
-	datapackageCache := newDataPackageStore(useDatapackageOptimization) // TODO: Add config flag
+	datapackageCache := newDataPackageStore(useDatapackageOptimization, rm.registry.datapackages) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	bounceInfo.deathlinkProbability = deathlinkProbability
 	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
