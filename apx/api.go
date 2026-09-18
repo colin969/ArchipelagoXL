@@ -1641,11 +1641,17 @@ func (rm *HostedRoom) refreshCheckedLocations(apApiRoot, apRoomId string) error 
 	}
 
 	// Invalidate cache for any slot whose checked locations changed
+	anyNewLocations := false
 	for slotId, newLocs := range newChecked {
 		oldLocs := rm.checkedLocations.GetSlot(slotId)
 		if len(oldLocs) != len(newLocs) {
 			rm.sphereCache.Invalidate(slotId)
+			anyNewLocations = true
 		}
+	}
+
+	if anyNewLocations {
+		rm.lastActivity.Store(time.Now().Unix())
 	}
 
 	rm.checkedLocations.Set(newChecked)
@@ -1806,19 +1812,30 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 		for range ticker.C {
 			deadline := time.Now().Add(-timeout).Unix()
 			for _, room := range rm.registry.List() {
-				if room.lastActivity.Load() < deadline {
-					log.Printf("killing idle room %s", room.lobbyRoomId)
-					apRoomId := room.apRoomId
-					if rm.store != nil {
-						if err := rm.store.Disable(room.lobbyRoomId); err != nil {
-							log.Printf("failed to disable room %s in store: %v", room.lobbyRoomId, err)
-						}
-					}
-					rm.registry.Remove(room.lobbyRoomId)
-					go func() {
-						rm.stopApRoom(apRoomId)
-					}()
+				if room.lastActivity.Load() >= deadline {
+					continue
 				}
+
+				// Activity looks stale - do a check just incase a check came in the last period between checks
+				if err := room.refreshCheckedLocations(rm.config.ApApiRoot, room.apRoomId); err != nil {
+					log.Printf("room %s: pre-reap location refresh failed: %v", room.lobbyRoomId, err)
+				}
+
+				if room.lastActivity.Load() >= deadline {
+					continue
+				}
+
+				log.Printf("killing idle room %s", room.lobbyRoomId)
+				apRoomId := room.apRoomId
+				if rm.store != nil {
+					if err := rm.store.Disable(room.lobbyRoomId); err != nil {
+						log.Printf("failed to disable room %s in store: %v", room.lobbyRoomId, err)
+					}
+				}
+				rm.registry.Remove(room.lobbyRoomId)
+				go func() {
+					rm.stopApRoom(apRoomId)
+				}()
 			}
 		}
 	}()

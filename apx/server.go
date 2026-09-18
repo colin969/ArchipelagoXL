@@ -586,7 +586,6 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 	}
 
 	if connState.authenticated {
-		s.lastActivity.Store(time.Now().Unix())
 		switch cmd {
 		case MessageTypeBounce:
 			return s.handleBounce(ctx, connState, raw)
