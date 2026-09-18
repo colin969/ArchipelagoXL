@@ -62,6 +62,7 @@ func run() error {
 		tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}}
 	}
 
+	runProfiler()
 	reg, metrics := initMetrics()
 	roomStore, err := NewRoomStore("./data.sqlite")
 	if err != nil {
