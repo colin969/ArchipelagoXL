@@ -1517,8 +1517,8 @@ func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Reque
 		existingAlt := room.apx.altConnectNames.GetAltName(altName)
 		if existingAlt != nil {
 			if *existingAlt == req.SlotName {
-					http.Error(w, "alt name already mapped to this slot", http.StatusConflict)
-					return
+				http.Error(w, "alt name already mapped to this slot", http.StatusConflict)
+				return
 			}
 			http.Error(w, "alt name is already taken by another slot", http.StatusConflict)
 			return

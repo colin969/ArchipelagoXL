@@ -390,7 +390,7 @@ function createTrackerTable(tableId)
                 }
             },
             {
-                label: "Toggle Full Feed",
+                label: "Toggle Normal Access",
                 action: function (event, row) {
                     const { id, name, game, full_feed } = row.getData();
                     openFullFeed(id, name, game, full_feed);

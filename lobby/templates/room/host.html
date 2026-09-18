@@ -59,7 +59,7 @@
                 
         <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true"
             {% if apx.deathlink_disabled %}checked{% endif %}>
-        <label for="deathlink_disabled">Disable deathlink<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Deathlink messages will not be sent to other clients by default. (Sets probability to 0%)"></i></label>
+        <label for="deathlink_disabled">Disable deathlink<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Deathlink messages will not be sent to other clients by default. (DeathLink bounce tag exclusion for all slots)"></i></label>
                 
         <input type="checkbox" id="reduced_access" name="reduced_access" value="true"
             {% if apx.reduced_access %}checked{% endif %}>
@@ -128,7 +128,7 @@
             <label for="per_slot_passwords">Per-slot passwords<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Players will need to use their own personally assigned password.&#10;The host must generate them from the dashboard first. (Dashboard button available after hosting has started)"></i></label>
             
             <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true">
-            <label for="deathlink_disabled">Disable deathlink<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Deathlink messages will not be sent to other clients by default. (Sets probability to 0%)"></i></label>
+            <label for="deathlink_disabled">Disable deathlink<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Deathlink messages will not be sent to other clients by default. (DeathLink bounce tag exclusion for all slots)"></i></label>
             
             <input type="checkbox" id="reduced_access" name="reduced_access" value="true">
             <label for="reduced_access">Reduced access<i class="fa fa-circle-question tooltip-icon" tabindex="0" data-tooltip="Restricts players to only the Reduced connection address.&#10;This means they won't receive PrintJSON messages unrelated to their slot.&#10;You can manually override this per player on the dashboard. (Dashboard button available after hosting has started)"></i></label>
