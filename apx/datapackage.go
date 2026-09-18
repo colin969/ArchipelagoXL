@@ -18,6 +18,7 @@ type cachedDataPackage struct {
 	refCount int
 }
 
+// Wrapper for a datapackage, keyed by game name
 type cachedGameDataPackage struct {
 	datapackage     *cachedDataPackage
 	checksum        string
@@ -107,28 +108,28 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, encoded json.Ra
 	}
 
 	// No cache hit for wrapper, try and find cache hit on inner datapackage
-	core, ok := c.byChecksum[checksum]
+	datapackage, ok := c.byChecksum[checksum]
 	if !ok {
 		// No cache hit, make our own and put it into the cache
-		core = &cachedDataPackage{
+		datapackage = &cachedDataPackage{
 			encoded:          encoded,
 			itemIDToName:     itemIDToName,
 			locationIDToName: locationIDToName,
 		}
-		c.byChecksum[checksum] = core
+		c.byChecksum[checksum] = datapackage
 	}
-	core.refCount++
+	datapackage.refCount++
 
 	encodedGameName, _ := json.Marshal(game)
 	singleResponse := []byte(`[{"cmd":"DataPackage","data":{"games":{`)
 	singleResponse = append(singleResponse, encodedGameName...)
 	singleResponse = append(singleResponse, ':')
-	singleResponse = append(singleResponse, core.encoded...)
+	singleResponse = append(singleResponse, datapackage.encoded...)
 	singleResponse = append(singleResponse, `}}}]`...)
 
 	// Return wrapper, stick in cache first
 	wrapper := &cachedGameDataPackage{
-		datapackage:     core,
+		datapackage:     datapackage,
 		checksum:        checksum,
 		encodedGameName: encodedGameName,
 		singleResponse:  singleResponse,
