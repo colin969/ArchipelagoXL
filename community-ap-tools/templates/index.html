@@ -183,18 +183,70 @@ td {
             location.reload();
         }
 
-        function openAltConnectNamePopup(slotName) {
+        function openAltConnectNamePopup(slotName, existingNames) {
             const popup = getPopup();
 
             const title = document.createElement("div");
-            title.innerText = "Set alt connect name for slot: " + slotName;
+            title.innerText = "Slot: " + slotName;
             title.style.marginBottom = "10px";
+            popup.appendChild(title)
+
+            const existingTitle = document.createElement("div");
+            existingTitle.style.marginBottom = "5px";
+            existingTitle.innerText = "Existing alt names:";
+            popup.appendChild(existingTitle);
+
+            const altNamesList = document.createElement("ul");
+            altNamesList.style.marginTop = "0";
+            altNamesList.style.marginBottom = "10px";
+            popup.appendChild(altNamesList);
+
+            const renderAltNames = (names) => {
+                altNamesList.innerHTML = "";
+                if (!names.length) {
+                    const empty = document.createElement("li");
+                    empty.innerText = "None";
+                    altNamesList.appendChild(empty);
+                    return;
+                }
+                for (const altName of names) {
+                    const li = document.createElement("li");
+                    li.style.display = "flex";
+                    li.style.alignItems = "center";
+                    li.style.gap = "0.5rem";
+                    li.style.marginBottom = "0.25rem";
+
+                    const nameSpan = document.createElement("span");
+                    nameSpan.innerText = altName;
+
+                    const deleteBtn = document.createElement("button");
+                    deleteBtn.innerText = "Delete";
+                    deleteBtn.addEventListener("click", async () => {
+                        const res = await fetch(
+                            `/api/dashboard/${window.lobby_room_id}/alt_connect_name/${encodeURIComponent(altName)}`,
+                            { method: "DELETE" }
+                        );
+                        if (res.ok) {
+                            names.splice(names.indexOf(altName), 1);
+                            renderAltNames(names);
+                        } else {
+                            alert("Failed to delete alt name: " + await res.text())
+                        }
+                    });
+
+                    li.appendChild(nameSpan);
+                    li.appendChild(deleteBtn);
+                    altNamesList.appendChild(li);
+                }
+            };
+
+            renderAltNames(existingNames);
 
             const form = document.createElement("form");
             form.action = "javascript:void(0);";
 
             const altNameLabel = document.createElement("div");
-            altNameLabel.innerText = "Alt name:";
+            altNameLabel.innerText = "Add new alt name:";
 
             const altNameInput = document.createElement("input");
             altNameInput.type = "text";
@@ -203,7 +255,7 @@ td {
             altNameInput.style.marginBottom = "10px";
 
             const submitButton = document.createElement("button");
-            submitButton.innerText = "Set Alt Name";
+            submitButton.innerText = "Add Alt Name";
             submitButton.style.display = "block";
             submitButton.style.marginTop = "10px";
 
@@ -216,25 +268,28 @@ td {
                 if (!altName) return;
 
                 try {
-                    const response = await fetch(`/api/dashboard/${window.lobby_room_id}/alt_connect_name`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ slot_name: slotName, alt_name: altName }),
-                    });
+                    const res = await fetch(
+                        `/api/dashboard/${window.lobby_room_id}/alt_connect_name/${encodeURIComponent(altName)}`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ slot_name: slotName }),
+                        }
+                    );
 
-                    if (response.ok) {
-                        alert("Alt name set");
-                        popup.close();
+                    if (res.ok) {
+                        altNameInput.value = "";
+                        existingNames.push(altName);
+                        renderAltNames(existingNames);
                     } else {
-                        const err = await response.text();
-                        alert("Failed to set alt name: " + err);
+                        const msg = await res.text();
+                        alert(`${msg}`);
                     }
                 } catch (e) {
-                    alert("Error: " + e.message);
+                    alert("Failed to add alt name: " + e.message);
                 }
             });
 
-            popup.appendChild(title);
             popup.appendChild(form);
             altNameInput.focus();
         }

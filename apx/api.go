@@ -94,6 +94,7 @@ func (r *RoomRegistry) Remove(roomId string) {
 		delete(r.idToHandler, room.normalHandler.id)
 		delete(r.idToHandler, room.reducedHandler.id)
 	}
+
 	delete(r.rooms, roomId)
 }
 
@@ -262,7 +263,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	room.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
 	room.HandleFunc("/debug/slot/{slotId}", roomLoggedHandler(srv.handleDebugTap))
 	// Alt names need more work to be listable and deletable, will reset on restart for now
-	room.HandleFunc("/alt_connect_name", roomLoggedHandler(srv.handleAltConnectName)).Methods(http.MethodPost)
+	room.HandleFunc("/alt_connect_name/slot/{slotName}", roomLoggedHandler(srv.handleAltConnectNamesBySlot)).Methods(http.MethodGet)
+	room.HandleFunc("/alt_connect_name/{altName}", roomLoggedHandler(srv.handleAltConnectName)).Methods(http.MethodPost, http.MethodDelete)
 
 	// Check every 2m, kill after 2h
 	srv.startRoomKiller(time.Duration(2)*time.Minute, time.Duration(2)*time.Hour)
@@ -284,6 +286,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		srv.restoreSlotBounceExclusions(room)
 		srv.restoreFullFeedSlots(room)
 		srv.restoreSlotDeaths(room)
+		srv.restoreAltConnectNames(room)
 	}
 
 	return srv, r, nil
@@ -521,6 +524,7 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 	rm.restoreSlotBounceExclusions(room)
 	rm.restoreFullFeedSlots(room)
 	rm.restoreSlotDeaths(room)
+	rm.restoreAltConnectNames(room)
 
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: room.lobbyRoomId,
@@ -618,6 +622,17 @@ func (rm *RoomManager) restoreSlotDeaths(room *HostedRoom) {
 	}
 }
 
+func (rm *RoomManager) restoreAltConnectNames(room *HostedRoom) {
+	names, err := rm.store.LoadAltConnectNames(room.lobbyRoomId)
+	if err != nil {
+		log.Printf("failed to load alt connect names for %s: %v", room.lobbyRoomId, err)
+		return
+	}
+	for altName, slotName := range names {
+		room.apx.altConnectNames.SetAltName(slotName, altName)
+	}
+}
+
 func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
@@ -634,6 +649,23 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
 		return
+	}
+
+	// Remove persistant data entries
+	if err := rm.store.DeleteFullFeedSlots(roomId); err != nil {
+		log.Printf("failed to delete full feed slots for room %s: %v", roomId, err)
+	}
+	if err := rm.store.DeleteSlotBounceExclusions(roomId); err != nil {
+		log.Printf("failed to delete slot bounce exclusions for room %s: %v", roomId, err)
+	}
+	if err := rm.store.DeleteBounceTagExclusions(roomId); err != nil {
+		log.Printf("failed to delete bounce tag exclusions for room %s: %v", roomId, err)
+	}
+	if err := rm.store.DeleteAltConnectNames(roomId); err != nil {
+		log.Printf("failed to delete alt connect names for room %s: %v", roomId, err)
+	}
+	if err := rm.store.DeleteSlotDeaths(roomId); err != nil {
+		log.Printf("failed to delete deaths for room %s: %v", roomId, err)
 	}
 
 	// Remove room record
@@ -1127,7 +1159,7 @@ func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Req
 	case http.MethodPost:
 		room.apx.bounceInfo.ExcludeByTag(slotId, tag)
 		if isDefaultExcluded {
-			if err := rm.store.RemoveBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
+			if err := rm.store.DeleteBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
 				log.Printf("failed to remove tag bounce exclusion override for slot %d tag %s: %v", slotId, tag, err)
 			}
 		} else {
@@ -1144,7 +1176,7 @@ func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Req
 				log.Printf("failed to save tag bounce exclusion override for slot %d tag %s: %v", slotId, tag, err)
 			}
 		} else {
-			if err := rm.store.RemoveBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
+			if err := rm.store.DeleteBounceTagExclusion(room.lobbyRoomId, slotId, tag); err != nil {
 				log.Printf("failed to remove tag bounce exclusion for slot %d tag %s: %v", slotId, tag, err)
 			}
 		}
@@ -1186,7 +1218,7 @@ func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http
 
 	case http.MethodDelete:
 		room.apx.bounceInfo.RemoveLimitToOwnSlot(slotId)
-		if err = rm.store.RemoveSlotBounceExclusion(room.lobbyRoomId, slotId); err != nil {
+		if err = rm.store.DeleteSlotBounceExclusion(room.lobbyRoomId, slotId); err != nil {
 			log.Printf("failed to remove slot bounce exclusion for room %s slot %d: %v", room.lobbyRoomId, slotId, err)
 		}
 		json.NewEncoder(w).Encode(map[string]any{"limited": false})
@@ -1449,7 +1481,6 @@ func (rm *RoomManager) handleDebugTap(w http.ResponseWriter, r *http.Request) {
 
 type AltConnectNameRequest struct {
 	SlotName string `json:"slot_name"`
-	AltName  string `json:"alt_name"`
 }
 
 func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Request) {
@@ -1458,38 +1489,75 @@ func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var req AltConnectNameRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	vars := mux.Vars(r)
+	altName := vars["altName"]
+
+	switch r.Method {
+	case http.MethodPost:
+		var req AltConnectNameRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.SlotName == "" {
+			http.Error(w, "slot_name is required", http.StatusBadRequest)
+			return
+		}
+
+		_, exists := room.apx.roomPlayers.auth[req.SlotName]
+		if !exists {
+			http.Error(w, "slot not found", http.StatusNotFound)
+			return
+		}
+		_, exists = room.apx.roomPlayers.auth[altName]
+		if exists {
+			http.Error(w, "alt name is already taken by real slot name", http.StatusConflict)
+			return
+		}
+		existingAlt := room.apx.altConnectNames.GetAltName(altName)
+		if existingAlt != nil {
+			if *existingAlt == req.SlotName {
+					http.Error(w, "alt name already mapped to this slot", http.StatusConflict)
+					return
+			}
+			http.Error(w, "alt name is already taken by another slot", http.StatusConflict)
+			return
+		}
+
+		room.apx.altConnectNames.SetAltName(req.SlotName, altName)
+		if err := rm.store.AddAltConnectName(room.lobbyRoomId, altName, req.SlotName); err != nil {
+			log.Printf("failed to persist alt connect name for room %s: %v", room.lobbyRoomId, err)
+		}
+		w.WriteHeader(http.StatusOK)
+
+	case http.MethodDelete:
+		room.apx.altConnectNames.RemoveAltName(altName)
+		if err := rm.store.DeleteAltConnectName(room.lobbyRoomId, altName); err != nil {
+			log.Printf("failed to delete alt connect name for room %s: %v", room.lobbyRoomId, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
 		return
 	}
 
-	if req.SlotName == "" || req.AltName == "" {
-		http.Error(w, "slot_name and alt_name are required", http.StatusBadRequest)
-		return
-	}
+	vars := mux.Vars(r)
+	slotName := vars["slotName"]
 
-	_, exists := room.apx.roomPlayers.auth[req.SlotName]
+	_, exists := room.apx.roomPlayers.auth[slotName]
 	if !exists {
 		http.Error(w, "slot not found", http.StatusNotFound)
 		return
 	}
 
-	_, exists = room.apx.roomPlayers.auth[req.AltName]
-	if exists {
-		http.Error(w, "alt name is already taken by real slot name", http.StatusNotFound)
-		return
-	}
+	altNames := room.apx.altConnectNames.GetAltNamesBySlot(slotName)
 
-	existingAlt := room.apx.altConnectNames.GetAltName(req.AltName)
-	if existingAlt != nil && *existingAlt != req.SlotName {
-		http.Error(w, "alt name is already taken by another slot", http.StatusConflict)
-		return
-	}
-
-	room.apx.altConnectNames.SetAltName(req.SlotName, req.AltName)
-
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(altNames)
 }
 
 func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {

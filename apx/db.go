@@ -88,27 +88,6 @@ func (s *RoomStore) DeleteFullFeedSlot(lobbyRoomId string, slotId int) error {
 	return err
 }
 
-func (s *RoomStore) SaveFullFeedSlots(lobbyRoomId string, slotIds []int) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM room_full_feed WHERE lobby_room_id = ?`, lobbyRoomId); err != nil {
-		tx.Rollback()
-		return err
-	}
-	for _, id := range slotIds {
-		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO room_full_feed (lobby_room_id, slot_id) VALUES (?, ?)`,
-			lobbyRoomId, id,
-		); err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 func (s *RoomStore) LoadFullFeedSlots(lobbyRoomId string) ([]int, error) {
 	rows, err := s.db.Query(
 		`SELECT slot_id FROM room_full_feed WHERE lobby_room_id = ?`, lobbyRoomId,
@@ -143,33 +122,12 @@ func (s *RoomStore) AddSlotBounceExclusion(lobbyRoomId string, slotId int) error
 	return err
 }
 
-func (s *RoomStore) RemoveSlotBounceExclusion(lobbyRoomId string, slotId int) error {
+func (s *RoomStore) DeleteSlotBounceExclusion(lobbyRoomId string, slotId int) error {
 	_, err := s.db.Exec(
 		`DELETE FROM room_slot_bounce_exclusions WHERE lobby_room_id = ? AND slot_id = ?`,
 		lobbyRoomId, slotId,
 	)
 	return err
-}
-
-func (s *RoomStore) SaveSlotBounceExclusions(lobbyRoomId string, slotIds []int) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM room_slot_bounce_exclusions WHERE lobby_room_id = ?`, lobbyRoomId); err != nil {
-		tx.Rollback()
-		return err
-	}
-	for _, id := range slotIds {
-		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO room_slot_bounce_exclusions (lobby_room_id, slot_id) VALUES (?, ?)`,
-			lobbyRoomId, id,
-		); err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func (s *RoomStore) LoadSlotBounceExclusions(lobbyRoomId string) ([]int, error) {
@@ -206,35 +164,12 @@ func (s *RoomStore) AddBounceTagExclusion(lobbyRoomId string, slotId int, tag st
 	return err
 }
 
-func (s *RoomStore) RemoveBounceTagExclusion(lobbyRoomId string, slotId int, tag string) error {
+func (s *RoomStore) DeleteBounceTagExclusion(lobbyRoomId string, slotId int, tag string) error {
 	_, err := s.db.Exec(
 		`DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = ? AND slot_id = ? AND tag = ?`,
 		lobbyRoomId, slotId, tag,
 	)
 	return err
-}
-
-func (s *RoomStore) SaveBounceTagExclusions(lobbyRoomId string, exclusions map[int][]string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = ?`, lobbyRoomId); err != nil {
-		tx.Rollback()
-		return err
-	}
-	for slotId, tags := range exclusions {
-		for _, tag := range tags {
-			if _, err := tx.Exec(
-				`INSERT OR IGNORE INTO room_bounce_tag_exclusions (lobby_room_id, slot_id, tag) VALUES (?, ?, ?)`,
-				lobbyRoomId, slotId, tag,
-			); err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
-	}
-	return tx.Commit()
 }
 
 func (s *RoomStore) LoadBounceTagExclusions(lobbyRoomId string) (map[int][]string, error) {
@@ -286,27 +221,6 @@ func (s *RoomStore) DeleteAltConnectName(lobbyRoomId, altName string) error {
 		lobbyRoomId, altName,
 	)
 	return err
-}
-
-func (s *RoomStore) SaveAltConnectNames(lobbyRoomId string, names map[string]string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM room_alt_connect_names WHERE lobby_room_id = ?`, lobbyRoomId); err != nil {
-		tx.Rollback()
-		return err
-	}
-	for altName, slotName := range names {
-		if _, err := tx.Exec(
-			`INSERT OR IGNORE INTO room_alt_connect_names (lobby_room_id, alt_name, slot_name) VALUES (?, ?, ?)`,
-			lobbyRoomId, altName, slotName,
-		); err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func (s *RoomStore) LoadAltConnectNamesBySlot(lobbyRoomId, slotName string) ([]string, error) {
@@ -381,6 +295,11 @@ func (s *RoomStore) LoadSlotDeaths(lobbyRoomId string) (map[int]int, error) {
 		result[slotId] = count
 	}
 	return result, rows.Err()
+}
+
+func (s *RoomStore) DeleteSlotDeaths(lobbyRoomId string) error {
+	_, err := s.db.Exec(`DELETE FROM room_slot_deaths WHERE lobby_room_id = ?`, lobbyRoomId)
+	return err
 }
 
 func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {

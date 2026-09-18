@@ -1122,10 +1122,12 @@ async fn set_alt_connect_name(
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
-    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name/", lobby_room_id))?;
+    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name", lobby_room_id))?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("Invalid APX URL"))?
         .push(alt_name);
+
+    eprintln!("[ALT_CONNECT_NAME] URL: {}", url);
 
     let client = reqwest::Client::new();
     let response = client

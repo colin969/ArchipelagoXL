@@ -315,9 +315,18 @@ function createTrackerTable(tableId)
             },
             {
                 label: "Set Alt Name",
-                action: function (event, row) {
+                action: async function (event, row) {
                     const { name } = row.getData();
-                    openAltConnectNamePopup(name);
+                    let existingNames = [];
+                    try {
+                        const res = await fetch(
+                            `/api/dashboard/${window.lobby_room_id}/alt_connect_name/slot/${encodeURIComponent(name)}`
+                        );
+                        if (res.ok) existingNames = await res.json();
+                    } catch (e) {
+                        showToast("Failed to load alt names: " + e.message);
+                    }
+                    openAltConnectNamePopup(name, existingNames);
                 }
             },
             {

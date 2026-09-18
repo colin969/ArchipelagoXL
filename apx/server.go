@@ -126,6 +126,18 @@ func (cn *ConnectNames) GetAltName(connectName string) *string {
 	return nil
 }
 
+func (cn *ConnectNames) GetAltNamesBySlot(realName string) []string {
+	cn.mu.RLock()
+	defer cn.mu.RUnlock()
+	altNames := make([]string, 0)
+	for connectName, slot := range cn.names {
+		if slot == realName {
+			altNames = append(altNames, connectName)
+		}
+	}
+	return altNames
+}
+
 type RoomInfoStore struct {
 	mu  sync.RWMutex
 	msg RoomInfoMessage
