@@ -1844,16 +1844,19 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 	}()
 }
 
+const (
+	roomMinID = 10000
+	roomMaxID = 50000
+)
+
 func (r *RoomRegistry) AllocateAndRegisterHandlerPair(normal, reduced *apxHandler) error {
-	const minID = 10000
-	const maxID = 50000
-	const rangeSize = maxID - minID + 1
+	const rangeSize = roomMaxID - roomMinID + 1
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	tryAllocate := func(id int) bool {
-		if id < minID || id > maxID {
+		if id < roomMinID || id > roomMaxID {
 			return false
 		}
 		_, inUse := r.idToHandler[id]
@@ -1874,24 +1877,19 @@ func (r *RoomRegistry) AllocateAndRegisterHandlerPair(normal, reduced *apxHandle
 		found++
 	}
 
-	// Fill any
+	// Fill any ports missing
 	if found < 2 {
-		start := minID + rand.Intn(rangeSize)
+		start := roomMinID + rand.Intn(rangeSize)
 		for i := 0; i < rangeSize && found < 2; i++ {
-			id := minID + (start-minID+i)%rangeSize
+			id := roomMinID + (start-roomMinID+i)%rangeSize
 			if id == ids[0] || id == ids[1] {
 				continue
 			}
 			if _, inUse := r.idToHandler[id]; !inUse {
-				// Slot 0 = normal, Slot 1 = reduced. Probably a better way of making this readable
-				if found == 0 || (found == 1 && ids[0] != 0) {
-					if ids[0] == 0 {
-						ids[0] = id
-					} else {
-						ids[1] = id
-					}
+				if ids[0] == 0 {
+					ids[0] = id
 				} else {
-					ids[found] = id
+					ids[1] = id
 				}
 				found++
 			}
@@ -1899,7 +1897,7 @@ func (r *RoomRegistry) AllocateAndRegisterHandlerPair(normal, reduced *apxHandle
 	}
 
 	if ids[0] == 0 || ids[1] == 0 {
-		return fmt.Errorf("no available Id pair in range [%d, %d]", minID, maxID)
+		return fmt.Errorf("no available Id pair in range [%d, %d]", roomMinID, roomMaxID)
 	}
 
 	normal.id = ids[0]
