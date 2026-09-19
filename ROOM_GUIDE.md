@@ -75,6 +75,20 @@ Deleting a room is unrecoverable.
 
 The dashboard is only available if your generation used the same yamls that are present in the lobby.
 
+## Room Actions
+
+Above the review table you can find a few different actions:
+- Ionium Lobby
+  - Opens the Ionium lobby room page in a new tab
+- Yaml Review
+  - **Currently for server teams only** - Opens the yaml review tool for the lobby room in a new tab
+- Deathlink Probability
+  - Get and set the deathlink probability between 0 and 1. (0% and 100%). 0.5 for example will ignore 50% of deathlink packets sent.
+- View All Checks
+  - Opens 1 big table with all the checks in the game, what sphere they're in, whose slot they're at, and whether they've been found. Can take a few seconds to load.
+- Reset Table
+  - Resets the persistent values of the table (e.g column width), useful if something seems to break visually
+
 ## Review Table
 
 The table displays the current status of every slot in the archipelago:
@@ -105,7 +119,7 @@ Name, Game and Discord Handle can be filtered via their table headers.
 
 Hide goaled slots is an additional checkbox above the table, this filter will be applied on top of any additional filters.
 
-## Review Table Actions
+## Review Table Slot Actions
 
 There's a bunch of different actions you can perform on a user. Right click their row to show a dropdown of different things to do:
 
