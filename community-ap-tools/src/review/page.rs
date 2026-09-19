@@ -136,7 +136,11 @@ async fn review_page(
         room_id: room_uuid.to_string(),
         room_name: room_info.name,
         assigned_preset_id: room_config.map(|c| c.preset_id),
-        lobby_root_url: config.lobby_public_url.as_ref().unwrap_or(&config.lobby_root_url.to_string()).to_string(),
+        lobby_root_url: config
+            .lobby_public_url
+            .as_ref()
+            .unwrap_or(&config.lobby_root_url.to_string())
+            .to_string(),
         is_locked: room_info.locked,
         user_id: session.user_id(),
         user_role,
@@ -262,12 +266,6 @@ pub struct AdminTeamsTpl {
     base: OrgTplContext,
 }
 
-#[derive(Template, WebTemplate)]
-#[template(path = "admin_apx.html")]
-pub struct AdminApxTpl {
-    base: OrgTplContext,
-}
-
 #[rocket::get("/admin/teams")]
 async fn admin_teams_page(
     session: LoggedInSession,
@@ -288,15 +286,6 @@ async fn admin_teams_page(
     Ok(AdminTeamsTpl { base })
 }
 
-#[rocket::get("/admin/apx")]
-async fn admin_apx_page(
-    session: AdminSession,
-    pool: &State<DieselPool<AsyncPgConnection>>,
-) -> crate::error::Result<AdminApxTpl> {
-    let base = OrgTplContext::new(&session, "apx", pool).await?;
-    Ok(AdminApxTpl { base })
-}
-
 pub fn routes() -> Vec<rocket::Route> {
     routes![
         rooms_list,
@@ -306,6 +295,5 @@ pub fn routes() -> Vec<rocket::Route> {
         presets_list,
         preset_edit,
         admin_teams_page,
-        admin_apx_page
     ]
 }
