@@ -357,7 +357,7 @@ func (s ApxRoom) sendConnectionRefused(ctx context.Context, connState *connectio
 
 	if s.lokiLogger != nil {
 		if raw, err := json.Marshal(msg); err == nil {
-			s.lokiLogger.Log(name, LogSourceServer, raw)
+			s.lokiLogger.Log(name, LogSourceApx, raw)
 		}
 	}
 

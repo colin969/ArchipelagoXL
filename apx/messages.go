@@ -269,7 +269,7 @@ func sendInvalidPacket(ctx context.Context, conn *websocket.Conn, problemType Pa
 	}
 	if lokiLogger != nil && slotName != nil {
 		if raw, err := json.Marshal(msg); err == nil {
-			lokiLogger.Log(*slotName, LogSourceServer, raw)
+			lokiLogger.Log(*slotName, LogSourceApx, raw)
 		}
 	}
 	return wsjson.Write(ctx, conn, []any{msg})
