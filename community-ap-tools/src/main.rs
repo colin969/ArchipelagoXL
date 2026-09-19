@@ -625,7 +625,7 @@ async fn get_deathlink_probability(
     let client = reqwest::Client::new();
     let response = client
         .get(format!(
-            "{}/api/{}/deathlink_probability",
+            "{}api/{}/deathlink_probability",
             apx_api_root, lobby_room_id
         ))
         .header("X-API-Key", apx_api_key)
@@ -654,11 +654,11 @@ async fn set_deathlink_probability(
         .apx_api_key
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
-
+    
     let client = reqwest::Client::new();
     let response = client
         .post(format!(
-            "{}/api/{}/deathlink_probability",
+            "{}api/{}/deathlink_probability",
             apx_api_root, lobby_room_id
         ))
         .header("X-API-Key", apx_api_key)

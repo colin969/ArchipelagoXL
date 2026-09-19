@@ -1242,20 +1242,20 @@ func (rm *RoomManager) handleDeathlinkProbability(w http.ResponseWriter, r *http
 
 	case http.MethodPost:
 		var body struct {
-			Probability *float64 `json:"probability"`
+			Probability float64 `json:"probability"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
 			return
 		}
-		if body.Probability != nil && (*body.Probability < 0 || *body.Probability > 1) {
+		if body.Probability < 0 || body.Probability > 1 {
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]string{"error": "probability must be between 0 and 1"})
 			return
 		}
-		room.apx.bounceInfo.SetProbability(*body.Probability)
-		if err := rm.store.SaveDeathlinkProbability(room.lobbyRoomId, *body.Probability); err != nil {
+		room.apx.bounceInfo.SetProbability(body.Probability)
+		if err := rm.store.SaveDeathlinkProbability(room.lobbyRoomId, body.Probability); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "db: error setting deathlink probability"})
 			return
