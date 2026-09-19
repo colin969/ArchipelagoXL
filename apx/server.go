@@ -526,6 +526,10 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		pendingDatapackGames: []string{},
 		authFailCount:        0,
 	}
+
+	// Start keepalive ping pong
+	go s.keepalive(ctx, c, cancel)
+
 	defer func() {
 		if connState.registeredClient != nil {
 			s.connections.Unregister(connState.registeredClient)
@@ -571,6 +575,34 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 				if !isNormalClose(err) && ctx.Err() == nil {
 					s.logf("client read outer: %v", err)
 				}
+			}
+		}
+	}
+}
+
+// Multiserver defaults are 20 and 20, we're a little more generous I guess
+const (
+	pingInterval = 20 * time.Second
+	pingTimeout  = 40 * time.Second
+)
+
+func (s ApxRoom) keepalive(ctx context.Context, c *websocket.Conn, cancel context.CancelFunc) {
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, pingCancel := context.WithTimeout(ctx, pingTimeout)
+			err := c.Ping(pingCtx)
+			pingCancel()
+			if err != nil {
+				if ctx.Err() == nil {
+					s.logf("client ping timeout, dropping connection: %v", err)
+				}
+				cancel()
+				return
 			}
 		}
 	}
