@@ -30,7 +30,7 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 	var msg ConnectMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		cmd := MessageTypeConnect
-		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err))
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
 
 	// bullshit multiserver behaviour
@@ -74,7 +74,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	var msg ConnectMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		cmd := MessageTypeConnect
-		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err))
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
 
 	// bullshit multiserver behaviour
@@ -96,7 +96,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 	slotEntry, ok := s.validateSlot(msg.Name)
 	if !ok {
-		return s.refuseConnection(ctx, connState, "InvalidSlot", msg.Name)
+		return s.sendConnectionRefused(ctx, connState, "InvalidSlot", msg.Name)
 	}
 
 	// We've got a connect message, we should log it to the slot even if not authed yet, for debugging
@@ -117,13 +117,13 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 	if s.perSlotPasswords == true {
 		if !s.validatePassword(slotEntry[1], msg.Password) {
-			return s.refuseConnection(ctx, connState, "InvalidPassword", msg.Name)
+			return s.sendConnectionRefused(ctx, connState, "InvalidPassword", msg.Name)
 		}
 	}
 
 	// Restrict full feed client access
 	if !connState.reduced && !s.isFullFeedAllowed(slotEntry[1]) {
-		return s.refuseConnection(ctx, connState, "FullFeedDenial", msg.Name)
+		return s.sendConnectionRefused(ctx, connState, "FullFeedDenial", msg.Name)
 	}
 
 	if len(connState.pendingDatapackGames) > 0 {
@@ -167,7 +167,7 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 	text, ok := raw["text"].(string)
 	if !ok {
 		cmd := MessageTypeSay
-		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, "Say packet missing or invalid 'text' field")
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, "Say packet missing or invalid 'text' field", s.lokiLogger, connState.slotName)
 	}
 
 	if ok && text != "" {
@@ -198,7 +198,7 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 	var msg ConnectUpdateMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		cmd := MessageTypeConnectUpdate
-		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid ConnectUpdate arguments: %v", err))
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid ConnectUpdate arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
 
 	s.connections.UpdateTags(connState.registeredClient, msg.Tags)
@@ -351,9 +351,16 @@ func (s ApxRoom) isFullFeedAllowed(slotKey int) bool {
 	return s.fullFeed.Allowed(slotKey)
 }
 
-func (s ApxRoom) refuseConnection(ctx context.Context, connState *connectionState, reason string, name string) error {
+func (s ApxRoom) sendConnectionRefused(ctx context.Context, connState *connectionState, reason string, name string) error {
 	s.logf("%s for %s", reason, name)
 	msg := ConnectionRefusedMessage{Cmd: "ConnectionRefused", Errors: []string{reason}}
+
+	if s.lokiLogger != nil {
+		if raw, err := json.Marshal(msg); err == nil {
+			s.lokiLogger.Log(name, LogSourceServer, raw)
+		}
+	}
+
 	if err := wsjson.Write(ctx, connState.clientConn, []any{msg}); err != nil {
 		connState.cancel()
 		_ = connState.clientConn.CloseNow()

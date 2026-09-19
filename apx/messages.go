@@ -260,11 +260,17 @@ type InvalidPacketMessage struct {
 	Text        string            `json:"text"`
 }
 
-func sendInvalidPacket(ctx context.Context, conn *websocket.Conn, problemType PacketProblemType, originalCmd *MessageType, text string) error {
-	return wsjson.Write(ctx, conn, []any{InvalidPacketMessage{
+func sendInvalidPacket(ctx context.Context, conn *websocket.Conn, problemType PacketProblemType, originalCmd *MessageType, text string, lokiLogger *LokiLogger, slotName *string) error {
+	msg := InvalidPacketMessage{
 		Cmd:         "InvalidPacket",
 		Type:        problemType,
 		OriginalCmd: originalCmd,
 		Text:        text,
-	}})
+	}
+	if lokiLogger != nil && slotName != nil {
+		if raw, err := json.Marshal(msg); err == nil {
+			lokiLogger.Log(*slotName, LogSourceServer, raw)
+		}
+	}
+	return wsjson.Write(ctx, conn, []any{msg})
 }
