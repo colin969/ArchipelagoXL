@@ -622,24 +622,6 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 	}
 }
 
-// Debatable whether this way of using tags as a set/map is even saving time, but eh, what's the harm
-func hasTagOverlap(clientTags []string, msgTagSet map[string]struct{}) bool {
-	for _, t := range clientTags {
-		if _, ok := msgTagSet[t]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func hasSlotOverlap(slotID int, slots []int) bool {
-	return slices.Contains(slots, slotID)
-}
-
-func hasGameOverlap(game string, games []string) bool {
-	return slices.Contains(games, game)
-}
-
 func (dt *debugTap) HasListeners(slotId int) bool {
 	if slotId <= 0 || slotId >= len(dt.slots) {
 		return false

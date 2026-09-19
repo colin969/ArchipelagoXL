@@ -216,3 +216,43 @@ func TestConnectionRegistry(t *testing.T) {
 		})
 	})
 }
+
+func TestConnectNames(t *testing.T) {
+	t.Run("set and get", func(t *testing.T) {
+		cn := newAltConnectNames()
+		cn.SetAltName("Alice", "ali")
+		got := cn.GetAltName("ali")
+		if got == nil || *got != "Alice" {
+			t.Errorf("expected Alice, got %v", got)
+		}
+	})
+
+	t.Run("get unknown returns nil", func(t *testing.T) {
+		cn := newAltConnectNames()
+		if cn.GetAltName("unknown") != nil {
+			t.Error("expected nil for unknown alt name")
+		}
+	})
+
+	t.Run("remove", func(t *testing.T) {
+		cn := newAltConnectNames()
+		cn.SetAltName("Alice", "ali")
+		cn.RemoveAltName("ali")
+		if cn.GetAltName("ali") != nil {
+			t.Error("expected nil after removal")
+		}
+	})
+
+	// Only subtest really doing the hard work here ngl
+	t.Run("get by slot", func(t *testing.T) {
+		cn := newAltConnectNames()
+		cn.SetAltName("Alice", "ali")
+		cn.SetAltName("Alice", "alice2")
+		cn.SetAltName("Bob", "bobby")
+
+		alts := cn.GetAltNamesBySlot("Alice")
+		if len(alts) != 2 {
+			t.Errorf("expected 2 alt names for Alice, got %d", len(alts))
+		}
+	})
+}
