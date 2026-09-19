@@ -84,6 +84,7 @@ diesel::table! {
         success -> Int4,
         total_checks -> Int4,
         starting_checks -> Int4,
+        gen_ms -> Int4,
         changed_at -> Timestamptz,
 
     }

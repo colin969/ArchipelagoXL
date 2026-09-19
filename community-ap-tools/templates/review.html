@@ -19,7 +19,7 @@
 {% endblock %}
 
 {% block main %}
-    <h1>YAML Review: <a href="{{ lobby_root_url }}/room/{{ room_id }}">{{ room_name }}</a></h1>
+    <h1>YAML Review: <a href="{{ lobby_root_url }}/room/{{ room_id }}">{{ room_name }}</a> - <a href="/dashboard/{{ room_id }}">Dashboard</a></h1>
 
     <div class="section">
         <h2>Preset</h2>
@@ -66,7 +66,7 @@ const CHECK_LABELS = {
 const STATUS_TYPES = [["unreviewed", "Unreviewed"], ["reported", "Reported"], ["nok", "NOK"], ["ok", "OK"]];
 
 const SORT_COLUMNS = [
-    ["player", "Player"], ["discord", "Discord"], ["game", "Game"], ["checks", "Checks"],
+    ["player", "Player"], ["discord", "Discord"], ["game", "Game"], ["checks", "Checks"], ["gen_ms", "Gen Time"],
     ["issues", "Issues"], ["status", "Status"], ["created", "Created"],
 ];
 
@@ -335,6 +335,10 @@ function getSortValue(yaml, col) {
             }
             return yaml.analysis_total_checks ?? Infinity;
         }
+        case "gen_ms": {
+            if (yaml.analysis_status !== "success") return Infinity;
+            return yaml.analysis_gen_ms ?? Infinity;
+        }
         case "status": {
             const st = reviewStatuses[yaml.yaml_id] || { status: "unreviewed" };
             const order = { nok: 0, unreviewed: 1, reported: 2, ok: 3 };
@@ -362,6 +366,15 @@ function renderAnalysisCell(yaml) {
     );
 }
 
+function renderGenMsCell(yaml) {
+    if (yaml.analysis_status !== "success" || yaml.analysis_gen_ms == null) {
+        return h("td", { className: "analysis-cell muted" }, "-");
+    }
+    return h("td", { className: "analysis-cell" },
+        (yaml.analysis_gen_ms / 1000).toFixed(2) + "s"
+    );
+}
+
 function renderAnalysisSection(yaml) {
     if (yaml.analysis_status == null) {
         return h("div", { className: "analysis-info muted" },
@@ -384,6 +397,10 @@ function renderAnalysisSection(yaml) {
                 h("span", { className: "analysis-label" }, "Total checks: "),
                 h("strong", null, String(yaml.analysis_total_checks)),
             ),
+            yaml.analysis_gen_ms != null ? h("div", null,
+                h("span", { className: "analysis-label" }, "Gen time: "),
+                h("strong", null, (yaml.analysis_gen_ms / 1000).toFixed(2) + "s"),
+            ) : null,
             h("button", {
                 className: "small",
                 onclick: () => retryAnalysis(yaml.yaml_id),
@@ -480,6 +497,7 @@ function renderResults(data) {
             h("td", null, "@" + yaml.discord_handle),
             h("td", null, yaml.game),
             renderAnalysisCell(yaml),
+            renderGenMsCell(yaml),
             h("td", { className: "issues" },
                 h("span", { className: counts.error > 0 ? "has-errors" : "zero" }, String(counts.error)),
                 " / ",

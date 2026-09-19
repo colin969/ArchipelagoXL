@@ -7,6 +7,7 @@ import random
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 import uuid
 from argparse import Namespace
@@ -101,7 +102,6 @@ class YamlAnalysisQueue(LobbyQueue):
                 all_apworlds.update(FIXED_YAML_APWORLDS)
 
                 for apworld, version in all_apworlds:
-                    print(apworld)
                     self.ap_handler.load_apworld(apworld, version)
 
                 result = loop.run_until_complete(
@@ -185,7 +185,9 @@ class YamlAnalysisQueue(LobbyQueue):
 
             try:
                 from Main import main as ERmain
+                gen_start = time.monotonic()
                 multiworld = await loop.run_in_executor(None, ERmain, erargs, seed)
+                gen_ms = round((time.monotonic() - gen_start) * 1000)
             except Exception as e:
                 logger.warning("Generation failed: %s", e)
                 sentry_sdk.capture_exception(e)
@@ -227,6 +229,7 @@ class YamlAnalysisQueue(LobbyQueue):
                 "game": game,
                 "total_checks": len(locations),
                 "starting_checks": len(sphere_1),
+                "gen_ms": gen_ms,
             }
 
         finally:

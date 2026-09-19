@@ -94,6 +94,7 @@ pub struct YamlAnalysisStatus {
     pub success: i32,
     pub total_checks: i32,
     pub starting_checks: i32,
+    pub gen_ms: i32,
     pub changed_at: DateTime<Utc>,
 }
 
@@ -106,6 +107,7 @@ struct NewYamlAnalysisStatus {
     success: i32,
     total_checks: i32,
     starting_checks: i32,
+    gen_ms: i32,
 }
 
 pub async fn list_presets(conn: &mut AsyncPgConnection) -> anyhow::Result<Vec<PresetSummary>> {
@@ -732,6 +734,7 @@ pub async fn set_yaml_analysis_status(
     success: i32,
     total_checks: i32,
     starting_checks: i32,
+    gen_ms: i32,
     conn: &mut AsyncPgConnection,
 ) -> anyhow::Result<YamlAnalysisStatus> {
     Ok(diesel::insert_into(yaml_analysis_status::table)
@@ -742,6 +745,7 @@ pub async fn set_yaml_analysis_status(
             success,
             total_checks,
             starting_checks,
+            gen_ms,
         })
         .on_conflict((yaml_analysis_status::room_id, yaml_analysis_status::yaml_id))
         .do_update()
@@ -750,6 +754,7 @@ pub async fn set_yaml_analysis_status(
             yaml_analysis_status::success.eq(success),
             yaml_analysis_status::total_checks.eq(total_checks),
             yaml_analysis_status::starting_checks.eq(starting_checks),
+            yaml_analysis_status::gen_ms.eq(gen_ms),
             yaml_analysis_status::changed_at.eq(diesel::dsl::now),
         ))
         .returning(YamlAnalysisStatus::as_returning())

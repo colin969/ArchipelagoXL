@@ -1,0 +1,1 @@
+ALTER TABLE yaml_analysis_status ADD COLUMN gen_ms INTEGER NOT NULL DEFAULT 0;

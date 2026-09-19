@@ -59,6 +59,7 @@ struct YamlEvalResultWithAnalysis {
     analysis_success: Option<i32>,
     analysis_total_checks: Option<i32>,
     analysis_starting_checks: Option<i32>,
+    analysis_gen_ms: Option<i32>,
 }
 
 impl YamlEvalResult {
@@ -76,6 +77,7 @@ impl YamlEvalResult {
             analysis_success: analysis.map(|a| a.success),
             analysis_total_checks: analysis.map(|a| a.total_checks),
             analysis_starting_checks: analysis.map(|a| a.starting_checks),
+            analysis_gen_ms: analysis.map(|a| a.gen_ms),
         }
     }
 }
@@ -266,6 +268,10 @@ fn evaluate_single_yaml(
                     map.insert(
                         Value::Value(ScalarOwned::String("_starting_checks".into())),
                         Value::Value(ScalarOwned::Integer(a.starting_checks as i64)),
+                    );
+                    map.insert(
+                        Value::Value(ScalarOwned::String("_gen_ms".into())),
+                        Value::Value(ScalarOwned::Integer(a.gen_ms as i64)),
                     );
                 }
             }

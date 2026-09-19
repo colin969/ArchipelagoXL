@@ -27,6 +27,7 @@ pub struct YamlAnalysisResponse {
     pub total_checks: Option<u32>,
     pub starting_checks: Option<u32>,
     pub status: Option<String>,
+    pub gen_ms: Option<u32>,
     pub error: Option<String>,
 }
 
@@ -112,6 +113,7 @@ pub fn get_yaml_analysis_callback(
                             success,
                             response.total_checks.unwrap_or(0) as i32,
                             response.starting_checks.unwrap_or(0) as i32,
+                            response.gen_ms.unwrap_or(0) as i32,
                             &mut conn,
                         )
                         .await
@@ -134,12 +136,12 @@ pub fn get_yaml_analysis_callback(
                             .and_then(|r| r.status)
                             .unwrap_or_else(|| "generic failure".to_string());
                         
-                        db::set_yaml_analysis_status(room_id, yaml_id, &status, 0, 0, 0, &mut conn).await?;
+                        db::set_yaml_analysis_status(room_id, yaml_id, &status, 0, 0, 0, 0, &mut conn).await?;
                     }
                     JobStatus::InternalError => {
                         tracing::error!("yaml_analysis job encountered an internal error");
 
-                        db::set_yaml_analysis_status(room_id, yaml_id, "internal error", 0, 0, 0, &mut conn).await?;
+                        db::set_yaml_analysis_status(room_id, yaml_id, "internal error", 0, 0, 0, 0, &mut conn).await?;
                     }
                     _ => {
                         tracing::warn!(

@@ -110,7 +110,7 @@ async fn refresh_worlds(
     yaml_validation_queue: &State<YamlValidationQueue>,
     ctx: &State<Context>,
     _session: AdminSession,
-) -> Result<()> {
+) -> Result<String> {
     let old_index = index_manager.index.read().await.clone();
     index_manager.update().await?;
 
@@ -135,7 +135,7 @@ async fn refresh_worlds(
         .await?;
     }
 
-    Ok(())
+    Ok("Refreshed worlds".to_string())
 }
 
 pub fn routes() -> Vec<rocket::Route> {
