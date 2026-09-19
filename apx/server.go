@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -270,6 +271,12 @@ func (cr *connectionRegistry) UpdateTags(client *registeredClient, tags []string
 	for _, tag := range tags {
 		cr.clientsByTag[tag] = append(cr.clientsByTag[tag], client)
 	}
+}
+
+func (cr *connectionRegistry) ConnectedSlotCount() int {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+	return len(cr.clients)
 }
 
 func (cr *connectionRegistry) Kick(slotId int) {
@@ -703,4 +710,36 @@ func (dt *debugTap) Send(slotId int, raw []byte) {
 		default:
 		}
 	}
+}
+
+func (s ApxRoom) StatusString(client *registeredClient) string {
+	connected := s.connections.ConnectedSlotCount()
+	total := len(s.roomPlayers.slots)
+	probability := s.bounceInfo.GetProbability()
+	deaths := s.bounceInfo.Get()
+
+	totalDeaths := 0
+	for _, count := range deaths {
+		totalDeaths += count
+	}
+
+	lines := []string{
+		fmt.Sprintf("=== APX Status: %s ===", s.lobbyRoomId),
+		fmt.Sprintf("Slots connected: %d / %d", connected, total),
+		fmt.Sprintf("Total deaths: %d", totalDeaths),
+		fmt.Sprintf("Deathlink probability: %.0f%%", probability*100),
+	}
+
+	if client != nil {
+		lines = append(lines, "--- Your Status ---")
+		lines = append(lines, fmt.Sprintf("Deaths: %d", deaths[client.slotId]))
+		if tags := s.bounceInfo.GetTagExclusionsForSlot(client.slotId); len(tags) > 0 {
+			lines = append(lines, fmt.Sprintf("Blocked Bounce tags: %s", strings.Join(tags, ", ")))
+		}
+		if s.bounceInfo.IsLimitedToOwnSlot(client.slotId) {
+			lines = append(lines, "You are isolated from other players bounces")
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }

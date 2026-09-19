@@ -75,6 +75,20 @@ func (ds *bounceInfoStore) GetTagExclusions() map[int][]string {
 	return result
 }
 
+func (ds *bounceInfoStore) GetTagExclusionsForSlot(slotId int) []string {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	tags, ok := ds.excludedByTag[slotId]
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(tags))
+	for tag := range tags {
+		result = append(result, tag)
+	}
+	return result
+}
+
 func (ds *bounceInfoStore) GetSlotExclusions() []int {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()

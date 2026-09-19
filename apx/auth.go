@@ -180,6 +180,9 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
 			return nil
 		}
+		if handled, err := s.apxCommandGroup().Handle(ctx, connState, trimmed); handled {
+			return err
+		}
 	}
 
 	if connState.apConn != nil {

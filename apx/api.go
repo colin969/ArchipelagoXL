@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math/rand"
 	"mime/multipart"
 	"net"
@@ -620,9 +621,7 @@ func (rm *RoomManager) restoreSlotDeaths(room *HostedRoom) {
 	}
 	room.apx.bounceInfo.mu.Lock()
 	defer room.apx.bounceInfo.mu.Unlock()
-	for slotId, count := range deaths {
-		room.apx.bounceInfo.counts[slotId] = count
-	}
+	maps.Copy(room.apx.bounceInfo.counts, deaths)
 }
 
 func (rm *RoomManager) restoreAltConnectNames(room *HostedRoom) {
