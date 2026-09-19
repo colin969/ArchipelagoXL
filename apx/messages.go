@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 const (
@@ -14,6 +18,7 @@ const (
 	MessageTypeGetDataPackage MessageType = "GetDataPackage"
 	MessageTypeDataPackage    MessageType = "DataPackage"
 	MessageTypeSay            MessageType = "Say"
+	MessageTypeInvalidPacket  MessageType = "InvalidPacket"
 )
 
 const (
@@ -239,4 +244,27 @@ type NetworkVersion struct {
 	Major IntOrString `json:"major"`
 	Minor IntOrString `json:"minor"`
 	Build IntOrString `json:"build"`
+}
+
+type PacketProblemType string
+
+const (
+	PacketProblemCmd       PacketProblemType = "cmd"
+	PacketProblemArguments PacketProblemType = "arguments"
+)
+
+type InvalidPacketMessage struct {
+	Cmd         MessageType       `json:"cmd"`
+	Type        PacketProblemType `json:"type"`
+	OriginalCmd *MessageType      `json:"original_cmd"`
+	Text        string            `json:"text"`
+}
+
+func sendInvalidPacket(ctx context.Context, conn *websocket.Conn, problemType PacketProblemType, originalCmd *MessageType, text string) error {
+	return wsjson.Write(ctx, conn, []any{InvalidPacketMessage{
+		Cmd:         "InvalidPacket",
+		Type:        problemType,
+		OriginalCmd: originalCmd,
+		Text:        text,
+	}})
 }

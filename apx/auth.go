@@ -29,7 +29,8 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 
 	var msg ConnectMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		return fmt.Errorf("unmarshalling connect message: %w", err)
+		cmd := MessageTypeConnect
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err))
 	}
 
 	// bullshit multiserver behaviour
@@ -72,7 +73,8 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 	var msg ConnectMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		return fmt.Errorf("unmarshalling connect message: %w", err)
+		cmd := MessageTypeConnect
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err))
 	}
 
 	// bullshit multiserver behaviour
@@ -162,7 +164,13 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw map[string]any) error {
 	// Only need 1 field, don't bother re and unmarshaling for struct
-	if text, ok := raw["text"].(string); ok && text != "" {
+	text, ok := raw["text"].(string)
+	if !ok {
+		cmd := MessageTypeSay
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, "Say packet missing or invalid 'text' field")
+	}
+
+	if ok && text != "" {
 		trimmed := strings.ToLower(strings.TrimSpace(text))
 		if strings.HasPrefix(trimmed, "!countdown") {
 			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
@@ -189,7 +197,8 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 
 	var msg ConnectUpdateMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
-		return fmt.Errorf("unmarshalling connectupdate message: %w", err)
+		cmd := MessageTypeConnectUpdate
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid ConnectUpdate arguments: %v", err))
 	}
 
 	s.connections.UpdateTags(connState.registeredClient, msg.Tags)
@@ -346,12 +355,15 @@ func (s ApxRoom) refuseConnection(ctx context.Context, connState *connectionStat
 	s.logf("%s for %s", reason, name)
 	msg := ConnectionRefusedMessage{Cmd: "ConnectionRefused", Errors: []string{reason}}
 	if err := wsjson.Write(ctx, connState.clientConn, []any{msg}); err != nil {
+		connState.cancel()
 		_ = connState.clientConn.CloseNow()
 		return err
 	}
 	connState.authFailCount++
 	if connState.authFailCount > 10 {
-		return connState.clientConn.Close(websocket.StatusNormalClosure, reason)
+		_ = connState.clientConn.Close(websocket.StatusNormalClosure, reason)
+		connState.cancel()
+		return nil
 	}
 	return nil
 }

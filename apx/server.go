@@ -555,7 +555,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 
 			cmd, ok := message["cmd"].(string)
 			if !ok {
-				s.logf("message missing or invalid cmd field: %v", message)
+				sendInvalidPacket(ctx, connState.clientConn, PacketProblemCmd, nil, fmt.Sprintf("message missing or invalid cmd field: %v", message))
 				continue
 			}
 

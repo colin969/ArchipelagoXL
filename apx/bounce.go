@@ -153,6 +153,11 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return fmt.Errorf("unmarshalling bounce message: %w", err)
 	}
+	// TODO: Use once 0.6.8 releases
+	// if err := json.Unmarshal(data, &msg); err != nil {
+	// 	cmd := MessageTypeBounce
+	// 	return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Bounce arguments: %v", err))
+	// }
 
 	// Record types of tags sent by each slot
 	for _, tag := range msg.Tags {
