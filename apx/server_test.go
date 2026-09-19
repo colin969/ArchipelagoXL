@@ -12,7 +12,8 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-// Make sure only the right bounce messages reach the right clients
+// Tests
+
 func TestBroadcastBounce(t *testing.T) {
 	game := "Celeste"
 	game2 := "Hollow Knight"
@@ -128,88 +129,90 @@ func newTestWSClient(t *testing.T) (*websocket.Conn, <-chan struct{}) {
 	return conn, received
 }
 
-func TestConnectionRegistry_SuccessfulConnect(t *testing.T) {
-	cr := newConnectionRegistry(nil, nil)
-	game := "TestGame"
-	client := &registeredClient{
-		slotId: 1,
-		game:   &game,
-	}
-
-	cr.Register(1, client, game, []string{"DeathLink"})
-
-	t.Run("client in clients map", func(t *testing.T) {
-		if len(cr.clients[1]) != 1 {
-			t.Errorf("expected 1 client for slot 1, got %d", len(cr.clients[1]))
+func TestConnectionRegistry(t *testing.T) {
+	t.Run("SuccessfulConnect", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		game := "TestGame"
+		client := &registeredClient{
+			slotId: 1,
+			game:   &game,
 		}
+
+		cr.Register(1, client, game, []string{"DeathLink"})
+
+		t.Run("client in clients map", func(t *testing.T) {
+			if len(cr.clients[1]) != 1 {
+				t.Errorf("expected 1 client for slot 1, got %d", len(cr.clients[1]))
+			}
+		})
+
+		t.Run("client in clientsByGame", func(t *testing.T) {
+			if len(cr.clientsByGame[game]) != 1 {
+				t.Errorf("expected 1 client for game %q, got %d", game, len(cr.clientsByGame[game]))
+			}
+		})
+
+		t.Run("client in clientsByTag", func(t *testing.T) {
+			if len(cr.clientsByTag["DeathLink"]) != 1 {
+				t.Errorf("expected 1 client for tag DeathLink, got %d", len(cr.clientsByTag["DeathLink"]))
+			}
+		})
 	})
 
-	t.Run("client in clientsByGame", func(t *testing.T) {
-		if len(cr.clientsByGame[game]) != 1 {
-			t.Errorf("expected 1 client for game %q, got %d", game, len(cr.clientsByGame[game]))
+	t.Run("UnregisterAfterConnect", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		game := "TestGame"
+		client := &registeredClient{
+			slotId: 1,
+			game:   &game,
 		}
+
+		cr.Register(1, client, game, []string{"DeathLink"})
+		cr.Unregister(client)
+
+		t.Run("client removed from clients map", func(t *testing.T) {
+			if len(cr.clients[1]) != 0 {
+				t.Errorf("expected 0 clients for slot 1, got %d", len(cr.clients[1]))
+			}
+		})
+
+		t.Run("client removed from clientsByGame", func(t *testing.T) {
+			if len(cr.clientsByGame[game]) != 0 {
+				t.Errorf("expected 0 clients for game %q", game)
+			}
+		})
+
+		t.Run("client removed from clientsByTag", func(t *testing.T) {
+			if len(cr.clientsByTag["DeathLink"]) != 0 {
+				t.Errorf("expected 0 clients for tag DeathLink")
+			}
+		})
 	})
 
-	t.Run("client in clientsByTag", func(t *testing.T) {
-		if len(cr.clientsByTag["DeathLink"]) != 1 {
-			t.Errorf("expected 1 client for tag DeathLink, got %d", len(cr.clientsByTag["DeathLink"]))
-		}
-	})
-}
+	t.Run("MultipleConnectsSameSlot", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		game := "TestGame"
+		c1 := &registeredClient{slotId: 1, game: &game}
+		c2 := &registeredClient{slotId: 1, game: &game}
 
-func TestConnectionRegistry_UnregisterAfterConnect(t *testing.T) {
-	cr := newConnectionRegistry(nil, nil)
-	game := "TestGame"
-	client := &registeredClient{
-		slotId: 1,
-		game:   &game,
-	}
+		cr.Register(1, c1, game, []string{})
+		cr.Register(1, c2, game, []string{})
 
-	cr.Register(1, client, game, []string{"DeathLink"})
-	cr.Unregister(client)
+		t.Run("both clients registered", func(t *testing.T) {
+			if len(cr.clients[1]) != 2 {
+				t.Errorf("expected 2 clients for slot 1, got %d", len(cr.clients[1]))
+			}
+		})
 
-	t.Run("client removed from clients map", func(t *testing.T) {
-		if len(cr.clients[1]) != 0 {
-			t.Errorf("expected 0 clients for slot 1, got %d", len(cr.clients[1]))
-		}
-	})
+		cr.Unregister(c1)
 
-	t.Run("client removed from clientsByGame", func(t *testing.T) {
-		if len(cr.clientsByGame[game]) != 0 {
-			t.Errorf("expected 0 clients for game %q", game)
-		}
-	})
-
-	t.Run("client removed from clientsByTag", func(t *testing.T) {
-		if len(cr.clientsByTag["DeathLink"]) != 0 {
-			t.Errorf("expected 0 clients for tag DeathLink")
-		}
-	})
-}
-
-func TestConnectionRegistry_MultipleConnectsSameSlot(t *testing.T) {
-	cr := newConnectionRegistry(nil, nil)
-	game := "TestGame"
-	c1 := &registeredClient{slotId: 1, game: &game}
-	c2 := &registeredClient{slotId: 1, game: &game}
-
-	cr.Register(1, c1, game, []string{})
-	cr.Register(1, c2, game, []string{})
-
-	t.Run("both clients registered", func(t *testing.T) {
-		if len(cr.clients[1]) != 2 {
-			t.Errorf("expected 2 clients for slot 1, got %d", len(cr.clients[1]))
-		}
-	})
-
-	cr.Unregister(c1)
-
-	t.Run("one client remains after unregister", func(t *testing.T) {
-		if len(cr.clients[1]) != 1 {
-			t.Errorf("expected 1 client remaining, got %d", len(cr.clients[1]))
-		}
-		if cr.clients[1][0] != c2 {
-			t.Error("expected c2 to remain")
-		}
+		t.Run("one client remains after unregister", func(t *testing.T) {
+			if len(cr.clients[1]) != 1 {
+				t.Errorf("expected 1 client remaining, got %d", len(cr.clients[1]))
+			}
+			if cr.clients[1][0] != c2 {
+				t.Error("expected c2 to remain")
+			}
+		})
 	})
 }

@@ -484,6 +484,11 @@ type apxHandler struct {
 
 // Put options on the handler so we can run 2 servers with the same apxServer backing them
 func (h apxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Feels silly but works as a guard for testing. Should never be the case in prod.
+	if h.server == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	h.server.serveConn(w, r, h.reduced)
 }
 

@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+// Tests
+
 func TestDeathlinkCooldown(t *testing.T) {
 	ds := newBounceInfoStore()
 	now := time.Now()

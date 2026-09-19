@@ -38,11 +38,8 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 		msg.SlotData = &slotDataDefault
 	}
 
-	// Update msg from alt connect name
-	realName := s.altConnectNames.GetAltName(msg.Name)
-	if realName != nil {
-		msg.Name = *realName
-	}
+	// Update msg from alt connect name if it matches
+	msg.Name = s.resolveAltName(msg.Name)
 
 	log.Printf("reconnect (authed): game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
 		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData)
@@ -95,22 +92,9 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 	connState.slotName = &msg.Name
 
-	slotEntry, ok := s.roomPlayers.auth[msg.Name]
+	slotEntry, ok := s.validateSlot(msg.Name)
 	if !ok {
-		errorMsg := ConnectionRefusedMessage{
-			Cmd:    "ConnectionRefused",
-			Errors: []string{"InvalidSlot"},
-		}
-		s.logf("InvalidSlot for %s", msg.Name)
-		if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
-			_ = connState.clientConn.CloseNow()
-			return err
-		}
-		connState.authFailCount += 1
-		if connState.authFailCount > 10 {
-			return connState.clientConn.Close(websocket.StatusNormalClosure, "InvalidSlot")
-		}
-		return nil
+		return s.refuseConnection(ctx, connState, "InvalidSlot", msg.Name)
 	}
 
 	// We've got a connect message, we should log it to the slot even if not authed yet, for debugging
@@ -130,45 +114,14 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	}
 
 	if s.perSlotPasswords == true {
-		password, ok := s.passwords.Get(slotEntry[1])
-		if !(ok && msg.Password != nil && password == *msg.Password) {
-			errorMsg := ConnectionRefusedMessage{
-				Cmd:    "ConnectionRefused",
-				Errors: []string{"InvalidPassword"},
-			}
-			s.logf("InvalidPassword for %s", msg.Name)
-			if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
-				_ = connState.clientConn.CloseNow()
-				return err
-			}
-			connState.authFailCount += 1
-			if connState.authFailCount > 10 {
-				return connState.clientConn.Close(websocket.StatusNormalClosure, "InvalidPassword")
-			}
-			return nil
+		if !s.validatePassword(slotEntry[1], msg.Password) {
+			return s.refuseConnection(ctx, connState, "InvalidPassword", msg.Name)
 		}
 	}
 
 	// Restrict full feed client access
-	if !connState.reduced {
-		allowed := s.fullFeed.Allowed(slotEntry[1])
-		if !allowed {
-			SendChatMessageToClient(ctx, connState.clientConn, slotEntry[1], "Restricted access to this port")
-			errorMsg := ConnectionRefusedMessage{
-				Cmd:    "ConnectionRefused",
-				Errors: []string{"InvalidSlot"},
-			}
-			s.logf("Full feed denial for %s", msg.Name)
-			if err := wsjson.Write(ctx, connState.clientConn, []any{errorMsg}); err != nil {
-				_ = connState.clientConn.CloseNow()
-				return err
-			}
-			connState.authFailCount += 1
-			if connState.authFailCount > 10 {
-				return connState.clientConn.Close(websocket.StatusNormalClosure, "FullFeedDenial")
-			}
-			return nil
-		}
+	if !connState.reduced && !s.isFullFeedAllowed(slotEntry[1]) {
+		return s.refuseConnection(ctx, connState, "FullFeedDenial", msg.Name)
 	}
 
 	if len(connState.pendingDatapackGames) > 0 {
@@ -366,6 +319,41 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 	}()
 
 	return apConn, slotId, &game, nil
+}
+
+func (s ApxRoom) validateSlot(name string) ([2]int, bool) {
+	slotEntry, ok := s.roomPlayers.auth[name]
+	return slotEntry, ok
+}
+
+func (s ApxRoom) validatePassword(slotKey int, provided *string) bool {
+	password, ok := s.passwords.Get(slotKey)
+	return ok && provided != nil && password == *provided
+}
+
+func (s ApxRoom) resolveAltName(name string) string {
+	if real := s.altConnectNames.GetAltName(name); real != nil {
+		return *real
+	}
+	return name
+}
+
+func (s ApxRoom) isFullFeedAllowed(slotKey int) bool {
+	return s.fullFeed.Allowed(slotKey)
+}
+
+func (s ApxRoom) refuseConnection(ctx context.Context, connState *connectionState, reason string, name string) error {
+	s.logf("%s for %s", reason, name)
+	msg := ConnectionRefusedMessage{Cmd: "ConnectionRefused", Errors: []string{reason}}
+	if err := wsjson.Write(ctx, connState.clientConn, []any{msg}); err != nil {
+		_ = connState.clientConn.CloseNow()
+		return err
+	}
+	connState.authFailCount++
+	if connState.authFailCount > 10 {
+		return connState.clientConn.Close(websocket.StatusNormalClosure, reason)
+	}
+	return nil
 }
 
 func isNormalClose(err error) bool {
