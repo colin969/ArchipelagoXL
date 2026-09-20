@@ -963,25 +963,31 @@ const SEVERITY_LABELS = {
 };
 
 function copyIssues(yaml) {
-    const lines = yaml.results
-        .filter(r => (r.outcome === "fail" || r.outcome === "error") && r.severity !== "info")
-        .map(r => {
-            const severity = SEVERITY_LABELS[r.severity] ?? r.severity;
-            const parts = [`[${severity}] ${r.rule_name}`];
-            if (r.detail) parts.push(`: ${r.detail}`);
-            return parts.join("");
-        });
+    const filtered = yaml.results
+        .filter(r => (r.outcome === "fail" || r.outcome === "error") && r.severity !== "info");
 
-    if (lines.length === 0) {
+    const toLine = r => {
+        const severity = SEVERITY_LABELS[r.severity] ?? r.severity;
+        const parts = [`[${severity}] ${r.rule_name}`];
+        if (r.detail) parts.push(`: ${r.detail}`);
+        return parts.join("");
+    };
+
+    const errors = filtered.filter(r => r.severity === "error").map(toLine);
+    const warnings = filtered.filter(r => r.severity === "warning").map(toLine);
+
+    if (errors.length === 0 && warnings.length === 0) {
         showToast("No issues to copy");
         return;
     }
 
+    const sections = [errors, warnings].filter(s => s.length > 0);
     const mention = yaml.discord_id ? `<@${yaml.discord_id}>` : 'Unknown User';
-    const text = [`${mention} - ${yaml.game}`, ...lines].join("\n");
+    const text = [`${mention} - ${yaml.game}`, ...sections.map(s => s.join("\n"))].join("\n\n");
 
+    const totalCount = errors.length + warnings.length;
     navigator.clipboard.writeText(text)
-        .then(() => showToast(`Copied ${lines.length} issue(s)`, "info"))
+        .then(() => showToast(`Copied ${totalCount} issue(s)`, "info"))
         .catch(() => showToast("Failed to copy to clipboard"));
 }
 

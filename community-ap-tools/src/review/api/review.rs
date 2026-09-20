@@ -84,6 +84,7 @@ async fn proxy_games(
     Ok(Json(data))
 }
 
+// TODO: Do we need perms for users not on a team? Double check
 #[rocket::get("/games/<apworld>/options")]
 async fn proxy_game_options(
     _session: LoggedInSession,

@@ -187,7 +187,7 @@ impl<'r> FromRequest<'r> for ModeratorSession {
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let session = Session::from_request_sync(request);
         if !session.is_logged_in {
-            return Outcome::Error((Status::Unauthorized, anyhow!("Not logged in").into()));
+            return Outcome::Forward(Status::Unauthorized);
         }
         if session.is_super_admin {
             return Outcome::Success(ModeratorSession(LoggedInSession(session)));
@@ -209,6 +209,12 @@ impl<'r> FromRequest<'r> for ModeratorSession {
                 lobby_room.author_id
             }
         };
+
+        println!(
+            "ModeratorSession check: requester user_id={:?}, room author_id={:?}",
+            logged_in_session.user_id(),
+            author_id
+        );
 
         if logged_in_session.user_id() == author_id {
             return Outcome::Success(ModeratorSession(logged_in_session));
@@ -325,13 +331,13 @@ async fn login_discord_callback(
     let discord_id: i64 = user.id.parse()?;
     let super_admin = is_super_admin(discord_id, &discord_config);
 
-    if !super_admin {
-        let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
-        let in_team = review_db::is_user_in_any_team(discord_id, &mut conn).await?;
-        if !in_team {
-            Err(anyhow::anyhow!("Not allowed"))?
-        }
-    }
+    // if !super_admin {
+    //     let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+    //     let in_team = review_db::is_user_in_any_team(discord_id, &mut conn).await?;
+    //     if !in_team {
+    //         Err(anyhow::anyhow!("Not allowed"))?
+    //     }
+    // }
 
     session.user_id = Some(user.id.parse()?);
     session.username = Some(user.username.clone());
