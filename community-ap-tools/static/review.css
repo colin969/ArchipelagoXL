@@ -278,6 +278,7 @@ th.sortable .sort-arrow { margin-left: 4px; }
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: #1e1e1e; }
 .has-errors { color: #f66; font-weight: bold; }
+.analysis-info { max-height: 7rem; overflow-y: auto; }
 td.issues .has-warnings { color: #fc4; }
 td.issues .has-info { color: #6cf; }
 td.issues .zero { color: #555; }

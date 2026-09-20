@@ -492,19 +492,28 @@ function renderResults(data) {
         }
         const failedRules = yaml.results.filter(r => r.outcome === "fail").map(r => r.rule_name);
         const gkeys = gameFilterKeys(yaml);
+
+        const hasIssues = yaml.results.some(r => (r.outcome === "fail" || r.outcome === "error") && r.severity !== "info");
+        const issuesCell = h("td", { className: "issues" },
+            h("span", { className: counts.error > 0 ? "has-errors" : "zero" }, String(counts.error)),
+            " / ",
+            h("span", { className: counts.warning > 0 ? "has-warnings" : "zero" }, String(counts.warning)),
+            " / ",
+            h("span", { className: counts.info > 0 ? "has-info" : "zero" }, String(counts.info)),
+        );
+        if (hasIssues) {
+            issuesCell.title = "Click to copy issues";
+            issuesCell.style.cursor = "pointer";
+            issuesCell.onclick = (e) => { e.stopPropagation(); copyIssues(yaml); };
+        }
+
         tbody.append(h("tr", { "data-yaml-id": yaml.yaml_id, "data-game": yaml.game, "data-games": gkeys.join("\t"), "data-rules": failedRules.join(",") },
             playerCell,
             h("td", null, "@" + yaml.discord_handle),
             h("td", null, yaml.game),
             renderAnalysisCell(yaml),
             renderGenMsCell(yaml),
-            h("td", { className: "issues" },
-                h("span", { className: counts.error > 0 ? "has-errors" : "zero" }, String(counts.error)),
-                " / ",
-                h("span", { className: counts.warning > 0 ? "has-warnings" : "zero" }, String(counts.warning)),
-                " / ",
-                h("span", { className: counts.info > 0 ? "has-info" : "zero" }, String(counts.info)),
-            ),
+            issuesCell,
             h("td", { className: "status-cell" }, renderStatusSelect(yaml.yaml_id)),
             h("td", { className: "date-cell" }, formatDate(yaml.created_at)),
         ));
