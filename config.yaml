@@ -1,5 +1,0 @@
-PORT: 9888
-PONY:
- provider: "sqlite"
- filename: "/app/db/ap.db3"
- create_db: true
