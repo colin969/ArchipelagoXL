@@ -26,13 +26,6 @@ const (
 	LogLevelError LogLevel = "error"
 )
 
-var linePool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 256)
-		return &b
-	},
-}
-
 type lokiEntry struct {
 	slot      string
 	source    LogSource
@@ -48,9 +41,10 @@ type LokiLogger struct {
 	flushInterval time.Duration
 	client        *http.Client
 	wg            sync.WaitGroup
+	metrics       *metrics
 }
 
-func NewLokiLogger(endpoint, roomId string) *LokiLogger {
+func NewLokiLogger(endpoint, roomId string, metrics *metrics) *LokiLogger {
 	l := &LokiLogger{
 		endpoint:      endpoint,
 		roomId:        roomId,
@@ -58,6 +52,7 @@ func NewLokiLogger(endpoint, roomId string) *LokiLogger {
 		batchSize:     500,
 		flushInterval: 500 * time.Millisecond,
 		client:        &http.Client{Timeout: 5 * time.Second},
+		metrics:       metrics,
 	}
 	l.wg.Add(1)
 	go l.run()
@@ -65,33 +60,32 @@ func NewLokiLogger(endpoint, roomId string) *LokiLogger {
 }
 
 func (l *LokiLogger) formatLine(level LogLevel, msg []byte, slot *string) []byte {
-	buf := linePool.Get().(*[]byte)
-	*buf = (*buf)[:0]
-
-	levelVal, _ := json.Marshal(string(level))
+	buf := make([]byte, 0, 256)
 	msg = bytes.TrimSpace(msg)
 
-	*buf = append(*buf, '{')
+	levelVal, _ := json.Marshal(string(level))
+
+	buf = append(buf, '{')
 	if slot != nil {
 		slotVal, _ := json.Marshal(*slot)
-		*buf = append(*buf, `"_slot":`...)
-		*buf = append(*buf, slotVal...)
-		*buf = append(*buf, ',')
+		buf = append(buf, `"_slot":`...)
+		buf = append(buf, slotVal...)
+		buf = append(buf, ',')
 	}
-	*buf = append(*buf, `"_level":`...)
-	*buf = append(*buf, levelVal...)
+	buf = append(buf, `"_level":`...)
+	buf = append(buf, levelVal...)
 
 	if len(msg) > 1 && msg[0] == '{' && msg[len(msg)-1] == '}' {
-		*buf = append(*buf, ',')
-		*buf = append(*buf, msg[1:]...) // strip leading '{'
+		buf = append(buf, ',')
+		buf = append(buf, msg[1:]...)
 	} else {
 		msgVal, _ := json.Marshal(string(msg))
-		*buf = append(*buf, `,"msg":`...)
-		*buf = append(*buf, msgVal...)
-		*buf = append(*buf, '}')
+		buf = append(buf, `,"msg":`...)
+		buf = append(buf, msgVal...)
+		buf = append(buf, '}')
 	}
 
-	return *buf
+	return buf
 }
 
 // Log level info by default
@@ -105,7 +99,7 @@ func (l *LokiLogger) LogAt(slot string, source LogSource, level LogLevel, msg []
 	select {
 	case l.ch <- lokiEntry{source: source, line: line, timestamp: time.Now()}:
 	default:
-		linePool.Put(&line)
+		l.metrics.droppedLogs.WithLabelValues(string(source)).Inc()
 	}
 }
 
@@ -114,7 +108,9 @@ func (l *LokiLogger) LogApi(level LogLevel, msg []byte) {
 	select {
 	case l.ch <- lokiEntry{source: LogSourceApi, line: line, timestamp: time.Now()}:
 	default:
-		linePool.Put(&line)
+		if l.metrics != nil {
+			l.metrics.droppedLogs.WithLabelValues(string(LogSourceApi)).Inc()
+		}
 	}
 }
 
@@ -152,12 +148,6 @@ func (l *LokiLogger) run() {
 		}
 		if err := l.push(streams); err != nil {
 			log.Printf("loki push error: %v", err)
-		}
-		for _, s := range streams {
-			for _, e := range s.entries {
-				b := e.line
-				linePool.Put(&b)
-			}
 		}
 		batch = make(map[streamKey][]lokiEntry)
 		count = 0

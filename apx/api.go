@@ -733,7 +733,8 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create form file"})
 		return
 	}
-	if _, err := io.Copy(fw, file); err != nil {
+	_, err = io.Copy(fw, file)
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to buffer file"})
 		return
@@ -760,6 +761,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[UPLOAD] AP webhost room creation error: %s", string(body))
 		w.WriteHeader(http.StatusBadGateway)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP server error: %v", string(body))})
 		return
@@ -857,7 +859,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	}
 	var lokiLogger *LokiLogger
 	if rm.config.LokiEndpoint != "" {
-		lokiLogger = NewLokiLogger(rm.config.LokiEndpoint, lobbyRoomId)
+		lokiLogger = NewLokiLogger(rm.config.LokiEndpoint, lobbyRoomId, rm.metrics)
 	}
 
 	var lastActivity atomic.Int64

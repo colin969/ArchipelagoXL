@@ -6,11 +6,11 @@ import (
 )
 
 type metrics struct {
-	incomingPackets   prometheus.CounterVec
-	bouncePackets     prometheus.CounterVec
-	connectedClients  prometheus.GaugeVec
-	connectedSlots    prometheus.GaugeVec
-	retryStormClients prometheus.CounterVec
+	incomingPackets  prometheus.CounterVec
+	bouncePackets    prometheus.CounterVec
+	connectedClients prometheus.GaugeVec
+	connectedSlots   prometheus.GaugeVec
+	droppedLogs      prometheus.CounterVec
 }
 
 func initMetrics() (*prometheus.Registry, *metrics) {
@@ -45,12 +45,12 @@ func initMetrics() (*prometheus.Registry, *metrics) {
 			},
 			[]string{"room"},
 		),
-		retryStormClients: *promauto.With(reg).NewCounterVec(
+		droppedLogs: *promauto.With(reg).NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "apx_retry_storm_clients",
-				Help: "Total number of bad retry attempts when requesting datapackages",
+				Name: "apx_dropped_logs_total",
+				Help: "Total number of log entries dropped due to full channel",
 			},
-			[]string{"room", "slot", "game"},
+			[]string{"source"},
 		),
 	}
 
