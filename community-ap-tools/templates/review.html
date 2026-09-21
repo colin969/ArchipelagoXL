@@ -162,7 +162,8 @@ async function runEvaluation() {
 
 function formatDate(s) {
     if (!s) return "";
-    const d = new Date(s);
+    const normalized = s.includes("Z") || s.includes("+") ? s : s + "Z";
+    const d = new Date(normalized);
     if (isNaN(d)) return s;
     return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
