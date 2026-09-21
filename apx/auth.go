@@ -111,7 +111,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 	if s.lokiLogger != nil {
 		if raw, err := json.Marshal(raw); err == nil {
-			s.lokiLogger.Log(msg.Name, LogSourceClient, raw)
+			s.lokiLogger.Log(&msg.Name, LogSourceClient, raw, MessageTypeConnect)
 		}
 	}
 
@@ -256,7 +256,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 	// Forward the Connected message to the client
 	if s.lokiLogger != nil {
 		for _, raw := range response {
-			s.lokiLogger.Log(connectMsg.Name, LogSourceServer, raw)
+			s.lokiLogger.Log(&connectMsg.Name, LogSourceServer, raw, "Connected")
 		}
 	}
 	if err := wsjson.Write(ctx, connState.clientConn, response); err != nil {
@@ -297,6 +297,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 	go func() {
 		defer apConn.CloseNow()
 		defer connState.cancel()
+		proxyMessageType := MessageType("")
 		for {
 			msgType, data, err := apConn.Read(ctx)
 			if err != nil {
@@ -314,7 +315,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 						if err != nil {
 							continue
 						}
-						s.lokiLogger.Log(*connState.slotName, LogSourceServer, raw)
+						s.lokiLogger.Log(connState.slotName, LogSourceServer, raw, proxyMessageType)
 					}
 				} else {
 					s.logf("failed to unmarshal server message: %v", err)
@@ -360,7 +361,7 @@ func (s ApxRoom) sendConnectionRefused(ctx context.Context, connState *connectio
 
 	if s.lokiLogger != nil {
 		if raw, err := json.Marshal(msg); err == nil {
-			s.lokiLogger.Log(name, LogSourceApx, raw)
+			s.lokiLogger.Log(&name, LogSourceApx, raw, "ConnectionRefused")
 		}
 	}
 

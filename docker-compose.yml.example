@@ -1,8 +1,6 @@
 services:
   postgres:
     image: postgres:17
-    ports:
-      - "127.0.0.1:25432:5432"
     environment:
       POSTGRES_DB: aplobby
       POSTGRES_PASSWORD: postgres
@@ -13,6 +11,21 @@ services:
       interval: 1s
       timeout: 1s
       retries: 100
+
+  mariadb:
+    image: mariadb:12.3
+    environment:
+      MARIADB_DATABASE: apwebhost
+      MARIADB_USER: mariadb
+      MARIADB_PASSWORD: mariadb
+      MARIADB_ROOT_PASSWORD: mariadb
+    volumes:
+      - ./data/mariadb:/var/lib/mysql
+    healthcheck:
+      test: healthcheck.sh --connect --innodb_initialized
+      interval: 1s
+      timeout: 1s
+      retries: 100 
 
   valkey:
     image: valkey/valkey

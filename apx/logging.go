@@ -26,8 +26,14 @@ const (
 	LogLevelError LogLevel = "error"
 )
 
+var levelBytes = map[LogLevel][]byte{
+	LogLevelDebug: []byte(`"debug"`),
+	LogLevelInfo:  []byte(`"info"`),
+	LogLevelWarn:  []byte(`"warn"`),
+	LogLevelError: []byte(`"error"`),
+}
+
 type lokiEntry struct {
-	slot      string
 	source    LogSource
 	line      []byte
 	timestamp time.Time
@@ -46,9 +52,10 @@ type LokiLogger struct {
 
 func NewLokiLogger(endpoint, roomId string, metrics *metrics) *LokiLogger {
 	l := &LokiLogger{
-		endpoint:      endpoint,
-		roomId:        roomId,
-		ch:            make(chan lokiEntry, 16384),
+		endpoint: endpoint,
+		roomId:   roomId,
+		// Roughly 64MB maximum buffer (about 10MB in reality)
+		ch:            make(chan lokiEntry, 32768),
 		batchSize:     500,
 		flushInterval: 500 * time.Millisecond,
 		client:        &http.Client{Timeout: 5 * time.Second},
@@ -59,11 +66,13 @@ func NewLokiLogger(endpoint, roomId string, metrics *metrics) *LokiLogger {
 	return l
 }
 
-func (l *LokiLogger) formatLine(level LogLevel, msg []byte, slot *string) []byte {
+const maxMsgSize = 1024
+
+var truncatedMsg = []byte(`"_truncated": true`)
+
+func (l *LokiLogger) formatLine(level LogLevel, msg []byte, slot *string, cmd MessageType) []byte {
 	buf := make([]byte, 0, 256)
 	msg = bytes.TrimSpace(msg)
-
-	levelVal, _ := json.Marshal(string(level))
 
 	buf = append(buf, '{')
 	if slot != nil {
@@ -72,12 +81,27 @@ func (l *LokiLogger) formatLine(level LogLevel, msg []byte, slot *string) []byte
 		buf = append(buf, slotVal...)
 		buf = append(buf, ',')
 	}
+	if cmd != "" {
+		val, ok := messageTypeBytes[cmd]
+		buf = append(buf, `"_cmd":`...)
+		if ok {
+			buf = append(buf, val...)
+		} else {
+			buf = append(buf, messageTypeUnknownBytes...)
+		}
+		buf = append(buf, ',')
+	}
 	buf = append(buf, `"_level":`...)
-	buf = append(buf, levelVal...)
+	buf = append(buf, levelBytes[level]...)
 
 	if len(msg) > 1 && msg[0] == '{' && msg[len(msg)-1] == '}' {
 		buf = append(buf, ',')
-		buf = append(buf, msg[1:]...)
+		if len(msg) > maxMsgSize {
+			buf = append(buf, truncatedMsg...)
+			buf = append(buf, '}')
+		} else {
+			buf = append(buf, msg[1:]...)
+		}
 	} else {
 		msgVal, _ := json.Marshal(string(msg))
 		buf = append(buf, `,"msg":`...)
@@ -89,22 +113,24 @@ func (l *LokiLogger) formatLine(level LogLevel, msg []byte, slot *string) []byte
 }
 
 // Log level info by default
-func (l *LokiLogger) Log(slot string, source LogSource, msg []byte) {
-	l.LogAt(slot, source, LogLevelInfo, msg)
+func (l *LokiLogger) Log(slot *string, source LogSource, msg []byte, cmd MessageType) {
+	l.LogAt(slot, source, LogLevelInfo, msg, cmd)
 }
 
 // Log with a specific level
-func (l *LokiLogger) LogAt(slot string, source LogSource, level LogLevel, msg []byte) {
-	line := l.formatLine(level, msg, &slot)
+func (l *LokiLogger) LogAt(slot *string, source LogSource, level LogLevel, msg []byte, cmd MessageType) {
+	line := l.formatLine(level, msg, slot, cmd)
 	select {
 	case l.ch <- lokiEntry{source: source, line: line, timestamp: time.Now()}:
 	default:
-		l.metrics.droppedLogs.WithLabelValues(string(source)).Inc()
+		if l.metrics != nil {
+			l.metrics.droppedLogs.WithLabelValues(string(source)).Inc()
+		}
 	}
 }
 
 func (l *LokiLogger) LogApi(level LogLevel, msg []byte) {
-	line := l.formatLine(level, msg, nil)
+	line := l.formatLine(level, msg, nil, "")
 	select {
 	case l.ch <- lokiEntry{source: LogSourceApi, line: line, timestamp: time.Now()}:
 	default:

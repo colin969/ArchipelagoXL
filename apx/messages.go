@@ -21,6 +21,17 @@ const (
 	MessageTypeInvalidPacket  MessageType = "InvalidPacket"
 )
 
+var messageTypeUnknownBytes = []byte(`"Unknown"`)
+var messageTypeBytes = map[MessageType][]byte{
+	MessageTypeConnect:        []byte(`"Connect"`),
+	MessageTypeConnectUpdate:  []byte(`"ConnectUpdate"`),
+	MessageTypeBounce:         []byte(`"Bounce"`),
+	MessageTypeGetDataPackage: []byte(`"GetDataPackage"`),
+	MessageTypeDataPackage:    []byte(`"DataPackage"`),
+	MessageTypeSay:            []byte(`"Say"`),
+	MessageTypeInvalidPacket:  []byte(`"InvalidPacket"`),
+}
+
 const (
 	PermissionDisabled    Permission = 0b000
 	PermissionEnabled     Permission = 0b001
@@ -269,7 +280,7 @@ func sendInvalidPacket(ctx context.Context, conn *websocket.Conn, problemType Pa
 	}
 	if lokiLogger != nil && slotName != nil {
 		if raw, err := json.Marshal(msg); err == nil {
-			lokiLogger.Log(*slotName, LogSourceApx, raw)
+			lokiLogger.Log(slotName, LogSourceApx, raw, "InvalidPacket")
 		}
 	}
 	return wsjson.Write(ctx, conn, []any{msg})

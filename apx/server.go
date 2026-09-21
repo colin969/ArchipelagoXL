@@ -477,6 +477,7 @@ func (cs *connectionState) SendMessage(ctx context.Context, msg []any) error {
 }
 
 type MessageType string
+
 type Permission int
 
 const (
@@ -571,7 +572,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 			}
 
 			if s.lokiLogger != nil && connState.authenticated {
-				s.lokiLogger.Log(*connState.slotName, LogSourceClient, raw)
+				s.lokiLogger.Log(connState.slotName, LogSourceClient, raw, MessageType(cmd))
 			}
 
 			if connState.authenticated {
