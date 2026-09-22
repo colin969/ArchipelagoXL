@@ -84,7 +84,7 @@ func TestBroadcastBounce(t *testing.T) {
 				Slots: tc.msgSlots,
 				Games: tc.msgGames,
 				Data:  map[string]any{"test": true},
-			}, bounceInfo, tc.senderSlot)
+			}, bounceInfo, tc.senderSlot, nil, nil, nil)
 
 			select {
 			case <-received:

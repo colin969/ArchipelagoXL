@@ -6,11 +6,12 @@ import (
 )
 
 type metrics struct {
-	incomingPackets  prometheus.CounterVec
-	bouncePackets    prometheus.CounterVec
-	connectedClients prometheus.GaugeVec
-	connectedSlots   prometheus.GaugeVec
-	droppedLogs      prometheus.CounterVec
+	incomingPackets     prometheus.CounterVec
+	bouncePackets       prometheus.CounterVec
+	bounceResultPackets prometheus.CounterVec
+	connectedClients    prometheus.GaugeVec
+	connectedSlots      prometheus.GaugeVec
+	droppedLogs         prometheus.CounterVec
 }
 
 func initMetrics() (*prometheus.Registry, *metrics) {
@@ -30,6 +31,13 @@ func initMetrics() (*prometheus.Registry, *metrics) {
 				Help: "Total number of bounce packets per slot and tag",
 			},
 			[]string{"room", "slot", "game", "tag"},
+		),
+		bounceResultPackets: *promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "apx_bounce_packets_resulting_total",
+				Help: "Total number of bounce packets sent on to other clients per slot",
+			},
+			[]string{"room", "slot", "game"},
 		),
 		connectedClients: *promauto.With(reg).NewGaugeVec(
 			prometheus.GaugeOpts{

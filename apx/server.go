@@ -339,15 +339,15 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 	}
 }
 
-func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, bounceInfo *bounceInfoStore, slotId int, msg BounceMessage) {
+func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, bounceInfo *bounceInfoStore, slotId int, msg BounceMessage, slotName *string, gameName *string, metrics *metrics) {
 	// Strip excluded tags
 	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
 		return bounceInfo.IsExcludedByTag(slotId, tag)
 	})
-	cr.BroadcastBounce(ctx, msg, bounceInfo, slotId)
+	cr.BroadcastBounce(ctx, msg, bounceInfo, slotId, slotName, gameName, metrics)
 }
 
-func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int) {
+func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
 	// Most will match 2 clients, but give a tiny bit of give
 	targets := make([]*registeredClient, 0, 4)
 	seen := make(map[*registeredClient]struct{}, 4)
@@ -397,6 +397,12 @@ func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMes
 	if msg.Slots == nil {
 		msg.Slots = []int{}
 	}
+
+	// Log how many we sent out
+	if metrics != nil && slotName != nil && gameName != nil {
+		metrics.bounceResultPackets.WithLabelValues(*cr.lobbyRoomId, *slotName, *gameName).Inc()
+	}
+
 	// Content is the same, just a different cmd sending out
 	msg.Cmd = "Bounced"
 	for _, c := range targets {

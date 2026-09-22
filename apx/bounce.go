@@ -178,7 +178,7 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 		return s.handleDeathLink(ctx, connState, msg)
 	}
 
-	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg)
+	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
 }
@@ -249,7 +249,7 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 		return fmt.Errorf("updating bounce message data: %w", err)
 	}
 
-	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg)
+	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
 }
