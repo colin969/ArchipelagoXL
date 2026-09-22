@@ -36,6 +36,7 @@ pub enum RuleCheck {
     Range { min: i64, max: i64 },
     Regex { pattern: String },
     Contains { value: String },
+    NotContains { value: String },
     Count { check: Box<RuleCheck> },
     Exists,
     NotExists,
@@ -253,7 +254,7 @@ fn check_random(bounds: Option<(i64, i64)>, check: &RuleCheck) -> bool {
             max: rmax,
         } => max >= *rmin && min <= *rmax,
         RuleCheck::Regex { .. } | RuleCheck::Contains { .. } => true,
-        RuleCheck::Count { .. } => false,
+        RuleCheck::Count { .. } | RuleCheck::NotContains { .. } => false,
         RuleCheck::Exists | RuleCheck::NotExists => unreachable!(),
     }
 }
@@ -294,6 +295,13 @@ fn check_single_value(val: &Value, check: &RuleCheck) -> Result<bool> {
             }
             let s = yaml_value_as_string(val);
             Ok(s.split(',').any(|part| part.trim() == value.as_str()))
+        }
+        RuleCheck::NotContains { value } => {
+            if let Some(seq) = val.as_sequence() {
+                return Ok(seq.iter().any(|item| yaml_value_as_string(item) == *value));
+            }
+            let s = yaml_value_as_string(val);
+            Ok(!(s.split(',').any(|part| part.trim() == value.as_str())))
         }
         RuleCheck::Count { .. } | RuleCheck::Exists | RuleCheck::NotExists => {
             unreachable!("Count/Exists/NotExists handled before calling check_single_value")
@@ -655,6 +663,25 @@ mod tests {
             then: Predicate::Check {
                 path: "start_inventory".into(),
                 check: RuleCheck::Contains {
+                    value: "Sword".into(),
+                },
+            },
+            severity: Severity::Info,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Fail);
+    }
+
+    #[test]
+    fn test_not_contains_alerts() {
+        let yaml = parse_yaml("Test:\n  start_inventory:\n    - Shield\n");
+        let rule = Rule {
+            name: "Not has sword".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "start_inventory".into(),
+                check: RuleCheck::NotContains {
                     value: "Sword".into(),
                 },
             },

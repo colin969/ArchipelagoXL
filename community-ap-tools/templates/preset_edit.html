@@ -104,7 +104,7 @@ const CHECK_TYPES = [
     ["equals", "Equals"], ["not_equals", "Not Equals"],
     ["greater_than", "Greater Than"], ["less_than", "Less Than"],
     ["range", "Range"], ["regex", "Regex"], ["contains", "Contains"],
-    ["count", "Count"],
+    ["not_contains", "Does not Contain"], ["count", "Count"],
     ["exists", "Exists"], ["not_exists", "Not Exists"],
 ];
 
@@ -221,7 +221,7 @@ class PredicateBlock {
         const type = sel.value;
         params.replaceChildren();
 
-        if (type === "equals" || type === "not_equals" || type === "contains") {
+        if (type === "equals" || type === "not_equals" || type === "contains" || type === "not_contains") {
             const inp = h("input", { type: "text", className: "check-value", value: (data && data.value) || "", size: "15" });
             inp.addEventListener("focus", (e) => this._autocompleteValueFor(e.target));
             params.append(field("Value", inp));
@@ -365,7 +365,7 @@ class PredicateBlock {
             const path = this.body.querySelector(".check-path").value;
             const checkType = this.body.querySelector(".check-type").value;
             const check = { type: checkType };
-            if (checkType === "equals" || checkType === "not_equals" || checkType === "contains") {
+            if (checkType === "equals" || checkType === "not_equals" || checkType === "contains" || checkType === "not_contains") {
                 check.value = this.body.querySelector(".check-value").value;
             } else if (checkType === "greater_than" || checkType === "less_than") {
                 check.value = parseInt(this.body.querySelector(".check-value-num").value) || 0;
