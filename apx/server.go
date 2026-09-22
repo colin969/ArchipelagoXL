@@ -548,8 +548,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 	}()
 
 	for {
-		var messages []map[string]any
-		err = wsjson.Read(ctx, c, &messages)
+		_, raw, err := c.Read(ctx)
 		if err != nil {
 			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
 				s.logf("client read inner: %v", err)
@@ -557,16 +556,24 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 			return
 		}
 
-		for _, message := range messages {
-			// Uncomment to add raw printing
-			raw, err := json.Marshal(message)
-			if err != nil {
-				s.logf("client unmarshal: %v", err)
-				return
-			}
+		var messages []json.RawMessage
+		if err := json.Unmarshal(raw, &messages); err != nil {
+			s.logf("client unmarshal: %v", err)
+			continue
+		}
 
-			cmd, ok := message["cmd"].(string)
-			if !ok {
+		for _, message := range messages {
+			var header struct {
+				Cmd string `json:"cmd"`
+			}
+			if err := json.Unmarshal(message, &header); err != nil || header.Cmd == "" {
+				sendInvalidPacket(ctx, connState.clientConn, PacketProblemCmd, nil,
+					fmt.Sprintf("message missing or invalid cmd field: %s", message), s.lokiLogger, connState.slotName)
+				continue
+			}
+			cmd := header.Cmd
+
+			if cmd == "" {
 				sendInvalidPacket(ctx, connState.clientConn, PacketProblemCmd, nil, fmt.Sprintf("message missing or invalid cmd field: %v", message), s.lokiLogger, connState.slotName)
 				continue
 			}
@@ -616,7 +623,7 @@ func (s ApxRoom) keepalive(ctx context.Context, c *websocket.Conn, cancel contex
 	}
 }
 
-func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw map[string]any) error {
+func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw json.RawMessage) error {
 	// Shovel logs to any debug listeners
 	if connState.authenticated && s.debugTap != nil && s.debugTap.HasListeners(connState.registeredClient.slotId) {
 		if raw, err := json.Marshal(raw); err == nil {
@@ -643,7 +650,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 		default:
 			// We're authed, it's a message we don't care about, pass it on
 			if connState.apConn != nil {
-				return wsjson.Write(ctx, connState.apConn, []any{raw})
+				wrapped := append([]byte{'['}, append(raw, ']')...)
+				return connState.apConn.Write(ctx, websocket.MessageText, wrapped)
 			} else {
 				connState.cancel()
 			}

@@ -228,15 +228,14 @@ func (s ApxRoom) prefetchDataPackages(ctx context.Context) error {
 	return nil
 }
 
-func (s ApxRoom) handleGetDataPackage(ctx context.Context, connState *connectionState, raw map[string]any) error {
-	// We only need 1 field, no point re and unmarshaling just for the struct
+func (s ApxRoom) handleGetDataPackage(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	// We only need 1 field, no point re and unmarshaling the whole message just for the struct
 	var requestedGames []string
-	if gamesList, ok := raw["games"].([]any); ok {
-		for _, g := range gamesList {
-			if gs, ok := g.(string); ok {
-				requestedGames = append(requestedGames, gs)
-			}
-		}
+	var packet struct {
+		Games []string `json:"games"`
+	}
+	if err := json.Unmarshal(raw, &packet); err == nil {
+		requestedGames = packet.Games
 	}
 
 	// Nothing requested = all requested. Not great clients :(

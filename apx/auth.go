@@ -21,14 +21,9 @@ type PrintJSONPeek struct {
 	Type      string `json:"type"`
 }
 
-func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionState, raw map[string]any) error {
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return fmt.Errorf("marshalling connect message: %w", err)
-	}
-
+func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
 	var msg ConnectMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if err := json.Unmarshal(raw, &msg); err != nil {
 		cmd := MessageTypeConnect
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
@@ -65,14 +60,9 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 	return nil
 }
 
-func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, raw map[string]any) error {
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return fmt.Errorf("marshalling connect message: %w", err)
-	}
-
+func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
 	var msg ConnectMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if err := json.Unmarshal(raw, &msg); err != nil {
 		cmd := MessageTypeConnect
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid Connect arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
@@ -162,27 +152,27 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	return nil
 }
 
-func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw map[string]any) error {
-	// Only need 1 field, don't bother re and unmarshaling for struct
-	text, ok := raw["text"].(string)
-	if !ok {
+func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var packet struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &packet); err != nil || packet.Text == "" {
 		cmd := MessageTypeSay
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, "Say packet missing or invalid 'text' field", s.lokiLogger, connState.slotName)
 	}
+	text := packet.Text
 
-	if ok && text != "" {
-		trimmed := strings.ToLower(strings.TrimSpace(text))
-		if strings.HasPrefix(trimmed, "!countdown") {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
-			return nil
-		}
-		if strings.HasPrefix(trimmed, "!players") {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
-			return nil
-		}
-		if handled, err := s.apxCommandGroup().Handle(ctx, connState, trimmed); handled {
-			return err
-		}
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	if strings.HasPrefix(trimmed, "!countdown") {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "!players") {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
+		return nil
+	}
+	if handled, err := s.apxCommandGroup().Handle(ctx, connState, trimmed); handled {
+		return err
 	}
 
 	if connState.apConn != nil {
@@ -192,14 +182,9 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 	return nil
 }
 
-func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionState, raw map[string]any) error {
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return fmt.Errorf("marshalling connectupdate message: %w", err)
-	}
-
+func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
 	var msg ConnectUpdateMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if err := json.Unmarshal(raw, &msg); err != nil {
 		cmd := MessageTypeConnectUpdate
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid ConnectUpdate arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
@@ -308,14 +293,10 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 			}
 
 			if s.lokiLogger != nil {
-				var decodedMsgs []map[string]any
-				if err := json.Unmarshal(data, &decodedMsgs); err == nil {
-					for _, decodedMsg := range decodedMsgs {
-						raw, err := json.Marshal(decodedMsg)
-						if err != nil {
-							continue
-						}
-						s.lokiLogger.Log(connState.slotName, LogSourceServer, raw, proxyMessageType)
+				var msgs []json.RawMessage
+				if err := json.Unmarshal(data, &msgs); err == nil {
+					for _, msg := range msgs {
+						s.lokiLogger.Log(connState.slotName, LogSourceServer, msg, proxyMessageType)
 					}
 				} else {
 					s.logf("failed to unmarshal server message: %v", err)

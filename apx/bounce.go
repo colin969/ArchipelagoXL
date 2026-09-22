@@ -157,14 +157,9 @@ func (ds *bounceInfoStore) Add(slotId int) {
 	ds.counts[slotId]++
 }
 
-func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, raw map[string]any) error {
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return fmt.Errorf("marshalling bounce message: %w", err)
-	}
-
+func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
 	var msg BounceMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
+	if err := json.Unmarshal(raw, &msg); err != nil {
 		return fmt.Errorf("unmarshalling bounce message: %w", err)
 	}
 	// TODO: Use once 0.6.8 releases
@@ -182,11 +177,6 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 	if slices.Contains(msg.Tags, "DeathLink") {
 		return s.handleDeathLink(ctx, connState, msg)
 	}
-
-	// Strip any excluded tags
-	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
-		return s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, tag)
-	})
 
 	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg)
 
