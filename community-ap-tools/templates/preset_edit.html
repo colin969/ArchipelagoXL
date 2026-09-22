@@ -489,8 +489,17 @@ class RuleEditor {
             h("span", { className: `severity-badge ${severity}` }, severity),
         ];
         if (CAN_EDIT_RULES) {
+            const cloneBtn = h("button", { className: "small", onclick: async (e) => {
+                e.stopPropagation(); 
+                cloneBtn.disabled = true
+                try {
+                    await this.onClone();
+                } finally {
+                    cloneBtn.disabled = false;
+                } 
+            }}, "Clone");
             children.push(h("span", { className: "rule-actions" },
-                h("button", { className: "small", onclick: (e) => { e.stopPropagation(); this.onClone(); } }, "Clone"),
+                cloneBtn,
                 h("button", { className: "small danger", onclick: (e) => { e.stopPropagation(); this.onDelete(); } }, "x"),
             ));
         }
@@ -674,26 +683,36 @@ async function addNewRule() {
     const err = PredicateBlock.validate(ruleData.when) || PredicateBlock.validate(ruleData.then);
     if (err) { showToast(err); return; }
 
-    const resp = await fetch(`/api/presets/${PRESET_ID}/rules`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ rule: ruleData, position: editors.length }),
-    });
-    if (!resp.ok) { showToast("Failed to create rule: " + await resp.text()); return; }
-    const created = await resp.json();
+    const addBtn = form.querySelector(".accent");
+    if (addBtn.disabled) {
+        return
+    }
+    addBtn.disabled = true;
 
-    const ed = newEditor({
-        serverId: created.id, name, game, severity,
-        when: whenData, then: ruleData.then,
-        lastEditedByName: CURRENT_USERNAME,
-        lastEditedAt: formatEditTimestamp(),
-    });
-    editors.push(ed);
+    try {
+        const resp = await fetch(`/api/presets/${PRESET_ID}/rules`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ rule: ruleData, position: editors.length }),
+        });
+        if (!resp.ok) { showToast("Failed to create rule: " + await resp.text()); return; }
+        const created = await resp.json();
 
-    openGroups.add(game || "__all_games__");
-    initAddRuleForm();
-    renderAll();
-    ed.toggle();
+        const ed = newEditor({
+            serverId: created.id, name, game, severity,
+            when: whenData, then: ruleData.then,
+            lastEditedByName: CURRENT_USERNAME,
+            lastEditedAt: formatEditTimestamp(),
+        });
+        editors.push(ed);
+
+        openGroups.add(game || "__all_games__");
+        initAddRuleForm();
+        renderAll();
+        ed.toggle();
+    } finally {
+        addBtn.disabled = false;
+    }
 }
 
 function deleteEditor(ed) {
