@@ -252,20 +252,7 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 	}
 
 	// We're a protocol packet, don't add second guessing to fields for clients receiving us
-	msg.fixStandardFields()
 	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
-}
-
-func (bp *BounceMessage) fixStandardFields() {
-	if bp.Slots == nil {
-		bp.Slots = &[]int{}
-	}
-	if bp.Games == nil {
-		bp.Games = &[]string{}
-	}
-	if bp.Tags == nil {
-		bp.Tags = &[]string{}
-	}
 }

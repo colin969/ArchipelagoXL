@@ -173,10 +173,10 @@ type JsonMessagePart struct {
 
 type BounceMessage struct {
 	Cmd   MessageType     `json:"cmd"`
-	Games *[]string       `json:"games"`
-	Slots *[]int          `json:"slots"`
-	Tags  *[]string       `json:"tags"`
-	Data  *map[string]any `json:"data"`
+	Games *[]string       `json:"games,omitempty"`
+	Slots *[]int          `json:"slots,omitempty"`
+	Tags  *[]string       `json:"tags,omitempty"`
+	Data  *map[string]any `json:"data,omitempty"`
 }
 
 type BounceDataDeathlink struct {

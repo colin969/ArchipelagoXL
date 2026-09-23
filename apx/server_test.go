@@ -216,6 +216,154 @@ func newTestWSClient(t *testing.T) (*websocket.Conn, <-chan struct{}) {
 	return conn, received
 }
 
+func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
+	game := "Celeste"
+
+	newReceiverAndReg := func(t *testing.T) (*connectionRegistry, <-chan []byte) {
+		t.Helper()
+		received := make(chan []byte, 1)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.CloseNow()
+			var raw []byte
+			if _, raw, err = conn.Read(r.Context()); err == nil {
+				received <- raw
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		t.Cleanup(cancel)
+
+		url := "ws" + strings.TrimPrefix(server.URL, "http")
+		conn, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+
+		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		reg := newConnectionRegistry(nil, nil)
+		reg.Register(1, rc, game, []string{"DeathLink"})
+
+		return reg, received
+	}
+
+	assertAbsent := func(t *testing.T, raw []byte, field string) {
+		t.Helper()
+		s := string(raw)
+		if strings.Contains(s, `"`+field+`":`) {
+			t.Errorf("field %q should be absent in forwarded packet, got: %s", field, s)
+		}
+	}
+
+	assertPresent := func(t *testing.T, raw []byte, field string) {
+		t.Helper()
+		s := string(raw)
+		if !strings.Contains(s, `"`+field+`":`) {
+			t.Errorf("field %q should be present in forwarded packet, got: %s", field, s)
+		}
+	}
+
+	t.Run("nil tags absent in forwarded packet", func(t *testing.T) {
+		reg, received := newReceiverAndReg(t)
+		slots := []int{1}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  nil,
+			Slots: &slots,
+			Games: nil,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case raw := <-received:
+			assertAbsent(t, raw, "tags")
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message")
+		}
+	})
+
+	t.Run("nil slots absent in forwarded packet", func(t *testing.T) {
+		reg, received := newReceiverAndReg(t)
+		tags := []string{"DeathLink"}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  &tags,
+			Slots: nil,
+			Games: nil,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case raw := <-received:
+			assertAbsent(t, raw, "slots")
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message")
+		}
+	})
+
+	t.Run("nil games absent in forwarded packet", func(t *testing.T) {
+		reg, received := newReceiverAndReg(t)
+		tags := []string{"DeathLink"}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  &tags,
+			Slots: nil,
+			Games: nil,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case raw := <-received:
+			assertAbsent(t, raw, "games")
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message")
+		}
+	})
+
+	t.Run("nil data absent in forwarded packet", func(t *testing.T) {
+		reg, received := newReceiverAndReg(t)
+		tags := []string{"DeathLink"}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  &tags,
+			Slots: nil,
+			Games: nil,
+			Data:  nil,
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case raw := <-received:
+			assertAbsent(t, raw, "data")
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message")
+		}
+	})
+
+	t.Run("non-nil fields present in forwarded packet", func(t *testing.T) {
+		reg, received := newReceiverAndReg(t)
+		tags := []string{"DeathLink"}
+		slots := []int{1}
+		games := []string{game}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  &tags,
+			Slots: &slots,
+			Games: &games,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case raw := <-received:
+			assertPresent(t, raw, "tags")
+			assertPresent(t, raw, "slots")
+			assertPresent(t, raw, "games")
+			assertPresent(t, raw, "data")
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message")
+		}
+	})
+}
+
 func TestConnectionRegistry(t *testing.T) {
 	t.Run("SuccessfulConnect", func(t *testing.T) {
 		cr := newConnectionRegistry(nil, nil)
