@@ -12,24 +12,62 @@ import (
 )
 
 const (
-	MessageTypeConnect        MessageType = "Connect"
-	MessageTypeConnectUpdate  MessageType = "ConnectUpdate"
-	MessageTypeBounce         MessageType = "Bounce"
-	MessageTypeGetDataPackage MessageType = "GetDataPackage"
-	MessageTypeDataPackage    MessageType = "DataPackage"
-	MessageTypeSay            MessageType = "Say"
-	MessageTypeInvalidPacket  MessageType = "InvalidPacket"
+	MessageTypeConnect           MessageType = "Connect"
+	MessageTypeConnectUpdate     MessageType = "ConnectUpdate"
+	MessageTypeBounce            MessageType = "Bounce"
+	MessageTypeBounced           MessageType = "Bounced"
+	MessageTypeGetDataPackage    MessageType = "GetDataPackage"
+	MessageTypeDataPackage       MessageType = "DataPackage"
+	MessageTypeSay               MessageType = "Say"
+	MessageTypeInvalidPacket     MessageType = "InvalidPacket"
+	MessageTypeRoomInfo          MessageType = "RoomInfo"
+	MessageTypeConnectionRefused MessageType = "ConnectionRefused"
+	MessageTypeConnected         MessageType = "Connected"
+	MessageTypeReceivedItems     MessageType = "ReceivedItems"
+	MessageTypeLocationInfo      MessageType = "LocationInfo"
+	MessageTypeRoomUpdate        MessageType = "RoomUpdate"
+	MessageTypePrintJSON         MessageType = "PrintJSON"
+	MessageTypeRetrieved         MessageType = "Retrieved"
+	MessageTypeSetReply          MessageType = "SetReply"
+	MessageTypeSync              MessageType = "Sync"
+	MessageTypeLocationChecks    MessageType = "LocationChecks"
+	MessageTypeLocationScouts    MessageType = "LocationScouts"
+	MessageTypeCreateHints       MessageType = "CreateHints"
+	MessageTypeUpdateHint        MessageType = "UpdateHint"
+	MessageTypeStatusUpdate      MessageType = "StatusUpdate"
+	MessageTypeGet               MessageType = "Get"
+	MessageTypeSet               MessageType = "Set"
+	MessageTypeSetNotify         MessageType = "SetNotify"
 )
 
 var messageTypeUnknownBytes = []byte(`"Unknown"`)
 var messageTypeBytes = map[MessageType][]byte{
-	MessageTypeConnect:        []byte(`"Connect"`),
-	MessageTypeConnectUpdate:  []byte(`"ConnectUpdate"`),
-	MessageTypeBounce:         []byte(`"Bounce"`),
-	MessageTypeGetDataPackage: []byte(`"GetDataPackage"`),
-	MessageTypeDataPackage:    []byte(`"DataPackage"`),
-	MessageTypeSay:            []byte(`"Say"`),
-	MessageTypeInvalidPacket:  []byte(`"InvalidPacket"`),
+	MessageTypeConnect:           []byte(`"Connect"`),
+	MessageTypeConnectUpdate:     []byte(`"ConnectUpdate"`),
+	MessageTypeBounce:            []byte(`"Bounce"`),
+	MessageTypeBounced:           []byte(`"Bounced"`),
+	MessageTypeGetDataPackage:    []byte(`"GetDataPackage"`),
+	MessageTypeDataPackage:       []byte(`"DataPackage"`),
+	MessageTypeSay:               []byte(`"Say"`),
+	MessageTypeInvalidPacket:     []byte(`"InvalidPacket"`),
+	MessageTypeRoomInfo:          []byte(`"RoomInfo"`),
+	MessageTypeConnectionRefused: []byte(`"ConnectionRefused"`),
+	MessageTypeConnected:         []byte(`"Connected"`),
+	MessageTypeReceivedItems:     []byte(`"ReceivedItems"`),
+	MessageTypeLocationInfo:      []byte(`"LocationInfo"`),
+	MessageTypeRoomUpdate:        []byte(`"RoomUpdate"`),
+	MessageTypePrintJSON:         []byte(`"PrintJSON"`),
+	MessageTypeRetrieved:         []byte(`"Retrieved"`),
+	MessageTypeSetReply:          []byte(`"SetReply"`),
+	MessageTypeSync:              []byte(`"Sync"`),
+	MessageTypeLocationChecks:    []byte(`"LocationChecks"`),
+	MessageTypeLocationScouts:    []byte(`"LocationScouts"`),
+	MessageTypeCreateHints:       []byte(`"CreateHints"`),
+	MessageTypeUpdateHint:        []byte(`"UpdateHint"`),
+	MessageTypeStatusUpdate:      []byte(`"StatusUpdate"`),
+	MessageTypeGet:               []byte(`"Get"`),
+	MessageTypeSet:               []byte(`"Set"`),
+	MessageTypeSetNotify:         []byte(`"SetNotify"`),
 }
 
 const (
@@ -181,7 +219,7 @@ type BounceMessage struct {
 
 type BounceDataDeathlink struct {
 	Time   float64 `json:"time"`
-	Source string  `json:"source"`
+	Source *string `json:"source"`
 	Cause  *string `json:"cause,omitempty"`
 }
 

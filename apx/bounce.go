@@ -190,6 +190,9 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 	if msg.Tags == nil {
 		return fmt.Errorf("handleDeathLink called with a bounce packet without tags!")
 	}
+	if msg.Data == nil {
+		return fmt.Errorf("deathlink packet missing data field")
+	}
 
 	// Validate this is a valid packet. Some apworlds send bad packets, some can't handle being sent bad packets.
 	data, err := json.Marshal(msg.Data)
@@ -204,17 +207,20 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 
 	if dl.Time == 0 {
 		// We can't trust their own client will handle a Bounced packet with a real time field, so drop the incoming
-		log.Printf("deathlink malformed: slot=%q cause='bad time field'", *connState.slotName)
+		log.Printf("deathlink malformed: slot=%q cause='0 or missing time field'", *connState.slotName)
 		return nil
 	}
 
 	// For clarity, the Source will always contain slot name unless otherwise given
-	if dl.Source == "" {
-		dl.Source = *connState.slotName
+	if dl.Source == nil {
+		return fmt.Errorf("deathlink packet did not contain a source field")
+	}
+	if *dl.Source == "" {
+		dl.Source = connState.slotName
 	}
 
 	s.bounceInfo.Add(connState.registeredClient.slotId)
-	log.Printf("deathlink: slot=%q source=%q cause=%v", *connState.slotName, dl.Source, dl.Cause)
+	log.Printf("deathlink: slot=%q source=%q cause=%v", *connState.slotName, *dl.Source, dl.Cause)
 	if s.logDeath != nil {
 		s.logDeath(connState.registeredClient.slotId)
 	}

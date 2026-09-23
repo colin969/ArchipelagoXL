@@ -481,6 +481,184 @@ func TestBroadcastBounceSenderTagExclusion(t *testing.T) {
 	})
 }
 
+func TestHandleDeathLink(t *testing.T) {
+	game := "Celeste"
+	slotName := "TestSlot"
+
+	makeConnState := func(t *testing.T, reg *connectionRegistry, slotId int) *connectionState {
+		t.Helper()
+		conn, _ := newTestWSClient(t)
+		rc := &registeredClient{slotId: slotId, game: &game, clientConn: conn, cancel: func() {}}
+		reg.Register(slotId, rc, game, []string{"DeathLink"})
+		return &connectionState{
+			registeredClient: rc,
+			slotName:         &slotName,
+		}
+	}
+
+	t.Run("nil tags returns error", func(t *testing.T) {
+		reg := newConnectionRegistry(nil, nil)
+		room := ApxRoom{connections: reg, bounceInfo: newBounceInfoStore()}
+		cs := makeConnState(t, reg, 1)
+
+		err := room.handleDeathLink(context.Background(), cs, BounceMessage{
+			Tags: nil,
+			Data: &map[string]any{"time": 1.0, "source": "TestSlot"},
+		})
+		if err == nil {
+			t.Error("expected error for nil tags, got nil")
+		}
+	})
+
+	t.Run("nil data returns error", func(t *testing.T) {
+		reg := newConnectionRegistry(nil, nil)
+		room := ApxRoom{connections: reg, bounceInfo: newBounceInfoStore()}
+		cs := makeConnState(t, reg, 1)
+
+		tags := []string{"DeathLink"}
+		err := room.handleDeathLink(context.Background(), cs, BounceMessage{
+			Tags: &tags,
+			Data: nil,
+		})
+		if err == nil {
+			t.Error("expected error for nil data, got nil")
+		}
+	})
+
+	t.Run("source defaults to slot name when empty", func(t *testing.T) {
+		receivedCh := make(chan []byte, 1)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.CloseNow()
+			var raw []byte
+			if _, raw, err = conn.Read(r.Context()); err == nil {
+				receivedCh <- raw
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		t.Cleanup(cancel)
+
+		url := "ws" + strings.TrimPrefix(server.URL, "http")
+		conn, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+
+		reg := newConnectionRegistry(nil, nil)
+		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		reg.Register(1, rc, game, []string{"DeathLink"})
+
+		cs := &connectionState{registeredClient: rc, slotName: &slotName}
+		room := ApxRoom{connections: reg, bounceInfo: newBounceInfoStore()}
+
+		tags := []string{"DeathLink"}
+		err = room.handleDeathLink(context.Background(), cs, BounceMessage{
+			Tags: &tags,
+			Data: &map[string]any{"time": 1234567890.0, "source": ""},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		select {
+		case raw := <-receivedCh:
+			s := string(raw)
+			if !strings.Contains(s, slotName) {
+				t.Errorf("expected source to default to slot name %q, got: %s", slotName, s)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received the deathlink broadcast")
+		}
+	})
+
+	t.Run("missing source field returns error", func(t *testing.T) {
+		reg := newConnectionRegistry(nil, nil)
+		conn, _ := newTestWSClient(t)
+		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		reg.Register(1, rc, game, []string{"DeathLink"})
+
+		cs := &connectionState{registeredClient: rc, slotName: &slotName}
+		room := ApxRoom{connections: reg, bounceInfo: newBounceInfoStore()}
+
+		tags := []string{"DeathLink"}
+		err := room.handleDeathLink(context.Background(), cs, BounceMessage{
+			Tags: &tags,
+			Data: &map[string]any{"time": 1234567890.0},
+			// no "source" key at all
+		})
+		if err == nil {
+			t.Error("expected error when source field is absent, got nil")
+		}
+	})
+
+	t.Run("valid deathlink broadcasts to all DeathLink subscribers", func(t *testing.T) {
+		receivedCh := make(chan []byte, 2)
+
+		makeRawConn := func(t *testing.T) *websocket.Conn {
+			t.Helper()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.CloseNow()
+				var raw []byte
+				if _, raw, err = conn.Read(r.Context()); err == nil {
+					receivedCh <- raw
+				}
+			}))
+			t.Cleanup(server.Close)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			t.Cleanup(cancel)
+			url := "ws" + strings.TrimPrefix(server.URL, "http")
+			conn, _, err := websocket.Dial(ctx, url, nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			return conn
+		}
+
+		reg := newConnectionRegistry(nil, nil)
+		conn1 := makeRawConn(t)
+		conn2 := makeRawConn(t)
+
+		rc1 := &registeredClient{slotId: 1, game: &game, clientConn: conn1, cancel: func() {}}
+		rc2 := &registeredClient{slotId: 2, game: &game, clientConn: conn2, cancel: func() {}}
+		reg.Register(1, rc1, game, []string{"DeathLink"})
+		reg.Register(2, rc2, game, []string{"DeathLink"})
+
+		cs := &connectionState{registeredClient: rc1, slotName: &slotName}
+		room := ApxRoom{connections: reg, bounceInfo: newBounceInfoStore()}
+
+		tags := []string{"DeathLink"}
+		err := room.handleDeathLink(context.Background(), cs, BounceMessage{
+			Tags: &tags,
+			Data: &map[string]any{"time": 1234567890.0, "source": "TestSlot"},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		received := 0
+		deadline := time.After(300 * time.Millisecond)
+		for received < 2 {
+			select {
+			case <-receivedCh:
+				received++
+			case <-deadline:
+				t.Errorf("expected 2 clients to receive deathlink, got %d", received)
+				return
+			}
+		}
+	})
+}
+
 func TestConnectionRegistry(t *testing.T) {
 	t.Run("SuccessfulConnect", func(t *testing.T) {
 		cr := newConnectionRegistry(nil, nil)

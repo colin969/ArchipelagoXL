@@ -11,6 +11,7 @@ type metrics struct {
 	bounceResultPackets prometheus.CounterVec
 	connectedClients    prometheus.GaugeVec
 	connectedSlots      prometheus.GaugeVec
+	bytesReceived       prometheus.CounterVec
 	droppedLogs         prometheus.CounterVec
 }
 
@@ -52,6 +53,13 @@ func initMetrics() (*prometheus.Registry, *metrics) {
 				Help: "Number of slots connected to room",
 			},
 			[]string{"room"},
+		),
+		bytesReceived: *promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "apx_bytes_received_total",
+				Help: "Total number of bytes received per slot",
+			},
+			[]string{"room", "slot", "game"},
 		),
 		droppedLogs: *promauto.With(reg).NewCounterVec(
 			prometheus.CounterOpts{

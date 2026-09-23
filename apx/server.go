@@ -341,7 +341,7 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 
 func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
 	// Send to own slot clients first, before tag exclusion, if they match criteria
-	cr.broadcastBounceToSlot(ctx, msg, senderSlot)
+	cr.broadcastBounceToSlot(ctx, msg, senderSlot, slotName, gameName, metrics)
 
 	// If isolated, we can ignore everything else
 	senderLimited := bounceInfo.IsLimitedToOwnSlot(senderSlot)
@@ -360,7 +360,7 @@ func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg B
 }
 
 // broadcastBounceToSlot sends to senderSlot clients that match the message criteria, before tag exclusion.
-func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg BounceMessage, senderSlot int) {
+func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg BounceMessage, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
 	targets := make([]*registeredClient, 0, 4)
 	seen := make(map[*registeredClient]struct{}, 4)
 
@@ -401,6 +401,11 @@ func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg Bou
 
 	out := msg
 	out.Cmd = "Bounced"
+	if metrics != nil && len(targets) > 0 && slotName != nil && gameName != nil {
+		metrics.bounceResultPackets.WithLabelValues(*cr.lobbyRoomId, *slotName, *gameName).Add(float64(len(targets)))
+	}
+
+	// TODO: Only encode once
 	for _, c := range targets {
 		_ = wsjson.Write(ctx, c.clientConn, []any{out})
 	}
@@ -452,11 +457,12 @@ func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMes
 	cr.mu.RUnlock()
 
 	// Log how many we sent out
-	if metrics != nil && slotName != nil && gameName != nil {
-		metrics.bounceResultPackets.WithLabelValues(*cr.lobbyRoomId, *slotName, *gameName).Inc()
+	if metrics != nil && len(targets) > 0 && slotName != nil && gameName != nil {
+		metrics.bounceResultPackets.WithLabelValues(*cr.lobbyRoomId, *slotName, *gameName).Add(float64(len(targets)))
 	}
 
 	// Content is the same, just a different cmd sending out
+	// TODO: Only encode once
 	msg.Cmd = "Bounced"
 	for _, c := range targets {
 		_ = wsjson.Write(ctx, c.clientConn, []any{msg})
@@ -617,6 +623,10 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 				}
 			}
 			return
+		}
+
+		if connState.authenticated {
+			s.metrics.bytesReceived.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game).Add(float64(len(raw)))
 		}
 
 		var messages []json.RawMessage

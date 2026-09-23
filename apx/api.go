@@ -313,8 +313,13 @@ func startWsRouter(cfg *Config, rm *RoomManager) error {
 		log.Printf("WS router listening on ws://%s", addr)
 	}
 
+	server := &http.Server{
+		Handler:  router,
+		ErrorLog: log.New(io.Discard, "", 0), // Stop a bunch of ws:// clients flooding logs
+	}
+
 	go func() {
-		if err := http.Serve(listener, router); err != nil {
+		if err := server.Serve(listener); err != nil {
 			log.Printf("ws router error: %v", err)
 		}
 	}()

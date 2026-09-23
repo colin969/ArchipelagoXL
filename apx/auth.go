@@ -37,7 +37,7 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 	// Update msg from alt connect name if it matches
 	msg.Name = s.resolveAltName(msg.Name)
 
-	log.Printf("reconnect (authed): game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
+	log.Printf("[WS] reconnect (authed): game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
 		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData)
 
 	// If they're trying to switch slots, drop the connection. Shouldn't break anything important.
@@ -79,7 +79,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		msg.Name = *realName
 	}
 
-	log.Printf("connect: game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
+	log.Printf("[WS] connect: game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
 		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData)
 
 	connState.slotName = &msg.Name
@@ -147,7 +147,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	connState.authenticated = true
 	connState.registeredClient = &client
 
-	log.Printf("Connected to %s", msg.Name)
+	log.Printf("[WS] Connected to %s", msg.Name)
 
 	return nil
 }
@@ -206,8 +206,6 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 			connectMsg.Password = nil
 		}
 	}
-
-	log.Printf("Connecting to AP server at %s", fmt.Sprintf("ws://%s:%d", s.config.APHost, apPort))
 
 	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, apPort), nil)
 	if err != nil {
