@@ -181,7 +181,7 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 		}
 	}
 
-	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg, connState.slotName, connState.registeredClient.game, s.metrics)
+	s.connections.BroadcastBounceFromSlot(ctx, msg, s.bounceInfo, connState.registeredClient.slotId, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
 }
@@ -219,14 +219,6 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 		s.logDeath(connState.registeredClient.slotId)
 	}
 
-	if s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, "DeathLink") {
-		log.Printf("deathlink blocked for excluded slot %q", *connState.slotName)
-		// Still send bounced to same client
-		msg.Cmd = "Bounced"
-		_ = connState.SendMessage(ctx, []any{msg})
-		return nil
-	}
-
 	probability := s.bounceInfo.GetProbability()
 	if probability != 1 && rand.Float64() >= probability {
 		log.Println("deathlink dropped by probability func")
@@ -251,8 +243,7 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 		return fmt.Errorf("updating bounce message data: %w", err)
 	}
 
-	// We're a protocol packet, don't add second guessing to fields for clients receiving us
-	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg, connState.slotName, connState.registeredClient.game, s.metrics)
+	s.connections.BroadcastBounceFromSlot(ctx, msg, s.bounceInfo, connState.registeredClient.slotId, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
 }

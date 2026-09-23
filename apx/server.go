@@ -339,31 +339,87 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 	}
 }
 
-func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, bounceInfo *bounceInfoStore, slotId int, msg BounceMessage, slotName *string, gameName *string, metrics *metrics) {
+func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
+	// Send to own slot clients first, before tag exclusion, if they match criteria
+	cr.broadcastBounceToSlot(ctx, msg, senderSlot)
+
+	// If isolated, we can ignore everything else
+	senderLimited := bounceInfo.IsLimitedToOwnSlot(senderSlot)
+	if senderLimited {
+		return
+	}
+
 	// Strip excluded tags
 	if msg.Tags != nil {
 		*msg.Tags = slices.DeleteFunc(*msg.Tags, func(tag string) bool {
-			return bounceInfo.IsExcludedByTag(slotId, tag)
+			return bounceInfo.IsExcludedByTag(senderSlot, tag)
 		})
 	}
 
-	cr.BroadcastBounce(ctx, msg, bounceInfo, slotId, slotName, gameName, metrics)
+	cr.broadcastBounce(ctx, msg, bounceInfo, senderSlot, slotName, gameName, metrics)
 }
 
-func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
-	// Most will match 2 clients, but give a tiny bit of give
+// broadcastBounceToSlot sends to senderSlot clients that match the message criteria, before tag exclusion.
+func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg BounceMessage, senderSlot int) {
 	targets := make([]*registeredClient, 0, 4)
 	seen := make(map[*registeredClient]struct{}, 4)
-	senderLimited := bounceInfo.IsLimitedToOwnSlot(senderSlot)
 
 	addTarget := func(c *registeredClient) {
+		if c.slotId != senderSlot {
+			return
+		}
 		if _, ok := seen[c]; ok {
 			return
 		}
 		seen[c] = struct{}{}
-		if senderLimited && c.slotId != senderSlot {
+		targets = append(targets, c)
+	}
+
+	cr.mu.RLock()
+	if msg.Tags != nil {
+		for _, tag := range *msg.Tags {
+			for _, c := range cr.clientsByTag[tag] {
+				addTarget(c)
+			}
+		}
+	}
+	if msg.Games != nil {
+		for _, game := range *msg.Games {
+			for _, c := range cr.clientsByGame[game] {
+				addTarget(c)
+			}
+		}
+	}
+	if msg.Slots != nil {
+		for _, slotId := range *msg.Slots {
+			for _, c := range cr.clients[slotId] {
+				addTarget(c)
+			}
+		}
+	}
+	cr.mu.RUnlock()
+
+	out := msg
+	out.Cmd = "Bounced"
+	for _, c := range targets {
+		_ = wsjson.Write(ctx, c.clientConn, []any{out})
+	}
+}
+
+func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
+	// Most will match 2 clients, but give a tiny bit of give
+	targets := make([]*registeredClient, 0, 4)
+	seen := make(map[*registeredClient]struct{}, 4)
+
+	addTarget := func(c *registeredClient) {
+		if c.slotId == senderSlot {
 			return
-		} else if c.slotId != senderSlot && bounceInfo.IsLimitedToOwnSlot(c.slotId) {
+		}
+		if _, ok := seen[c]; ok {
+			return
+		}
+		seen[c] = struct{}{}
+		if bounceInfo.IsLimitedToOwnSlot(c.slotId) {
 			return
 		}
 		targets = append(targets, c)

@@ -79,7 +79,7 @@ func TestBroadcastBounce(t *testing.T) {
 			reg := newConnectionRegistry(nil, nil)
 			reg.Register(tc.clientSlot, rc, tc.clientGame, tc.clientTags)
 
-			reg.BroadcastBounce(context.Background(), BounceMessage{
+			reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 				Tags:  &tc.msgTags,
 				Slots: &tc.msgSlots,
 				Games: &tc.msgGames,
@@ -109,7 +109,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(1, rc, game, []string{"DeathLink"})
 
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  nil,
 			Slots: nil,
 			Games: nil,
@@ -130,7 +130,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 		reg.Register(1, rc, game, []string{"DeathLink"})
 
 		tags := []string{"DeathLink"}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  &tags,
 			Slots: nil,
 			Games: nil,
@@ -151,7 +151,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 		reg.Register(3, rc, game, nil)
 
 		slots := []int{3}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  nil,
 			Slots: &slots,
 			Games: nil,
@@ -172,7 +172,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 		reg.Register(1, rc, game, nil)
 
 		games := []string{game}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  nil,
 			Slots: nil,
 			Games: &games,
@@ -271,7 +271,7 @@ func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
 	t.Run("nil tags absent in forwarded packet", func(t *testing.T) {
 		reg, received := newReceiverAndReg(t)
 		slots := []int{1}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  nil,
 			Slots: &slots,
 			Games: nil,
@@ -289,7 +289,7 @@ func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
 	t.Run("nil slots absent in forwarded packet", func(t *testing.T) {
 		reg, received := newReceiverAndReg(t)
 		tags := []string{"DeathLink"}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  &tags,
 			Slots: nil,
 			Games: nil,
@@ -307,7 +307,7 @@ func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
 	t.Run("nil games absent in forwarded packet", func(t *testing.T) {
 		reg, received := newReceiverAndReg(t)
 		tags := []string{"DeathLink"}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  &tags,
 			Slots: nil,
 			Games: nil,
@@ -325,7 +325,7 @@ func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
 	t.Run("nil data absent in forwarded packet", func(t *testing.T) {
 		reg, received := newReceiverAndReg(t)
 		tags := []string{"DeathLink"}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  &tags,
 			Slots: nil,
 			Games: nil,
@@ -345,7 +345,7 @@ func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
 		tags := []string{"DeathLink"}
 		slots := []int{1}
 		games := []string{game}
-		reg.BroadcastBounce(context.Background(), BounceMessage{
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
 			Tags:  &tags,
 			Slots: &slots,
 			Games: &games,
@@ -360,6 +360,123 @@ func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
 			assertPresent(t, raw, "data")
 		case <-time.After(200 * time.Millisecond):
 			t.Error("client should have received message")
+		}
+	})
+}
+
+func TestBroadcastBounceSenderTagExclusion(t *testing.T) {
+	game := "Celeste"
+
+	newRawReceiver := func(t *testing.T, slotId int, tags []string) (*connectionRegistry, <-chan []byte) {
+		t.Helper()
+		received := make(chan []byte, 1)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.CloseNow()
+			var raw []byte
+			if _, raw, err = conn.Read(r.Context()); err == nil {
+				received <- raw
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		t.Cleanup(cancel)
+
+		url := "ws" + strings.TrimPrefix(server.URL, "http")
+		conn, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+
+		rc := &registeredClient{slotId: slotId, game: &game, clientConn: conn, cancel: func() {}}
+		reg := newConnectionRegistry(nil, nil)
+		reg.Register(slotId, rc, game, tags)
+
+		return reg, received
+	}
+
+	t.Run("sender slot client receives excluded tags intact", func(t *testing.T) {
+		// Slot 1 is both the sender and a registered client.
+		// "DeathLink" is excluded for slot 1, but slot 1 should still receive
+		// the message with "DeathLink" present (pre-exclusion delivery).
+		reg, received := newRawReceiver(t, 1, []string{"DeathLink"})
+
+		bounceInfo := newBounceInfoStore()
+		bounceInfo.ExcludeByTag(1, "DeathLink")
+
+		msgTags := []string{"DeathLink", "AP"}
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
+			Tags: &msgTags,
+			Data: &map[string]any{"test": true},
+		}, bounceInfo, 1, nil, nil, nil)
+
+		select {
+		case raw := <-received:
+			s := string(raw)
+			if !strings.Contains(s, `"DeathLink"`) {
+				t.Errorf("sender slot client should see DeathLink in Bounced, got: %s", s)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Error("sender slot client should have received the Bounced message")
+		}
+	})
+
+	t.Run("non-sender client has excluded tags stripped", func(t *testing.T) {
+		// Two clients: slot 1 (sender, excludes "DeathLink"), slot 2 (non-sender, subscribed to "DeathLink").
+		// Slot 2 should receive the message but with "DeathLink" stripped.
+		receivedCh := make(chan []byte, 1)
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			defer conn.CloseNow()
+			var raw []byte
+			if _, raw, err = conn.Read(r.Context()); err == nil {
+				receivedCh <- raw
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		t.Cleanup(cancel)
+
+		url := "ws" + strings.TrimPrefix(server.URL, "http")
+		conn2, _, err := websocket.Dial(ctx, url, nil)
+		if err != nil {
+			t.Fatalf("dial slot2 client: %v", err)
+		}
+
+		rc2 := &registeredClient{slotId: 2, game: &game, clientConn: conn2, cancel: func() {}}
+		reg := newConnectionRegistry(nil, nil)
+		reg.Register(2, rc2, game, []string{"DeathLink", "AP"})
+
+		bounceInfo := newBounceInfoStore()
+		bounceInfo.ExcludeByTag(1, "DeathLink") // slot 1 (sender) excludes DeathLink
+
+		msgTags := []string{"DeathLink", "AP"}
+		reg.BroadcastBounceFromSlot(context.Background(), BounceMessage{
+			Tags: &msgTags,
+			Data: &map[string]any{"test": true},
+		}, bounceInfo, 1, nil, nil, nil)
+
+		select {
+		case raw := <-receivedCh:
+			s := string(raw)
+			if strings.Contains(s, `"DeathLink"`) {
+				t.Errorf("non-sender client should NOT see DeathLink after tag exclusion, got: %s", s)
+			}
+			if !strings.Contains(s, `"AP"`) {
+				t.Errorf("non-sender client should still see AP tag, got: %s", s)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Error("non-sender client should have received the Bounced message via AP tag")
 		}
 	})
 }
