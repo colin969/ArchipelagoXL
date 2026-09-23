@@ -160,7 +160,8 @@ func (ds *bounceInfoStore) Add(slotId int) {
 func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
 	var msg BounceMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
-		return fmt.Errorf("unmarshalling bounce message: %w", err)
+		return nil
+		// return fmt.Errorf("unmarshalling bounce message: %w", err)
 	}
 	// TODO: Use once 0.6.8 releases
 	// if err := json.Unmarshal(data, &msg); err != nil {
@@ -169,13 +170,15 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 	// }
 
 	// Record types of tags sent by each slot
-	for _, tag := range msg.Tags {
-		s.metrics.bouncePackets.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game, tag).Inc()
-	}
+	if msg.Tags != nil {
+		for _, tag := range *msg.Tags {
+			s.metrics.bouncePackets.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game, tag).Inc()
+		}
 
-	// Deathlink packets have extra options for blocking and probability limiting, handle seperate
-	if slices.Contains(msg.Tags, "DeathLink") {
-		return s.handleDeathLink(ctx, connState, msg)
+		// Deathlink packets have extra options for blocking and probability limiting, handle seperate
+		if slices.Contains(*msg.Tags, "DeathLink") {
+			return s.handleDeathLink(ctx, connState, msg)
+		}
 	}
 
 	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg, connState.slotName, connState.registeredClient.game, s.metrics)
@@ -184,6 +187,10 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 }
 
 func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState, msg BounceMessage) error {
+	if msg.Tags == nil {
+		return fmt.Errorf("handleDeathLink called with a bounce packet without tags!")
+	}
+
 	// Validate this is a valid packet. Some apworlds send bad packets, some can't handle being sent bad packets.
 	data, err := json.Marshal(msg.Data)
 	if err != nil {
@@ -211,11 +218,6 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 	if s.logDeath != nil {
 		s.logDeath(connState.registeredClient.slotId)
 	}
-
-	// Strip any excluded tags
-	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
-		return s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, tag)
-	})
 
 	if s.bounceInfo.IsExcludedByTag(connState.registeredClient.slotId, "DeathLink") {
 		log.Printf("deathlink blocked for excluded slot %q", *connState.slotName)
@@ -249,7 +251,21 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 		return fmt.Errorf("updating bounce message data: %w", err)
 	}
 
+	// We're a protocol packet, don't add second guessing to fields for clients receiving us
+	msg.fixStandardFields()
 	s.connections.BroadcastBounceFromSlot(ctx, s.bounceInfo, connState.registeredClient.slotId, msg, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
+}
+
+func (bp *BounceMessage) fixStandardFields() {
+	if bp.Slots == nil {
+		bp.Slots = &[]int{}
+	}
+	if bp.Games == nil {
+		bp.Games = &[]string{}
+	}
+	if bp.Tags == nil {
+		bp.Tags = &[]string{}
+	}
 }

@@ -80,10 +80,10 @@ func TestBroadcastBounce(t *testing.T) {
 			reg.Register(tc.clientSlot, rc, tc.clientGame, tc.clientTags)
 
 			reg.BroadcastBounce(context.Background(), BounceMessage{
-				Tags:  tc.msgTags,
-				Slots: tc.msgSlots,
-				Games: tc.msgGames,
-				Data:  map[string]any{"test": true},
+				Tags:  &tc.msgTags,
+				Slots: &tc.msgSlots,
+				Games: &tc.msgGames,
+				Data:  &map[string]any{"test": true},
 			}, bounceInfo, tc.senderSlot, nil, nil, nil)
 
 			select {
@@ -98,6 +98,93 @@ func TestBroadcastBounce(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBroadcastBounceNilFields(t *testing.T) {
+	game := "Celeste"
+
+	t.Run("all nil, no delivery", func(t *testing.T) {
+		conn, received := newTestWSClient(t)
+		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		reg := newConnectionRegistry(nil, nil)
+		reg.Register(1, rc, game, []string{"DeathLink"})
+
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  nil,
+			Slots: nil,
+			Games: nil,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case <-received:
+			t.Error("client received message but should not have with all nil fields")
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
+
+	t.Run("nil slots and games, tags set, tag match", func(t *testing.T) {
+		conn, received := newTestWSClient(t)
+		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		reg := newConnectionRegistry(nil, nil)
+		reg.Register(1, rc, game, []string{"DeathLink"})
+
+		tags := []string{"DeathLink"}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  &tags,
+			Slots: nil,
+			Games: nil,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case <-received:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message via tag match with nil slots and games")
+		}
+	})
+
+	t.Run("nil tags and games, slots set, slot match", func(t *testing.T) {
+		conn, received := newTestWSClient(t)
+		rc := &registeredClient{slotId: 3, game: &game, clientConn: conn, cancel: func() {}}
+		reg := newConnectionRegistry(nil, nil)
+		reg.Register(3, rc, game, nil)
+
+		slots := []int{3}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  nil,
+			Slots: &slots,
+			Games: nil,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case <-received:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message via slot match with nil tags and games")
+		}
+	})
+
+	t.Run("nil tags and slots, games set, game match", func(t *testing.T) {
+		conn, received := newTestWSClient(t)
+		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		reg := newConnectionRegistry(nil, nil)
+		reg.Register(1, rc, game, nil)
+
+		games := []string{game}
+		reg.BroadcastBounce(context.Background(), BounceMessage{
+			Tags:  nil,
+			Slots: nil,
+			Games: &games,
+			Data:  &map[string]any{"test": true},
+		}, newBounceInfoStore(), 0, nil, nil, nil)
+
+		select {
+		case <-received:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("client should have received message via game match with nil tags and slots")
+		}
+	})
 }
 
 func newTestWSClient(t *testing.T) (*websocket.Conn, <-chan struct{}) {

@@ -341,9 +341,12 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 
 func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, bounceInfo *bounceInfoStore, slotId int, msg BounceMessage, slotName *string, gameName *string, metrics *metrics) {
 	// Strip excluded tags
-	msg.Tags = slices.DeleteFunc(msg.Tags, func(tag string) bool {
-		return bounceInfo.IsExcludedByTag(slotId, tag)
-	})
+	if msg.Tags != nil {
+		*msg.Tags = slices.DeleteFunc(*msg.Tags, func(tag string) bool {
+			return bounceInfo.IsExcludedByTag(slotId, tag)
+		})
+	}
+
 	cr.BroadcastBounce(ctx, msg, bounceInfo, slotId, slotName, gameName, metrics)
 }
 
@@ -369,34 +372,28 @@ func (cr *connectionRegistry) BroadcastBounce(ctx context.Context, msg BounceMes
 	// Lock because client tags are mutable
 	cr.mu.RLock()
 
-	for _, tag := range msg.Tags {
-		for _, c := range cr.clientsByTag[tag] {
-			addTarget(c)
+	if msg.Tags != nil {
+		for _, tag := range *msg.Tags {
+			for _, c := range cr.clientsByTag[tag] {
+				addTarget(c)
+			}
 		}
 	}
-	for _, game := range msg.Games {
-		for _, c := range cr.clientsByGame[game] {
-			addTarget(c)
+	if msg.Games != nil {
+		for _, game := range *msg.Games {
+			for _, c := range cr.clientsByGame[game] {
+				addTarget(c)
+			}
 		}
 	}
-	for _, slotId := range msg.Slots {
-		for _, c := range cr.clients[slotId] {
-			addTarget(c)
+	if msg.Slots != nil {
+		for _, slotId := range *msg.Slots {
+			for _, c := range cr.clients[slotId] {
+				addTarget(c)
+			}
 		}
 	}
 	cr.mu.RUnlock()
-
-	if msg.Tags == nil {
-		msg.Tags = []string{}
-	}
-
-	if msg.Games == nil {
-		msg.Games = []string{}
-	}
-
-	if msg.Slots == nil {
-		msg.Slots = []int{}
-	}
 
 	// Log how many we sent out
 	if metrics != nil && slotName != nil && gameName != nil {
@@ -557,7 +554,11 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		_, raw, err := c.Read(ctx)
 		if err != nil {
 			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
-				s.logf("client read inner: %v", err)
+				if connState.slotName != nil {
+					s.logf("client read inner [%s]: %v", *connState.slotName, err)
+				} else {
+					s.logf("client read inner: %v", err)
+				}
 			}
 			return
 		}
