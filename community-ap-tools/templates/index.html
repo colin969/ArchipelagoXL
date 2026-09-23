@@ -446,6 +446,162 @@ td {
             popup.appendChild(buttonContainer)
         }
 
+        function openBounceTagExclusionsPopup(slotId, slotName, slotGame, existingExcludedTags) {
+            const popup = getPopup();
+
+            const title = document.createElement("div");
+            title.innerText = "Bounce Tag Exclusions for: " + slotName + " (" + slotGame + ")";
+            title.style.marginBottom = "10px";
+            title.style.fontWeight = "bold";
+            popup.appendChild(title);
+
+            const existingTitle = document.createElement("div");
+            existingTitle.style.marginBottom = "5px";
+            existingTitle.innerText = "Currently excluded tags:";
+            popup.appendChild(existingTitle);
+
+            const tagList = document.createElement("ul");
+            tagList.style.marginTop = "0";
+            tagList.style.marginBottom = "10px";
+            popup.appendChild(tagList);
+
+            const renderTags = (tags) => {
+                tagList.innerHTML = "";
+                if (!tags.length) {
+                    const empty = document.createElement("li");
+                    empty.innerText = "None";
+                    tagList.appendChild(empty);
+                    return;
+                }
+                for (const tag of tags) {
+                    const li = document.createElement("li");
+                    li.style.display = "flex";
+                    li.style.alignItems = "center";
+                    li.style.gap = "0.5rem";
+                    li.style.marginBottom = "0.25rem";
+
+                    const tagSpan = document.createElement("span");
+                    tagSpan.innerText = tag;
+
+                    const deleteBtn = document.createElement("button");
+                    deleteBtn.innerText = "Remove";
+                    deleteBtn.addEventListener("click", async () => {
+                        const res = await fetch(
+                            `/api/dashboard/${window.lobby_room_id}/bounce_exclusions/${slotId}/${encodeURIComponent(tag)}`,
+                            { method: "DELETE" }
+                        );
+                        if (res.ok) {
+                            tags.splice(tags.indexOf(tag), 1);
+                            renderTags(tags);
+                            forceReviewTableRefresh();
+                        } else {
+                            alert("Failed to remove tag: " + await res.text());
+                        }
+                    });
+
+                    li.appendChild(tagSpan);
+                    li.appendChild(deleteBtn);
+                    tagList.appendChild(li);
+                }
+            };
+
+            renderTags(existingExcludedTags);
+
+            const commonTagsTitle = document.createElement("div");
+            commonTagsTitle.innerText = "Quick add:";
+            commonTagsTitle.style.marginBottom = "5px";
+            popup.appendChild(commonTagsTitle);
+
+            const commonTagsRow = document.createElement("div");
+            commonTagsRow.style.display = "flex";
+            commonTagsRow.style.gap = "0.5rem";
+            commonTagsRow.style.marginBottom = "10px";
+            popup.appendChild(commonTagsRow);
+
+            const commonTags = ["DeathLink", "TrapLink"];
+            for (const commonTag of commonTags) {
+                const btn = document.createElement("button");
+                btn.innerText = "+ " + commonTag;
+                btn.type = "button";
+                btn.addEventListener("click", async () => {
+                    if (existingExcludedTags.includes(commonTag)) {
+                        showToast(commonTag + " is already excluded", "error");
+                        return;
+                    }
+                    try {
+                        const res = await fetch(
+                            `/api/dashboard/${window.lobby_room_id}/bounce_exclusions/${slotId}/${encodeURIComponent(commonTag)}`,
+                            { method: "POST" }
+                        );
+                        if (res.ok) {
+                            existingExcludedTags.push(commonTag);
+                            renderTags(existingExcludedTags);
+                            forceReviewTableRefresh();
+                        } else {
+                            alert("Failed to add exclusion: " + await res.text());
+                        }
+                    } catch (e) {
+                        alert("Error: " + e.message);
+                    }
+                });
+                commonTagsRow.appendChild(btn);
+            }
+
+            const form = document.createElement("form");
+            form.action = "javascript:void(0);";
+
+            const addLabel = document.createElement("div");
+            addLabel.innerText = "Exclude a tag:";
+
+            const tagInput = document.createElement("input");
+            tagInput.type = "text";
+            tagInput.required = true;
+            tagInput.placeholder = "e.g. DeathLink";
+            tagInput.style.display = "block";
+            tagInput.style.marginBottom = "10px";
+
+            const submitButton = document.createElement("button");
+            submitButton.innerText = "Add Exclusion";
+            submitButton.style.display = "block";
+            submitButton.style.marginTop = "10px";
+
+            form.appendChild(addLabel);
+            form.appendChild(tagInput);
+            form.appendChild(submitButton);
+
+            form.addEventListener("submit", async () => {
+                const tag = tagInput.value.trim();
+                if (!tag) return;
+
+                if (existingExcludedTags.includes(tag)) {
+                    showToast(tag + " is already excluded", "error");
+                    return;
+                }
+
+                try {
+                    const res = await fetch(
+                        `/api/dashboard/${window.lobby_room_id}/bounce_exclusions/${slotId}/${encodeURIComponent(tag)}`,
+                        { method: "POST" }
+                    );
+                    if (res.ok) {
+                        tagInput.value = "";
+                        existingExcludedTags.push(tag);
+                        renderTags(existingExcludedTags);
+                        forceReviewTableRefresh();
+                    } else {
+                        alert("Failed to add exclusion: " + await res.text());
+                    }
+                } catch (e) {
+                    alert("Error: " + e.message);
+                }
+            });
+
+            popup.appendChild(form);
+            tagInput.focus();
+        }
+
+
+
         function openFullFeed(slotId, slotName, slotGame, isFullFeed) {
             const popup = getPopup();
 

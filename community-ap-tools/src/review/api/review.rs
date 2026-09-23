@@ -486,6 +486,7 @@ async fn get_tracker_info(
                 // It's moved for `name:` later, feels stupid but it works to put this line higher
                 deathlinks_sent: *deathlinks.get(&slot.id).unwrap_or(&0),
                 deathlink_excluded: exclusions.get(&slot.id).map_or(false, |slots| slots.contains(&deathlink_tag)),
+                bounce_tag_exclusions: exclusions.get(&slot.id).cloned().unwrap_or_default(),
                 incomplete_sphere1: incomplete_sphere1s.contains(&slot.id),
                 slot_bounces_excluded: slot_exclusons.contains(&slot.id),
                 id: slot.id,

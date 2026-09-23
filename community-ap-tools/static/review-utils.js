@@ -348,10 +348,10 @@ function createTrackerTable(tableId)
                 }
             },
             {
-                label: "Toggle DeathLink Block",
+                label: "Bounce Tag Exclusions",
                 action: function (event, row) {
-                    const { id, name, game, deathlink_excluded } = row.getData();
-                    openDeathBlock(id, name, game, deathlink_excluded);
+                    const { id, name, game, bounce_tag_exclusions } = row.getData();
+                    openBounceTagExclusionsPopup(id, name, game, [...(bounce_tag_exclusions ?? [])]);
                 }
             },
             {
