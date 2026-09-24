@@ -78,6 +78,8 @@ services:
       APX_API_KEY: "changeme"
       APX_WS_ROOT: "example.com"
       AP_TOOLS_PUBLIC_URL: "example.com"
+      AP_TOOLS_URL: "http://community-ap-tools:8010"
+      AP_TOOLS_API_KEY: "changeme"
     working_dir: /builds/worker/checkout
     command: sh -c "watchexec -w lobby -w Cargo.toml -w Cargo.lock -w Rocket.toml -w apwm -w wq -r cargo run"
     user: "${USER_ID}:${GID}"
@@ -236,6 +238,7 @@ services:
       APX_API_ROOT: "http://apx:9001"
       APX_API_KEY: "changeme"
       YAML_ANALYSIS_QUEUE_TOKEN: "changeme"
+      API_KEY: "changeme"
       ROCKET_CONFIG: "Rocket.community.toml"
       ROCKET_SECRET_KEY: "changemechangemechangemechangemechangeme1234"
       ROCKET_PORT: "8010"
