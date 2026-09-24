@@ -199,6 +199,7 @@ type ApxRoom struct {
 // No strict lock, but this MUST be immutable to be safe
 type registeredClient struct {
 	slotId     int
+	slotName   *string
 	game       *string
 	cancel     context.CancelFunc
 	clientConn *websocket.Conn
@@ -339,14 +340,17 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 	}
 }
 
-func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
+func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) error {
 	// Send to own slot clients first, before tag exclusion, if they match criteria
-	cr.broadcastBounceToSlot(ctx, msg, senderSlot, slotName, gameName, metrics)
+	err := cr.broadcastBounceToSlot(ctx, msg, senderSlot, slotName, gameName, metrics)
+	if err != nil {
+		return err
+	}
 
 	// If isolated, we can ignore everything else
 	senderLimited := bounceInfo.IsLimitedToOwnSlot(senderSlot)
 	if senderLimited {
-		return
+		return nil
 	}
 
 	// Strip excluded tags
@@ -356,11 +360,15 @@ func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg B
 		})
 	}
 
-	cr.broadcastBounce(ctx, msg, bounceInfo, senderSlot, slotName, gameName, metrics)
+	err = cr.broadcastBounce(ctx, msg, bounceInfo, senderSlot, slotName, gameName, metrics)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // broadcastBounceToSlot sends to senderSlot clients that match the message criteria, before tag exclusion.
-func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg BounceMessage, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
+func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg BounceMessage, senderSlot int, slotName *string, gameName *string, metrics *metrics) error {
 	targets := make([]*registeredClient, 0, 4)
 	seen := make(map[*registeredClient]struct{}, 4)
 
@@ -406,12 +414,19 @@ func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg Bou
 	}
 
 	// TODO: Only encode once
-	for _, c := range targets {
-		_ = wsjson.Write(ctx, c.clientConn, []any{out})
+	numBytes, err := BroadcastJSON(ctx, targets, []any{out})
+	if err != nil {
+		return err
 	}
+	if metrics != nil {
+		for _, client := range targets {
+			metrics.bytesSent.WithLabelValues(*cr.lobbyRoomId, *client.slotName, *client.game).Add(float64(numBytes))
+		}
+	}
+	return nil
 }
 
-func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) {
+func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) error {
 	// Most will match 2 clients, but give a tiny bit of give
 	targets := make([]*registeredClient, 0, 4)
 	seen := make(map[*registeredClient]struct{}, 4)
@@ -464,9 +479,16 @@ func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMes
 	// Content is the same, just a different cmd sending out
 	// TODO: Only encode once
 	msg.Cmd = "Bounced"
-	for _, c := range targets {
-		_ = wsjson.Write(ctx, c.clientConn, []any{msg})
+	numBytes, err := BroadcastJSON(ctx, targets, []any{msg})
+	if err != nil {
+		return err
 	}
+	if metrics != nil {
+		for _, client := range targets {
+			metrics.bytesSent.WithLabelValues(*cr.lobbyRoomId, *client.slotName, *client.game).Add(float64(numBytes))
+		}
+	}
+	return nil
 }
 
 func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, slotId int, msg string) {
@@ -488,7 +510,7 @@ func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, sl
 	_ = wsjson.Write(ctx, clientConn, []any{message})
 }
 
-func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId int, msg string) {
+func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId int, msg string, metrics *metrics) error {
 	message := PrintJsonChatMessage{
 		Cmd: "PrintJSON",
 		Data: []JsonMessagePart{
@@ -509,9 +531,16 @@ func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId 
 	cr.mu.RUnlock()
 
 	wrappedMsg := []any{message}
-	for _, c := range targets {
-		_ = wsjson.Write(ctx, c.clientConn, wrappedMsg)
+	numBytes, err := BroadcastJSON(ctx, targets, wrappedMsg)
+	if err != nil {
+		return err
 	}
+	if metrics != nil {
+		for _, client := range targets {
+			metrics.bytesSent.WithLabelValues(*cr.lobbyRoomId, *client.slotName, *client.game).Add(float64(numBytes))
+		}
+	}
+	return nil
 }
 
 type connectionState struct {

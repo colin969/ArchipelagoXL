@@ -6,13 +6,15 @@ import (
 )
 
 type metrics struct {
-	incomingPackets     prometheus.CounterVec
-	bouncePackets       prometheus.CounterVec
-	bounceResultPackets prometheus.CounterVec
-	connectedClients    prometheus.GaugeVec
-	connectedSlots      prometheus.GaugeVec
-	bytesReceived       prometheus.CounterVec
-	droppedLogs         prometheus.CounterVec
+	incomingPackets      prometheus.CounterVec
+	bouncePackets        prometheus.CounterVec
+	bounceResultPackets  prometheus.CounterVec
+	connectedClients     prometheus.GaugeVec
+	connectedSlots       prometheus.GaugeVec
+	bytesReceived        prometheus.CounterVec
+	bytesSent            prometheus.CounterVec
+	datapackageBytesSent prometheus.CounterVec
+	droppedLogs          prometheus.CounterVec
 }
 
 func initMetrics() (*prometheus.Registry, *metrics) {
@@ -60,6 +62,20 @@ func initMetrics() (*prometheus.Registry, *metrics) {
 				Help: "Total number of bytes received per slot",
 			},
 			[]string{"room", "slot", "game"},
+		),
+		bytesSent: *promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "apx_bytes_sent_total",
+				Help: "Total number of bytes sent per slot",
+			},
+			[]string{"room", "slot", "game"},
+		),
+		datapackageBytesSent: *promauto.With(reg).NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "apx_datapackage_bytes_sent_total",
+				Help: "Total number of bytes sent for datapackage requests",
+			},
+			[]string{"room"},
 		),
 		droppedLogs: *promauto.With(reg).NewCounterVec(
 			prometheus.CounterOpts{

@@ -123,7 +123,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		connState.pendingDatapackGames = nil
 	}
 
-	apConn, slotId, game, err := s.connectAP(ctx, connState, connState.reduced, msg, s.apPort)
+	apConn, slotId, slotName, game, err := s.connectAP(ctx, connState, connState.reduced, msg, s.apPort)
 	if err != nil {
 		return fmt.Errorf("connecting to AP: %w", err)
 	}
@@ -138,6 +138,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	connState.apConn = apConn
 	client := registeredClient{
 		slotId:     slotId,
+		slotName:   slotName,
 		game:       game,
 		cancel:     connState.cancel,
 		clientConn: connState.clientConn,
@@ -197,7 +198,7 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 	return nil
 }
 
-func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage, apPort int) (*websocket.Conn, int, *string, error) {
+func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage, apPort int) (*websocket.Conn, int, *string, *string, error) {
 	// Fix password when talking to ap server (only needed when using per-slot passwords)
 	if s.config.LobbyEnabled {
 		if s.roomInfo.HasPassword() {
@@ -209,7 +210,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 
 	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, apPort), nil)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("dialing AP server: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("dialing AP server: %w", err)
 	}
 
 	apConn.SetReadLimit(wsReadLimit)
@@ -218,14 +219,14 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 	var roomInfo []map[string]any
 	if err := wsjson.Read(ctx, apConn, &roomInfo); err != nil {
 		apConn.CloseNow()
-		return nil, 0, nil, fmt.Errorf("reading RoomInfo from AP: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("reading RoomInfo from AP: %w", err)
 	}
 
 	// Send connect message
 	connectMsg.ReducedTraffic = reduced
 	if err := wsjson.Write(ctx, apConn, []any{connectMsg}); err != nil {
 		apConn.CloseNow()
-		return nil, 0, nil, fmt.Errorf("forwarding Connect to AP: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("forwarding Connect to AP: %w", err)
 	}
 
 	// Preserves key order. Thanks AHIT.
@@ -233,7 +234,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 	var response []json.RawMessage
 	if err := wsjson.Read(ctx, apConn, &response); err != nil {
 		apConn.CloseNow()
-		return nil, 0, nil, fmt.Errorf("reading Connected from AP: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("reading Connected from AP: %w", err)
 	}
 
 	// Forward the Connected message to the client
@@ -244,17 +245,19 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 	}
 	if err := wsjson.Write(ctx, connState.clientConn, response); err != nil {
 		apConn.CloseNow()
-		return nil, 0, nil, fmt.Errorf("forwarding Connected to client: %w", err)
+		return nil, 0, nil, nil, fmt.Errorf("forwarding Connected to client: %w", err)
 	}
 
 	slotId := 0
 	game := ""
+	slotName := ""
 	for _, raw := range response {
 		var msg struct {
 			Cmd      string `json:"cmd"`
 			Slot     int    `json:"slot"`
 			SlotInfo map[string]struct {
 				Game string `json:"game"`
+				Name string `json:"name"`
 			} `json:"slot_info"`
 		}
 		if err := json.Unmarshal(raw, &msg); err != nil {
@@ -262,7 +265,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 		}
 		if msg.Cmd == "ConnectionRefused" {
 			apConn.CloseNow()
-			return nil, 0, nil, nil
+			return nil, 0, nil, nil, nil
 		}
 		if msg.Cmd != "Connected" {
 			continue
@@ -270,6 +273,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 		slotId = msg.Slot
 		if slotData, ok := msg.SlotInfo[fmt.Sprintf("%d", slotId)]; ok {
 			game = slotData.Game
+			slotName = slotData.Name
 		}
 	}
 
@@ -277,9 +281,12 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 
 	// Avoid any processing on these packets where possible
 
+	lobbyRoomId := s.lobbyRoomId
+
 	go func() {
 		defer apConn.CloseNow()
 		defer connState.cancel()
+
 		proxyMessageType := MessageType("")
 		for {
 			msgType, data, err := apConn.Read(ctx)
@@ -301,6 +308,10 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 				}
 			}
 
+			if s.metrics != nil {
+				s.metrics.bytesSent.WithLabelValues(lobbyRoomId, slotName, game).Add(float64(len(data)))
+			}
+
 			if err := connState.clientConn.Write(ctx, msgType, data); err != nil {
 				if ctx.Err() == nil {
 					s.logf("client write error: %v", err)
@@ -310,7 +321,7 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 		}
 	}()
 
-	return apConn, slotId, &game, nil
+	return apConn, slotId, &slotName, &game, nil
 }
 
 func (s ApxRoom) validateSlot(name string) ([2]int, bool) {

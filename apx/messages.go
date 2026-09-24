@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -322,4 +324,27 @@ func sendInvalidPacket(ctx context.Context, conn *websocket.Conn, problemType Pa
 		}
 	}
 	return wsjson.Write(ctx, conn, []any{msg})
+}
+
+var bufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+func BroadcastJSON(ctx context.Context, clients []*registeredClient, v any) (int, error) {
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+
+	if err := json.NewEncoder(buf).Encode(v); err != nil {
+		return 0, fmt.Errorf("failed to marshal broadcast message: %w", err)
+	}
+
+	data := buf.Bytes()
+	n := len(data)
+
+	for _, c := range clients {
+		_ = c.clientConn.Write(ctx, websocket.MessageText, data)
+	}
+
+	return n, nil
 }

@@ -329,11 +329,17 @@ func (s ApxRoom) sendDataPackages(ctx context.Context, client *websocket.Conn, g
 		if !ok {
 			return fmt.Errorf("unknown datapackage for %q", games[0])
 		}
+		if s.metrics != nil {
+			s.metrics.datapackageBytesSent.WithLabelValues(s.lobbyRoomId).Add(float64(len(raw)))
+		}
 		return client.Write(ctx, websocket.MessageText, raw)
 	}
 
 	if s.datapackages.fullGameResponseOptimization {
 		if len(games) == len(s.datapackages.packages) && s.datapackages.fullGameResponse != nil {
+			if s.metrics != nil {
+				s.metrics.datapackageBytesSent.WithLabelValues(s.lobbyRoomId).Add(float64(len(s.datapackages.fullGameResponse)))
+			}
 			return client.Write(ctx, websocket.MessageText, s.datapackages.fullGameResponse)
 		}
 	}
@@ -344,6 +350,9 @@ func (s ApxRoom) sendDataPackages(ctx context.Context, client *websocket.Conn, g
 		return err
 	}
 
+	if s.metrics != nil {
+		s.metrics.datapackageBytesSent.WithLabelValues(s.lobbyRoomId).Add(float64(len(msg)))
+	}
 	return client.Write(ctx, websocket.MessageText, msg)
 }
 
