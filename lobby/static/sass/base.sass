@@ -1556,3 +1556,85 @@ form:has(#apworld)
 
       &:hover
         background: hsla(0, 0%, 100%, 0.1)
+
+.has-errors
+  color: #f66
+  font-weight: bold
+
+.has-warnings
+  color: #fc4
+  font-weight: bold
+
+
+.yaml-issues-modal-content
+  display: flex
+  flex-direction: column
+  gap: 0.75em
+
+  h3
+    margin: 0 0 0.5em 0
+    border-bottom: 1px solid hsla(0, 0%, 100%, 0.15)
+    padding-bottom: 0.5em
+
+.issues-section
+  display: flex
+  flex-direction: column
+  gap: 0.25em
+
+  .issues-section-header
+    font-size: 0.8em
+    font-weight: bold
+    text-transform: uppercase
+    letter-spacing: 0.05em
+    padding: 0.2em 0.5em
+    margin-bottom: 0.25em
+
+  &.issues-errors .issues-section-header
+    color: #f66
+    border-left: 3px solid #f66
+
+  &.issues-warnings .issues-section-header
+    color: #fc4
+    border-left: 3px solid #fc4
+
+.result-item
+  display: flex
+  flex-wrap: wrap
+  align-items: baseline
+  gap: 0.4em
+  padding: 0.3em 0.5em
+  background: hsla(0, 0%, 0%, 0.15)
+  border-left: 2px solid transparent
+  font-size: 0.9em
+
+  .issues-errors &
+    border-left-color: hsla(0, 100%, 70%, 0.3)
+
+  .issues-warnings &
+    border-left-color: hsla(45, 100%, 60%, 0.3)
+
+.result-name
+  font-weight: bold
+
+.result-detail
+  color: hsla(0, 0%, 100%, 0.65)
+  font-size: 0.9em
+
+.result-name
+  code
+    background: hsla(0, 0%, 0%, 0.3)
+    padding: 0.1em 0.35em
+    border-radius: 3px
+    font-family: 'Courier New', monospace
+    font-size: 0.95em
+    color: hsl(200, 80%, 80%)
+
+#yaml-issues-modal
+  background-color: #12202c
+  background-image: url("../images/background.png")
+  color: white
+  border: 1px solid hsla(0, 0%, 100%, 0.15)
+  box-shadow: 0 0 5px hsla(0, 0%, 0%, 0.5), inset 0 0 0 1px hsla(0, 0%, 100%, 0.15)
+
+.yaml-issues-badge
+  cursor: pointer

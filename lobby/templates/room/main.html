@@ -131,6 +131,9 @@
 
             <th data-sort-key="player-name"></span><i id="filter-trigger" class="fa fa-filter"></i> Player {%+ if base.is_logged_in %} <span data-sort-key="discord-name">(@</span>) {% endif %} {% if room.settings.is_bundle_room %}<i id="bundle-trigger" class="fa fa-sack-xmark disabled bundle-indicator" onclick="triggerBundle(this, event)"></i>{% endif%}</th>
             <th data-sort-key="game-name">Game</th>
+            {% if !yaml_eval_results.is_empty() %}
+            <th class="issues-col" id="issues-col-header">Issues</th>
+            {% endif %}
             <th>Action</th>
         </tr>
     </thead>
@@ -157,10 +160,18 @@
     <input type="file" name="yamls[]" id="yamlUpload" accept=".yml,.yaml" multiple>
     <button id="yamlFormButton">Upload</button>
 </form>
+
+<dialog id="yaml-issues-modal" onclick="if(event.target===this)this.close()">
+    <div id="yaml-issues-content"></div>
+    <div class="button-container">
+        <button onclick="document.getElementById('yaml-issues-modal').close()">Close</button>
+    </div>
+</dialog>
 {%endblock%}
 
 {% macro yaml_row(yaml, discord_name) %}
     {% let is_my_yaml = (Some(yaml.owner_id) == base.user_id.as_ref()) %}
+    {% let eval_result = self.get_eval_result(&yaml.id) %}
     <tr {%+ if is_my_yaml %} data-my-yaml="true" {% endif +%} data-bundle-id="{{ yaml.bundle_id }}" data-yaml-id="{{ yaml.id }}" data-valid-yaml="{{ yaml.validation_status.is_valid() }}">
         {% if base.is_logged_in %}
             <td>
@@ -179,6 +190,25 @@
             <td><span><span class="player-name">{{yaml.player_name}}</span> {{yaml.features|yaml_features|safe}}{% if yaml.last_edited_by_name.is_some() %} <i class="fa fa-pen-to-square yaml-edited-indicator" title="Edited by a helper"></i>{% endif %}</span></td>
         {% endif %}
         <td>{{self.get_game_display_name(yaml.game)}}</td>
+        {% if !yaml_eval_results.is_empty() %}
+        <td class="issues-col">
+            {% if is_my_yaml %}
+            {% match eval_result %}
+            {% when Some with (eval) %}
+            {% if !eval.results.is_empty() %}
+            {%~ let errors = eval.error_count() ~%}
+            {%~ let warnings = eval.warning_count() ~%}
+            <span class="yaml-issues-badge" onclick="showYamlIssues('{{ yaml.id }}')">
+                {%+ if errors > 0 %}<span class="has-errors">{{ errors }}&#32;Errors</span>{% endif +%}
+                {%+ if errors > 0 && warnings > 0 %} - {% endif +%}
+                {%+ if warnings > 0 %}<span class="has-warnings">{{ warnings }}&#32;Warnings</span>{% endif +%}
+            </span>
+            {% endif %}
+            {% when None %}
+            {% endmatch %}
+            {% endif %}
+        </td>
+        {% endif %}
         <td>
             <a href="/room/{{room.id}}/download/{{yaml.id}}" onclick='return showRowYaml(this)'>View</a>
             {% if (is_my_yaml || is_my_room) %}
@@ -202,6 +232,7 @@
     </tr>
 {% endmacro %}
 
+
 {% block scripts %}
 
 <script src="/static/contrib/highlight.js/highlight.min.js" defer></script>
@@ -212,6 +243,75 @@
 <script src="/static/js/simplesearch.js?{{ base.js_version }}"></script>
 
 <script>
+    const YAML_EVAL_DATA = {
+        {% for (id, eval) in yaml_eval_results %}
+        {% match eval %}
+        {% when Some with (result) %}
+        "{{ id }}": {
+            results: [
+                {% for r in result.results %}
+                { rule_name: {{ r.rule_name|json|safe }}, severity: {{ r.severity|json|safe }}, outcome: {{ r.outcome|json|safe }}, detail: {{ r.detail|json|safe }} },
+                {% endfor %}
+            ]
+        },
+        {% when None %}
+        {% endmatch %}
+        {% endfor %}
+    };
+
+    function showYamlIssues(yamlId) {
+        const data = YAML_EVAL_DATA[yamlId];
+        if (!data) return;
+
+        const SEVERITY_LABELS = { error: "Required Changes", warning: "Recommended Changes" };
+
+        const makeItem = r => {
+            const div = document.createElement("div");
+            div.className = "result-item";
+            const name = document.createElement("span");
+            name.className = "result-name";
+            name.innerHTML = r.rule_name.replace(/``?([^`]+)``?/g, "<code>$1</code>");
+            div.append(name);
+            if (r.detail) {
+                const detail = document.createElement("span");
+                detail.className = "result-detail";
+                detail.innerHTML = r.detail.replace(/``?([^`]+)``?/g, "<code>$1</code>");
+                div.append(detail);
+            }
+            return div;
+        };
+
+
+        const makeSection = (results, severity) => {
+            if (results.length === 0) return null;
+            const section = document.createElement("div");
+            section.className = `issues-section issues-${severity}s`;
+            const header = document.createElement("div");
+            header.className = "issues-section-header";
+            header.textContent = `${SEVERITY_LABELS[severity] ?? severity} (${results.length})`;
+            section.append(header, ...results.map(makeItem));
+            return section;
+        };
+
+        const errors = data.results.filter(r => r.severity === "error");
+        const warnings = data.results.filter(r => r.severity === "warning");
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "yaml-issues-modal-content";
+        const title = document.createElement("h3");
+        title.textContent = "YAML Issues";
+        wrapper.append(title);
+
+        [makeSection(errors, "error"), makeSection(warnings, "warning")]
+            .filter(Boolean)
+            .forEach(s => wrapper.append(s));
+
+        const content = document.getElementById("yaml-issues-content");
+        content.replaceChildren(wrapper);
+        document.getElementById("yaml-issues-modal").showModal();
+    }
+
+
     function showRowYaml(elmt) {
         const expandValidation = elmt.classList.contains("validation-result")
         const yamlId = elmt.closest("tr").dataset.yamlId

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::Config;
-use crate::auth::LoggedInSession;
+use crate::auth::{AnyAuth, LoggedInSession};
 use crate::error;
 use crate::review::Role;
 use crate::review::builtin::{self, RoomYaml};
@@ -107,6 +107,86 @@ struct BulkYamlInfo {
     created_at: String,
     last_edited_by_name: Option<String>,
     last_edited_at: Option<String>,
+}
+
+#[rocket::get("/review/<room_id>/evaluate/<yaml_id>")]
+async fn evaluate_single_yaml_endpoint(
+    session: AnyAuth,
+    room_id: &str,
+    yaml_id: &str,
+    config: &State<Config>,
+    pool: &State<DieselPool<AsyncPgConnection>>,
+) -> crate::error::Result<Json<YamlEvalResultWithAnalysis>> {
+    let room_id: Uuid = room_id
+        .parse()
+        .map_err(|_| error::bad_request("Invalid room ID"))?;
+    let yaml_id: Uuid = yaml_id
+        .parse()
+        .map_err(|_| error::bad_request("Invalid YAML ID"))?;
+    let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+    session
+        .require_room_role(room_id, Role::Viewer, &mut conn)
+        .await?;
+
+    let (custom_rules, enabled_builtins) = match db::get_room_config(room_id, &mut conn).await? {
+        Some(room_cfg) => {
+            let db_rules = db::list_rules_for_preset(room_cfg.preset_id, &mut conn).await?;
+            let custom: Vec<Rule> = db_rules
+                .iter()
+                .filter_map(|r| serde_json::from_value(r.rule.clone()).ok())
+                .collect();
+            let preset = db::get_preset(room_cfg.preset_id, &mut conn).await?;
+            let builtins: Vec<String> = serde_json::from_value(preset.builtin_rules)?;
+            (custom, builtins)
+        }
+        None => (vec![], vec![]),
+    };
+
+    let client = reqwest::Client::new();
+
+    let room_yamls_url = config
+        .lobby_root_url
+        .join(&format!("/api/room/{}/yamls", room_id))?;
+    let resp = client
+        .get(room_yamls_url)
+        .header("x-api-key", &config.lobby_api_key)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("Failed to fetch room YAMLs: {}", resp.status()).into());
+    }
+
+    let bulk_yamls: Vec<BulkYamlInfo> = resp.json().await?;
+
+    let room_yamls: Vec<RoomYaml> = bulk_yamls
+        .iter()
+        .map(|y| RoomYaml { player_name: y.player_name.clone() })
+        .collect();
+
+    let yaml_info = bulk_yamls
+        .into_iter()
+        .find(|y| y.id == yaml_id)
+        .ok_or_else(|| anyhow!("YAML {} not found in room {}", yaml_id, room_id))?;
+
+    let builtin_rules_registry = builtin::builtin_rules();
+    let active_builtins: Vec<&dyn builtin::BuiltinRule> = builtin_rules_registry
+        .iter()
+        .filter(|r| enabled_builtins.contains(&r.id().to_string()))
+        .map(|r| r.as_ref())
+        .collect();
+
+    let analysis = db::get_yaml_analysis_status(room_id, yaml_id, &mut conn).await.ok().flatten();
+
+    let result = evaluate_single_yaml(
+        &yaml_info,
+        &custom_rules,
+        &active_builtins,
+        &room_yamls,
+        analysis.as_ref(),
+    )
+    .with_analysis(analysis.as_ref());
+
+    Ok(Json(result))
 }
 
 #[rocket::post("/review/<room_id>/evaluate", data = "<body>")]
@@ -356,5 +436,8 @@ fn evaluate_single_yaml(
 }
 
 pub fn routes() -> Vec<rocket::Route> {
-    routes![evaluate]
+    routes![
+        evaluate,
+        evaluate_single_yaml_endpoint,
+    ]
 }

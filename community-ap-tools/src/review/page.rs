@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::Role;
 use super::db;
 use crate::Config;
-use crate::auth::{AdminSession, LoggedInSession};
+use crate::auth::LoggedInSession;
 
 pub struct OrgTplContext {
     pub is_super_admin: bool,

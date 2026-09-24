@@ -277,6 +277,74 @@ pub fn is_super_admin(user_id: i64, discord_config: &Dict) -> bool {
     admins.contains(&user_id.into())
 }
 
+pub struct ApiKeySession;
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for ApiKeySession {
+    type Error = crate::error::Error;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let config = try_outcome!(request.guard::<&State<crate::Config>>().await
+            .map_error(|(s, _)| (s, anyhow!("Missing config").into())));
+
+            match request.headers().get_one("x-api-key") {
+                Some(key) if key == config.api_key => Outcome::Success(ApiKeySession),
+                Some(key) => {
+                    eprintln!("API key mismatch: provided={:?} expected={:?}", key, config.api_key);
+                    Outcome::Error((Status::Forbidden, anyhow!("Invalid or missing API key").into()))
+                }
+                None => {
+                    eprintln!("API key missing, expected={:?}", config.api_key);
+                    Outcome::Error((Status::Forbidden, anyhow!("Invalid or missing API key").into()))
+                }
+            }
+    }
+}
+
+/// Succeeds if the request has either a valid logged-in session or a valid API key.
+pub enum AnyAuth {
+    Session(LoggedInSession),
+    ApiKey(ApiKeySession),
+}
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for AnyAuth {
+    type Error = crate::error::Error;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        // Try API key first (cheap, no DB)
+        if request.headers().contains("x-api-key") {
+            return match ApiKeySession::from_request(request).await {
+                Outcome::Success(k) => Outcome::Success(AnyAuth::ApiKey(k)),
+                Outcome::Error(e) => Outcome::Error(e),
+                Outcome::Forward(f) => Outcome::Forward(f),
+            };
+        }
+
+        // Fall back to session
+        match LoggedInSession::from_request(request).await {
+            Outcome::Success(s) => Outcome::Success(AnyAuth::Session(s)),
+            Outcome::Error(e) => Outcome::Error(e),
+            Outcome::Forward(f) => Outcome::Forward(f),
+        }
+    }
+}
+
+impl AnyAuth {
+    pub async fn require_room_role(
+        &self,
+        room_id: Uuid,
+        minimum: Role,
+        conn: &mut AsyncPgConnection,
+    ) -> Result<()> {
+        match self {
+            AnyAuth::ApiKey(_) => Ok(()),
+            AnyAuth::Session(s) => s.require_room_role(room_id, minimum, conn).await,
+        }
+    }
+}
+
+
 #[get("/login?<redirect>")]
 fn login(
     oauth2: OAuth2<Discord>,

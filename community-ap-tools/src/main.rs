@@ -1224,6 +1224,7 @@ pub struct Config {
     pub apx_api_root: Option<Url>,
     pub apx_api_key: Option<String>,
     pub static_version: i64,
+    pub api_key: String,
 }
 
 pub struct TrackerInfoCache(pub Arc<tokio::sync::Mutex<Option<(Instant, Vec<MergedSlotInfo>)>>>);
@@ -1251,6 +1252,7 @@ async fn main() -> crate::error::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| Url::from_str(&format!("{}", ap_room_host)).unwrap());
+    let api_key = std::env::var("API_KEY").expect("Provide an API_KEY env variable");
 
     eprintln!("[STARTUP] AP_API_ROOT: {}", ap_api_root);
     eprintln!("[STARTUP] AP_ROOM_HOST: {}", ap_room_host);
@@ -1278,6 +1280,7 @@ async fn main() -> crate::error::Result<()> {
         apx_api_root,
         apx_api_key,
         static_version,
+        api_key,
     };
 
     let redis_cfg = deadpool_redis::Config::from_url(&valkey_url);

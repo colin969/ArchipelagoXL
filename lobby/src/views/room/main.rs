@@ -11,7 +11,7 @@ use crate::session::{LoggedInSession, Session};
 use crate::utils::{NamedBuf, ZipFile};
 use crate::views::api;
 use crate::views::filters;
-use crate::views::room::host::{ApxRoomInfoDisplay, fetch_apx_room_info};
+use crate::views::room::host::{fetch_apx_room_info, ApxRoomInfoDisplay};
 use crate::yaml::{compute_ap_slot_names, YamlValidationResult};
 use crate::{Context, LobbyConfig, TplContext};
 use askama::Template;
@@ -24,8 +24,27 @@ use rocket::form::Form;
 use rocket::http::Header;
 use rocket::response::Redirect;
 use rocket::{get, post, uri, State};
+use serde::Deserialize;
 use tracing::Instrument;
+use uuid::Uuid;
 use zip::ZipArchive;
+
+#[derive(Deserialize, Clone)]
+pub struct YamlEvalResult {
+    pub yaml_id: Uuid,
+    pub game: String,
+    pub results: Vec<EvalRuleResult>,
+    pub analysis_status: Option<String>,
+    pub analysis_total_checks: Option<i32>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct EvalRuleResult {
+    pub rule_name: String,
+    pub outcome: String,
+    pub severity: String,
+    pub detail: Option<String>,
+}
 
 #[derive(Template, WebTemplate)]
 #[template(path = "room/main.html")]
@@ -45,6 +64,7 @@ pub struct RoomTpl<'a> {
     game_display_names: HashMap<String, String>,
     // Map from original player name to AP truncated slot name
     truncated_names: HashMap<String, String>,
+    yaml_eval_results: Vec<(YamlId, Option<YamlEvalResult>)>,
 }
 
 impl RoomTpl<'_> {
@@ -61,7 +81,26 @@ impl RoomTpl<'_> {
             .map(|s| s.as_str())
             .unwrap_or(player_name)
     }
+
+    fn get_eval_result(&self, yaml_id: &YamlId) -> Option<&YamlEvalResult> {
+        self.yaml_eval_results
+            .iter()
+            .find(|(id, _)| id == yaml_id)
+            .and_then(|(_, r)| r.as_ref())
+    }    
 }
+
+impl YamlEvalResult {
+    pub fn error_count(&self) -> usize {
+        self.results.iter().filter(|r| r.severity == "error").count()
+    }
+
+    pub fn warning_count(&self) -> usize {
+        self.results.iter().filter(|r| r.severity == "warning").count()
+    }
+}
+
+const YAML_EVAL_MAX_COUNT: usize = 3;
 
 pub async fn room_inner<'a>(
     room_id: RoomId,
@@ -74,6 +113,47 @@ pub async fn room_inner<'a>(
     let (room, author_name, room_info) = db::get_room_and_author(room_id, &mut conn).await?;
     let mut yamls = db::get_yamls_for_room_with_author_names(room_id, &mut conn).await?;
 
+    let user_yamls: Vec<&YamlWithoutContent> = yamls
+        .iter()
+        .map(|(yaml, _)| yaml)
+        .filter(|yaml| Some(yaml.owner_id) == session.user_id)
+        .collect();
+
+        let yaml_eval_results: Vec<(YamlId, Option<YamlEvalResult>)> = if !room.is_closed()
+        && !user_yamls.is_empty()
+        && user_yamls.len() <= YAML_EVAL_MAX_COUNT
+        && lobby_config.ap_tools_url.is_some()
+    {
+        let client = reqwest::Client::new();
+        let ap_tools_url = lobby_config.ap_tools_url.as_deref().unwrap();
+        let ap_tools_api_key = lobby_config.ap_tools_api_key.as_deref().unwrap_or("");
+    
+        let mut results = Vec::new();
+        for yaml in &user_yamls {
+            let url = format!(
+                "{}/api/review/{}/evaluate/{}",
+                ap_tools_url, room_id, yaml.id
+            );
+            let result = async {
+                let resp = client
+                    .get(&url)
+                    .header("x-api-key", ap_tools_api_key)
+                    .send()
+                    .await
+                    .ok()?;
+                if !resp.status().is_success() {
+                    return None;
+                }
+                resp.json::<YamlEvalResult>().await.ok()
+            }
+            .await;
+            results.push((yaml.id, result));
+        }
+        results
+    } else {
+        vec![]
+    };
+    
     let game_display_names = {
         let index = index_manager.index.read().await;
         yamls
@@ -158,6 +238,7 @@ pub async fn room_inner<'a>(
         game_display_names,
         truncated_names,
         apx_room_info,
+        yaml_eval_results,
     })
 }
 
@@ -194,7 +275,14 @@ pub async fn room_as_user<'a>(
         ..session
     };
 
-    room_inner(room_id, ctx, impersonated_session, index_manager, lobby_config).await
+    room_inner(
+        room_id,
+        ctx,
+        impersonated_session,
+        index_manager,
+        lobby_config,
+    )
+    .await
 }
 
 #[derive(rocket::form::FromForm)]
