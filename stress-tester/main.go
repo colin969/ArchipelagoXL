@@ -20,16 +20,17 @@ import (
 )
 
 type Stats struct {
-	Connected         atomic.Int64
-	TrackersConnected atomic.Int64
-	Completed         atomic.Int64
-	TrackersCompleted atomic.Int64
-	ChecksSent        atomic.Int64
-	ChecksReceived    atomic.Int64
-	MsgsReceived      atomic.Int64
-	Errors            atomic.Int64
-	TrackersErrors    atomic.Int64
-	BadAuth           atomic.Int64
+	Connected            atomic.Int64
+	TrackersConnected    atomic.Int64
+	Completed            atomic.Int64
+	TrackersCompleted    atomic.Int64
+	ChecksSent           atomic.Int64
+	ChecksReceived       atomic.Int64
+	MsgsReceived         atomic.Int64
+	Errors               atomic.Int64
+	TrackersErrors       atomic.Int64
+	BadAuth              atomic.Int64
+	DataPackagesReceived atomic.Int64
 }
 
 func startStatsPrinter(ctx context.Context, stats *Stats, total int) {
@@ -51,7 +52,7 @@ func startStatsPrinter(ctx context.Context, stats *Stats, total int) {
 				trackersErrors := stats.TrackersErrors.Load()
 				clientsConnected := totalConnected - (completed + errors)
 				trackersConnected := toatlTrackersConnected - (trackersCompleted + trackersErrors)
-				log.Printf("[Progress] (clients=%d trackers=%d)  completed=%d/%d  checks_sent=%d  checks_processed=%d  send_rate=%d/s  msgs_recv=%d  errors=%d (auth: %d)",
+				log.Printf("[Progress] (clients=%d trackers=%d)  completed=%d/%d  checks_sent=%d  checks_processed=%d  send_rate=%d/s  msgs_recv=%d dpr=%d errors=%d (auth: %d)",
 					clientsConnected,
 					trackersConnected,
 					completed,
@@ -60,6 +61,7 @@ func startStatsPrinter(ctx context.Context, stats *Stats, total int) {
 					stats.ChecksReceived.Load(),
 					rate,
 					stats.MsgsReceived.Load(),
+					stats.DataPackagesReceived.Load(),
 					errors+trackersErrors,
 					stats.BadAuth.Load(),
 				)
@@ -71,13 +73,14 @@ func startStatsPrinter(ctx context.Context, stats *Stats, total int) {
 }
 
 type Config struct {
-	ServerURL          string
-	DataFilepath       string
-	Concurrency        int
-	CheckRate          int
-	Passwords          string
-	DisableCompression bool
-	ReducedTraffic     bool
+	ServerURL           string
+	DataFilepath        string
+	Concurrency         int
+	CheckRate           int
+	Passwords           string
+	DisableCompression  bool
+	ReducedTraffic      bool
+	RequestDataPackages bool
 }
 
 type PlayerSlot struct {
@@ -109,13 +112,14 @@ func run() error {
 	}
 
 	log.Printf("Starting stress tester with settings:")
-	log.Printf("  Server URL:          %s", cfg.ServerURL)
-	log.Printf("  Data filepath:       %s", cfg.DataFilepath)
-	log.Printf("  Concurrency:         %d", cfg.Concurrency)
-	log.Printf("  Check rate:          %d/s", cfg.CheckRate)
-	log.Printf("  Passwords file:      %v", cfg.Passwords != "")
-	log.Printf("  Disable compression: %v", cfg.DisableCompression)
-	log.Printf("  Reduced traffic:     %v", cfg.ReducedTraffic)
+	log.Printf("  Server URL:           %s", cfg.ServerURL)
+	log.Printf("  Data filepath:        %s", cfg.DataFilepath)
+	log.Printf("  Concurrency:          %d", cfg.Concurrency)
+	log.Printf("  Check rate:           %d/s", cfg.CheckRate)
+	log.Printf("  Passwords file:       %v", cfg.Passwords != "")
+	log.Printf("  Disable compression:  %v", cfg.DisableCompression)
+	log.Printf("  Reduced traffic:      %v", cfg.ReducedTraffic)
+	log.Printf("  Request datapackages: %v", cfg.RequestDataPackages)
 
 	slots, err := loadSlotData(cfg.DataFilepath)
 	if err != nil {
@@ -432,6 +436,31 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 		return fmt.Errorf("reading first message from AP: %w", err)
 	}
 
+	if cfg.RequestDataPackages && len(roomInfo) > 0 {
+		checksums, _ := roomInfo[0]["datapackage_checksums"].(map[string]any)
+		for game := range checksums {
+			if err := wsjson.Write(ctx, conn, []any{map[string]any{
+				"cmd":   "GetDataPackage",
+				"games": []string{game},
+			}}); err != nil {
+				return fmt.Errorf("sending GetDataPackage for %s: %w", game, err)
+			}
+			var dp []map[string]any
+			if err := wsjson.Read(ctx, conn, &dp); err != nil {
+				return fmt.Errorf("reading DataPackage for %s: %w", game, err)
+			}
+			if len(dp) > 0 {
+				if cmd, _ := dp[0]["cmd"].(string); cmd == "DataPackage" {
+					stats.DataPackagesReceived.Add(1)
+				} else {
+					log.Printf("unexpected response to GetDataPackage for %s: cmd=%q", game, cmd)
+				}
+			} else {
+				log.Printf("empty response to GetDataPackage for %s", game)
+			}
+		}
+	}
+
 	connectMsg := ConnectMessage{
 		Cmd:      "Connect",
 		Password: slotEntry.Password,
@@ -584,6 +613,7 @@ func getConfig() (*Config, error) {
 	passwords := parser.String("", "passwords", &argparse.Options{Default: "", Help: "Path to JSON file with per-slot passwords"})
 	disableCompression := parser.Flag("", "disable-compression", &argparse.Options{Help: "Do not use compression when connecting to the AP server"})
 	reducedTraffic := parser.Flag("", "reduced-traffic", &argparse.Options{Help: "Ask for reduced traffic for client connections"})
+	requestDataPackages := parser.Flag("", "request-datapackages", &argparse.Options{Help: "Trackers request each game's datapackage individually to stress test datapackage byte metrics"})
 
 	if err := parser.Parse(os.Args); err != nil {
 		fmt.Fprint(os.Stderr, parser.Usage(err))
@@ -591,13 +621,14 @@ func getConfig() (*Config, error) {
 	}
 
 	return &Config{
-		ServerURL:          *serverURL,
-		DataFilepath:       *dataFilepath,
-		Concurrency:        *concurrency,
-		CheckRate:          *checkRate,
-		Passwords:          *passwords,
-		DisableCompression: *disableCompression,
-		ReducedTraffic:     *reducedTraffic,
+		ServerURL:           *serverURL,
+		DataFilepath:        *dataFilepath,
+		Concurrency:         *concurrency,
+		CheckRate:           *checkRate,
+		Passwords:           *passwords,
+		DisableCompression:  *disableCompression,
+		ReducedTraffic:      *reducedTraffic,
+		RequestDataPackages: *requestDataPackages,
 	}, nil
 }
 
