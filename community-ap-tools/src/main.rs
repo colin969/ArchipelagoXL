@@ -421,7 +421,7 @@ async fn proxy_add_exclusion(
         .await?;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     let status = rocket::http::Status::from_code(response.status().as_u16())
         .unwrap_or(rocket::http::Status::InternalServerError);
@@ -459,7 +459,7 @@ async fn proxy_remove_exclusion(
         .await?;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     Ok(rocket::http::Status::from_code(response.status().as_u16())
         .unwrap_or(rocket::http::Status::InternalServerError))
@@ -496,7 +496,7 @@ async fn proxy_add_slot_exclusion(
         .await?;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     let status = rocket::http::Status::from_code(response.status().as_u16())
         .unwrap_or(rocket::http::Status::InternalServerError);
@@ -533,7 +533,7 @@ async fn proxy_remove_slot_exclusion(
         .await?;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     Ok(rocket::http::Status::from_code(response.status().as_u16())
         .unwrap_or(rocket::http::Status::InternalServerError))
@@ -567,7 +567,7 @@ async fn add_full_feed(
         .await?;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     Ok(rocket::http::Status::from_code(response.status().as_u16())
         .unwrap_or(rocket::http::Status::InternalServerError))
@@ -601,7 +601,7 @@ async fn remove_full_feed(
         .await?;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     Ok(rocket::http::Status::from_code(response.status().as_u16())
         .unwrap_or(rocket::http::Status::InternalServerError))
@@ -911,7 +911,7 @@ async fn gen_all_passwords(
     notify_proxy_password_refresh(lobby_room_id, config).await;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     Ok(())
 }
@@ -954,7 +954,7 @@ async fn set_password(
     notify_proxy_password_refresh(lobby_room_id, config).await;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     Ok(())
 }
@@ -1014,7 +1014,7 @@ async fn change_yaml_owner(
     notify_proxy_password_refresh(lobby_room_id, config).await;
 
     // Invalidate tracker info cache
-    *cache.0.lock().await = None;
+    cache.0.lock().await.remove(lobby_room_id);
 
     Ok(())
 }
@@ -1227,8 +1227,8 @@ pub struct Config {
     pub api_key: String,
 }
 
-pub struct TrackerInfoCache(pub Arc<tokio::sync::Mutex<Option<(Instant, Vec<MergedSlotInfo>)>>>);
-pub struct ApRoomCache(pub Arc<Mutex<Option<(Instant, TrackerInfo)>>>);
+pub struct TrackerInfoCache(pub Arc<tokio::sync::Mutex<HashMap<String, (Instant, Vec<MergedSlotInfo>)>>>);
+pub struct ApRoomCache(pub Arc<Mutex<HashMap<String, (Instant, TrackerInfo)>>>);
 pub struct RoomOwnerCache(pub Mutex<HashMap<Uuid, i64>>);
 pub struct SlotMappingCache(pub Mutex<HashMap<String, BTreeMap<usize, String>>>);
 
@@ -1351,8 +1351,8 @@ async fn main() -> crate::error::Result<()> {
         .manage(yaml_analysis_queue)
         .manage(queue_tokens)
         .manage(redis_pool)
-        .manage(TrackerInfoCache(Arc::new(tokio::sync::Mutex::new(None))))
-        .manage(ApRoomCache(Arc::new(Mutex::new(None))))
+        .manage(TrackerInfoCache(Arc::new(tokio::sync::Mutex::new(HashMap::new()))))
+        .manage(ApRoomCache(Arc::new(Mutex::new(HashMap::new()))))
         .manage(RoomOwnerCache(Mutex::new(HashMap::new())))
         .manage(SlotMappingCache(Mutex::new(HashMap::new())))
         .attach(OAuth2::<Discord>::fairing("discord"))

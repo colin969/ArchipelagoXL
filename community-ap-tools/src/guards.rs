@@ -321,12 +321,14 @@ impl<'r> FromRequest<'r> for ApxRoomInfo {
 impl<'r> FromRequest<'r> for ApRoom {
     type Error = crate::error::Error;
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let LobbyRoomId(lobby_room_id) = try_outcome!(LobbyRoomId::from_request(request).await);
+        let lobby_room_id_str = lobby_room_id.to_string();
         let cache = request.rocket().state::<ApRoomCache>().unwrap();
 
         // Return cached value if still fresh
         {
             let cached = cache.0.lock().unwrap();
-            if let Some((fetched_at, ref tracker_info)) = *cached {
+            if let Some((fetched_at, tracker_info)) = cached.get(&lobby_room_id_str) {
                 if fetched_at.elapsed() < AP_ROOM_CACHE_TTL {
                     return Outcome::Success(ApRoom {
                         tracker_info: TrackerInfo {
@@ -390,7 +392,7 @@ impl<'r> FromRequest<'r> for ApRoom {
             try_err_outcome!(parse_tracker(tracker_body, slot_map))
         };
 
-        *cache.0.lock().unwrap() = Some((Instant::now(), TrackerInfo {
+        cache.0.lock().unwrap().insert(lobby_room_id_str, (Instant::now(), TrackerInfo {
             slots: tracker_info.slots.clone(),
         }));
 

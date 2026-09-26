@@ -293,12 +293,22 @@ fn check_single_value(val: &Value, check: &RuleCheck) -> Result<bool> {
             if let Some(seq) = val.as_sequence() {
                 return Ok(seq.iter().any(|item| yaml_value_as_string(item) == *value));
             }
+            if let Some(map) = val.as_mapping() {
+                return Ok(map.iter().any(|(k, v)| {
+                    yaml_value_as_string(k) == *value && is_trueish(v)
+                }));
+            }
             let s = yaml_value_as_string(val);
             Ok(s.split(',').any(|part| part.trim() == value.as_str()))
         }
         RuleCheck::NotContains { value } => {
             if let Some(seq) = val.as_sequence() {
-                return Ok(seq.iter().any(|item| yaml_value_as_string(item) == *value));
+                return Ok(!seq.iter().any(|item| yaml_value_as_string(item) == *value));
+            }
+            if let Some(map) = val.as_mapping() {
+                return Ok(!map.iter().any(|(k, v)| {
+                    yaml_value_as_string(k) == *value && is_trueish(v)
+                }));
             }
             let s = yaml_value_as_string(val);
             Ok(!(s.split(',').any(|part| part.trim() == value.as_str())))
@@ -326,16 +336,23 @@ fn evaluate_check(val: &Value, check: &RuleCheck) -> Result<bool> {
         let looks_like_weighted = map.iter().all(|(_, v)| v.as_integer().is_some());
 
         if looks_like_weighted && !map.is_empty() {
-            for (key, weight) in map.iter() {
-                let w = weight.as_integer().unwrap_or(0);
-                if w == 0 {
-                    continue;
+            match check {
+                RuleCheck::Contains { .. } | RuleCheck::NotContains { .. } => {
+                    // Fall through to check_single_value
                 }
-                if check_single_value(key, check)? {
-                    return Ok(true);
+                _ => {
+                    for (key, weight) in map.iter() {
+                        let w = weight.as_integer().unwrap_or(0);
+                        if w == 0 {
+                            continue;
+                        }
+                        if check_single_value(key, check)? {
+                            return Ok(true);
+                        }
+                    }
+                    return Ok(false);
                 }
             }
-            return Ok(false);
         }
     }
 
@@ -347,6 +364,12 @@ pub fn evaluate_predicate(predicate: &Predicate, game_yaml: &Value) -> Result<bo
         Predicate::Check { path, check } => match check {
             RuleCheck::Exists => Ok(navigate_path(game_yaml, path).is_some()),
             RuleCheck::NotExists => Ok(navigate_path(game_yaml, path).is_none()),
+            RuleCheck::NotContains { .. } => {
+                let Some(val) = navigate_path(game_yaml, path) else {
+                    return Ok(true); // path missing = not contained = alert
+                };
+                evaluate_check(val, check)
+            }
             _ => {
                 let Some(val) = navigate_path(game_yaml, path) else {
                     return Ok(false);
@@ -1365,4 +1388,151 @@ mod tests {
         let result = evaluate_rule(&rule, &yaml, "Test");
         assert_eq!(result.outcome, Outcome::Pass);
     }
+
+    // Hitman rule tests
+    #[test]
+    fn test_contains_mapping_key_present_but_zero_passes() {
+        let yaml = parse_yaml(
+            "Test:\n  disable_annoying_locations:\n    skip_locations_with_extra_steps: 0\n",
+        );
+        let rule = Rule {
+            name: "Has extra steps".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "disable_annoying_locations".into(),
+                check: RuleCheck::Contains {
+                    value: "skip_locations_with_extra_steps".into(),
+                },
+            },
+            severity: Severity::Warning,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Pass);
+    }
+    
+    #[test]
+    fn test_not_contains_mapping_key_present_but_zero_alerts() {
+        let yaml = parse_yaml(
+            "Test:\n  disable_annoying_locations:\n    skip_locations_with_extra_steps: 0\n",
+        );
+        let rule = Rule {
+            name: "Missing extra steps".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "disable_annoying_locations".into(),
+                check: RuleCheck::NotContains {
+                    value: "skip_locations_with_extra_steps".into(),
+                },
+            },
+            severity: Severity::Warning,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Fail);
+    }    
+
+    #[test]
+    fn test_contains_mapping_key_present_alerts() {
+        let yaml = parse_yaml(
+            "Test:\n  disable_annoying_locations:\n    skip_locations_with_extra_steps: 1\n",
+        );
+        let rule = Rule {
+            name: "Has extra steps".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "disable_annoying_locations".into(),
+                check: RuleCheck::Contains {
+                    value: "skip_locations_with_extra_steps".into(),
+                },
+            },
+            severity: Severity::Warning,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Fail);
+    }
+
+    #[test]
+    fn test_not_contains_mapping_key_present_passes() {
+        let yaml = parse_yaml(
+            "Test:\n  disable_annoying_locations:\n    skip_locations_with_extra_steps: 1\n",
+        );
+        let rule = Rule {
+            name: "Missing extra steps".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "disable_annoying_locations".into(),
+                check: RuleCheck::NotContains {
+                    value: "skip_locations_with_extra_steps".into(),
+                },
+            },
+            severity: Severity::Warning,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Pass);
+    }
+
+    #[test]
+    fn test_contains_mapping_key_missing_passes() {
+        let yaml = parse_yaml(
+            "Test:\n  disable_annoying_locations:\n    skip_locations_with_extra_steps: 1\n",
+        );
+        let rule = Rule {
+            name: "Has wait time".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "disable_annoying_locations".into(),
+                check: RuleCheck::Contains {
+                    value: "skip_locations_with_wait_time".into(),
+                },
+            },
+            severity: Severity::Warning,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Pass);
+    }
+
+    #[test]
+    fn test_not_contains_mapping_key_missing_alerts() {
+        let yaml = parse_yaml(
+            "Test:\n  disable_annoying_locations:\n    skip_locations_with_extra_steps: 1\n",
+        );
+        let rule = Rule {
+            name: "Missing wait time".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "disable_annoying_locations".into(),
+                check: RuleCheck::NotContains {
+                    value: "skip_locations_with_wait_time".into(),
+                },
+            },
+            severity: Severity::Warning,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Fail);
+    }
+
+    #[test]
+    fn test_not_contains_parent_path_missing_alerts() {
+        let yaml = parse_yaml("Test:\n  other: true\n");
+        let rule = Rule {
+            name: "Missing section".into(),
+            game: None,
+            when: None,
+            then: Predicate::Check {
+                path: "disable_annoying_locations".into(),
+                check: RuleCheck::NotContains {
+                    value: "skip_locations_with_wait_time".into(),
+                },
+            },
+            severity: Severity::Warning,
+        };
+        let result = evaluate_rule(&rule, &yaml, "Test");
+        assert_eq!(result.outcome, Outcome::Fail);
+    }
+
 }

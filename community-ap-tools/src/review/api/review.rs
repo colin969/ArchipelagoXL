@@ -453,7 +453,7 @@ async fn get_tracker_info(
     // Check cache first
     let mut lock = cache.0.lock().await;
 
-    if let Some((cached_at, ref data)) = *lock {
+    if let Some((cached_at, data)) = lock.get(lobby_room_id) {
         if cached_at.elapsed() < TRACKER_CACHE_TTL {
             return Ok(Json(data.clone()));
         }
@@ -506,7 +506,7 @@ async fn get_tracker_info(
 
 
     // Save to cache
-    *lock = Some((Instant::now(), slots.clone()));
+    lock.insert(lobby_room_id.to_string(), (Instant::now(), slots.clone()));
 
     Ok(Json(slots))
 }
