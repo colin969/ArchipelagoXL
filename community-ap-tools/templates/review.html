@@ -536,7 +536,26 @@ function renderResults(data) {
         ));
     }
 
-    content.replaceChildren(h("table", null, thead, tbody));
+    const goodYamls = sorted.filter(y => y.analysis_status === "success");
+
+    const totalChecks = goodYamls.reduce((sum, y) => sum + (y.analysis_total_checks ?? 0), 0);
+    const totalStarting = goodYamls.reduce((sum, y) => sum + (y.analysis_starting_checks ?? 0), 0);
+
+    const totalPlayers = sorted.length;
+    const uniqueGames = new Set(sorted.map(y => y.game)).size;
+
+    const tfoot = h("tfoot", null,
+        h("tr", null,
+            h("td", { className: "muted" }, `${goodYamls.length} analysed`),
+            h("td", { className: "muted" }, `${totalPlayers} players`),
+            h("td", { className: "muted" }, `${uniqueGames} unique games`),
+            h("td", { className: "muted" }, goodYamls.length > 0 ? String(totalChecks) : "-"),
+            h("td", { className: "muted" }, goodYamls.length > 0 ? String(totalStarting) : "-"),
+            h("td", { colSpan: 4 }),
+        ),
+    );
+
+    content.replaceChildren(h("table", null, thead, tbody, tfoot));
 
     tbody.addEventListener("click", (e) => {
         if (e.target.closest(".status-select")) return;
