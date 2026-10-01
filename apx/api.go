@@ -151,6 +151,7 @@ type HostedRoom struct {
 	locationIdToName     map[string]map[int]string
 	checkedLocations     *CheckedLocations
 	sphereCache          *slotSphereCache
+	completeSphere1Mu    sync.Mutex
 	completeSphere1Slots map[int]struct{}
 	apRoomId             string
 	normalHandler        *apxHandler
@@ -1428,6 +1429,7 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 
 	// Check if status of incomplete slots has changed
 	checkedLocs := room.checkedLocations.Get()
+	room.completeSphere1Mu.Lock()
 	for slotId, locIDs := range sphere1 {
 		if _, done := room.completeSphere1Slots[int(slotId)]; done {
 			continue
@@ -1444,6 +1446,8 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 			result = append(result, slotId)
 		}
 	}
+	room.completeSphere1Mu.Unlock()
+
 	json.NewEncoder(w).Encode(result)
 }
 
