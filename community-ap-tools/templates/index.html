@@ -837,6 +837,7 @@ td {
                 passwordDisplay.style.cursor = "pointer"
                 passwordDisplay.addEventListener("click", () => {
                     navigator.clipboard.writeText(currentPassword);
+                    showToast("Password copied");
                 });
             } else {
                 passwordDisplay.innerText = "No password set"
