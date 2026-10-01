@@ -3,21 +3,67 @@
         <title>Ap Dashboard - {% block title %}{{ self.lobby_room_id }}{% endblock title %}</title>
         <link rel="stylesheet" href="/static/contrib/font-awesome/css/all.min.css">
         <link rel="stylesheet" href="/static/tabulator_site_dark.min.css">
+        <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
         <script src="/static/review-utils.js?ver={{ static_version }}"></script>
         <script src="/static/tabulator.min.js"></script>
+        <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+        <script>
+            function showToast(message, type = "success") {
+                Toastify({
+                    text: message,
+                    duration: 3500,
+                    gravity: "top",
+                    position: "right",
+                    style: {
+                        background: type === "error" ? "#610505" : "#2d6a2d",
+                    },
+                }).showToast();
+            }
+            // Stupid to add one INSIDE the dialog but stupid z indexing :(
+            function showLoading() {
+                const overlay = document.getElementById("loading-overlay");
+                overlay.style.display = "block";
+
+                // Inject a cover into any open modal too
+                const popup = document.querySelector("dialog[open]");
+                if (popup) {
+                    const inner = document.createElement("div");
+                    inner.id = "loading-overlay-inner";
+                    inner.style.cssText = "position:absolute;inset:0;z-index:9999;cursor:wait;background:rgba(0,0,0,0.5);";
+                    popup.style.position = "relative";
+                    popup.appendChild(inner);
+                }
+            }
+
+            function hideLoading() {
+                document.getElementById("loading-overlay").style.display = "none";
+
+                const inner = document.getElementById("loading-overlay-inner");
+                if (inner) inner.remove();
+            }
+        </script>
         <style>
+
+a {
+    text-decoration: none;
+}
+
+input[type="text"] {
+    background-color: #505053;
+    color: rgb(240, 240, 240);
+}
 
 body {
     width: 100%;
     min-height: 100%;
     margin: 0;
-    color: white;
+    color: rgb(240, 240, 240);
     background-color: rgb(25, 25, 25);
     font-family: Verdana, sans-serif;
 }
 
 #popup {
-    color: white;
+    color: rgb(240, 240, 240);
     background-color: rgb(25, 25, 25);
 }
 
@@ -27,7 +73,7 @@ table, tr, td {
 }
 table {
     margin-bottom: 1em;
-    color: white;
+    color: rgb(240, 240, 240);
 }
 td {
     padding: 2px;
@@ -70,6 +116,7 @@ td {
 }
 
 .button-row {
+    display: flex;
     flex-direction: row;
 }
 
@@ -99,7 +146,7 @@ td {
 }
 
 .tabulator-footer {
-    color: white !important;
+    color: rgb(240, 240, 240) !important;
 }
 
 .tabulator-menu {
@@ -109,23 +156,71 @@ td {
 .tabulator-menu-item:hover {
     background: rgb(80, 80, 80) !important;
 }
+
+.tabulator-row .tabulator-cell {
+    color: rgb(240, 240, 240) !important;
+}
+
+.simple-button {
+    min-height: 1.4em;
+    padding: 0.2rem 0.4rem;
+    font-size: 0.875em;
+    border: 1px solid;
+    user-select: none;
+    background-color: #38383e;
+    border-color: #47474d;
+    color: #f1f1f1;
+}
+.simple-button:hover {
+    background-color: #505053;
+    border-color: #6f6f75;
+}
+.simple-button:active {
+	background-color: #242426;
+	box-shadow: 0px -1px 0px 0px #09090a;
+}
+.simple-button:disabled {
+    color: var(--layout__disabled-text-color);
+}
+
+.title-header {
+    margin-top: 0rem;
+}
+
+#loading-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 999999;
+    background: rgba(0, 0, 0, 0.5);
+    cursor: wait;
+}
         </style>
     <script>
         window.lobby_root_url = "{{ lobby_root_url }}";
         window.lobby_room_id = "{{ lobby_room_id }}";
+        window.normal_addr = "{{ normal_addr }}";
+        window.reduced_addr = "{{ reduced_addr }}";
     </script>
     </head>
     <body id="main">
-
+        <div id="loading-overlay"></div>
         <div class="page-wrapper">
-            <h2>Helper Dashboard</h2>
+            <h2 class="title-header">Helper Dashboard</h2>
+
+            <div style="margin-bottom: 0.5rem; font-size: 0.9em; color: #ccc;">
+                <span>Normal: <code style="cursor: pointer;" title="Click to copy" onclick="navigator.clipboard.writeText('{{ normal_addr }}'); showToast('Copied Normal Addr')">{{ normal_addr }}</code></span>
+                &nbsp;&nbsp;
+                <span>Reduced: <code style="cursor: pointer;" title="Click to copy" onclick="navigator.clipboard.writeText('{{ reduced_addr }}'); showToast('Copied Reduced Addr')">{{ reduced_addr }}</code></span>
+            </div>            
+
             <div class="button-row">
-                <a href="{{ lobby_root_url}}/room/{{lobby_room_id}}" target="_blank" rel="noopener noreferrer"><button>Ionium Lobby</button></a>
-                <a href="/room/{{ lobby_room_id }}/review" target="_blank" rel="noopener noreferrer"><button>Yaml Review</button></a>
-                <button onclick="openDeathlinkProbabilityPopup()">Deathlink Probability</button>
-                <button onclick="openAllChecksTable()">View All Checks</button>
-                <button onclick="genAllPasswords()">Generate Passwords</button>
-                <button onclick="resetTable()">Reset Table</button>
+                <a href="{{ lobby_root_url}}/room/{{lobby_room_id}}" target="_blank" rel="noopener noreferrer"><div class="simple-button">Ionium Lobby</div></a>
+                <a href="/room/{{ lobby_room_id }}/review" target="_blank" rel="noopener noreferrer"><div class="simple-button">Yaml Review</div></a>
+                <div class="simple-button" onclick="openDeathlinkProbabilityPopup()">Deathlink Probability</div>
+                <div class="simple-button" onclick="openAllChecksTable()">View All Checks</div>
+                <div class="simple-button" onclick="genAllPasswords()">Generate Passwords</div>
+                <div class="simple-button" onclick="resetTable()">Reset Table</div>
             </div>
 
             <label>
@@ -144,7 +239,9 @@ td {
                 createTrackerTable("#review-table");
             </script>
 
-            <button onclick="refreshSlotsToPing()">Refresh Slots to Ping</button>
+            <div class="button-row">
+                <div class="simple-button" onclick="refreshSlotsToPing()">Refresh Slots to Ping</div>
+            </div>
             <div id="unconnected-slots">
                 Slots that have never sent a check:
                 <ul>
@@ -152,7 +249,9 @@ td {
                 </ul>
             </div>
 
-            <button onclick="refreshSphere1ToPing()">Refresh Slots to Ping</button>
+            <div class="button-row">
+                <div class="simple-button" onclick="refreshSphere1ToPing()">Refresh Slots to Ping</div>
+            </div>
             <div id="sphere1-incomplete-slots">
                 Slots that haven't finished their Sphere 1 checks:
                 <ul>
@@ -380,14 +479,15 @@ td {
             const popup = getPopup();
 
             const confirmationText = document.createElement("div");
-            const action = isIsolated ? "Allow bounces to other slots from " : "Limit bounces to own slot from "
+            const action = isIsolated ? "Allow bounces to other slots for " : "Limit bounces to own slot for "
             confirmationText.innerText = action + slotName + " playing " + slotGame + ". Are you sure?";
 
             const buttonContainer = document.createElement("div");
             buttonContainer.className = "button-row";
 
-            const yesButton = document.createElement("button")
+            const yesButton = document.createElement("div")
             yesButton.innerText = "Yes"
+            yesButton.className = "simple-button"
             yesButton.addEventListener("click", async () => {
                 const method = isIsolated ? 'DELETE' : 'POST';
                 const response = await fetch(`/api/dashboard/${window.lobby_room_id}/slot_bounce_exclusions/${slotId}`, { method });
@@ -400,43 +500,9 @@ td {
                 }
             })
 
-            const noButton = document.createElement("button")
+            const noButton = document.createElement("div")
             noButton.innerText = "No"
-            noButton.addEventListener("click", () => popup.remove())
-
-            buttonContainer.appendChild(yesButton)
-            buttonContainer.appendChild(noButton)
-
-            popup.appendChild(confirmationText)
-            popup.appendChild(buttonContainer)
-        }
-
-        function openDeathBlock(slotId, slotName, slotGame, isBlocked) {
-            const popup = getPopup();
-
-            const confirmationText = document.createElement("div");
-            const action = isBlocked ? "Allow Deaths from " : "Block Deaths from "
-            confirmationText.innerText = action + slotName + " playing " + slotGame + ". Are you sure?";
-
-            const buttonContainer = document.createElement("div");
-            buttonContainer.className = "button-row";
-
-            const yesButton = document.createElement("button")
-            yesButton.innerText = "Yes"
-            yesButton.addEventListener("click", async () => {
-                const method = isBlocked ? 'DELETE' : 'POST';
-                const response = await fetch(`/api/dashboard/${window.lobby_room_id}/bounce_exclusions/${slotId}/DeathLink`, { method });
-                if (response.ok) {
-                    forceReviewTableRefresh();
-                    popup.remove();
-                } else {
-                    alert("Failed to toggle - " + response.statusText);
-                    popup.remove();
-                }
-            })
-
-            const noButton = document.createElement("button")
-            noButton.innerText = "No"
+            noButton.className = "simple-button"
             noButton.addEventListener("click", () => popup.remove())
 
             buttonContainer.appendChild(yesButton)
@@ -483,8 +549,9 @@ td {
                     const tagSpan = document.createElement("span");
                     tagSpan.innerText = tag;
 
-                    const deleteBtn = document.createElement("button");
+                    const deleteBtn = document.createElement("div");
                     deleteBtn.innerText = "Remove";
+                    deleteBtn.className = "simple-button"
                     deleteBtn.addEventListener("click", async () => {
                         const res = await fetch(
                             `/api/dashboard/${window.lobby_room_id}/bounce_exclusions/${slotId}/${encodeURIComponent(tag)}`,
@@ -516,11 +583,13 @@ td {
             commonTagsRow.style.display = "flex";
             commonTagsRow.style.gap = "0.5rem";
             commonTagsRow.style.marginBottom = "10px";
+            commonTagsRow.className = "button-row"
             popup.appendChild(commonTagsRow);
 
             const commonTags = ["DeathLink", "TrapLink"];
             for (const commonTag of commonTags) {
-                const btn = document.createElement("button");
+                const btn = document.createElement("div");
+                btn.className = "simple-button"
                 btn.innerText = "+ " + commonTag;
                 btn.type = "button";
                 btn.addEventListener("click", async () => {
@@ -560,14 +629,20 @@ td {
             tagInput.style.display = "block";
             tagInput.style.marginBottom = "10px";
 
-            const submitButton = document.createElement("button");
+            const submitButtonRow = document.createElement("div");
+            submitButtonRow.className = "button-row";
+
+            const submitButton = document.createElement("div");
             submitButton.innerText = "Add Exclusion";
             submitButton.style.display = "block";
             submitButton.style.marginTop = "10px";
+            submitButton.className = "simple-button";
+            submitButton.addEventListener("click", () => form.requestSubmit());
 
             form.appendChild(addLabel);
             form.appendChild(tagInput);
-            form.appendChild(submitButton);
+            submitButtonRow.appendChild(submitButton);
+            form.appendChild(submitButtonRow);
 
             form.addEventListener("submit", async () => {
                 const tag = tagInput.value.trim();
@@ -684,14 +759,18 @@ td {
 
             const hintForm = document.createElement("form")
             hintForm.action = "javascript:void(0);"
+            hintForm.className = "button-row"
+            hintForm.style.marginTop = "1rem";
             const hintInput = document.createElement("input")
             hintInput.type = "text"
             hintInput.name = "hint"
             hintInput.setAttribute("autocomplete", "off")
             hintInput.setAttribute("list", "hint-datalist")
 
-            const hintButton = document.createElement("button")
-            hintButton.innerText = action + " " + ty
+            const hintButton = document.createElement("div")
+            hintButton.className = "simple-button"
+            hintButton.innerText = (action[0].toUpperCase() + action.slice(1)) + " " + ty
+            hintButton.addEventListener("click", () => hintForm.requestSubmit());
             const hintList = document.createElement("datalist")
             hintList.id = "hint-datalist"
 
@@ -714,12 +793,17 @@ td {
 
             hintForm.addEventListener("submit", () => {
                 actionUrl = `/api/dashboard/${window.lobby_room_id}/${action}/${ty}/${encodeURIComponent(slotName)}/${encodeURIComponent(hintInput.value)}`
+                showLoading();
                 fetch(actionUrl)
                 .then(() => {
-                    alert("Action submitted to queue")
+                    showToast("Action submitted to queue");
+                    popup && popup.close();
                 })
                 .catch(err => {
-                    alert(`Failed to complete action: ${err}`);
+                    showToast(`Failed to complete action: ${err}`, 'error');
+                })
+                .finally(() => {
+                    hideLoading();
                 });
             })
             popup.appendChild(hintText)

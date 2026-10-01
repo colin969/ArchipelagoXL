@@ -10,13 +10,15 @@ use rocket::{State, routes, serde::json::Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Config, TRACKER_CACHE_TTL, TrackerInfoCache, fetch_deathlinks, fetch_exclusions, fetch_full_feed_slots, fetch_incomplete_sphere1s, fetch_slot_exclusions};
 use crate::auth::{AdminSession, LoggedInSession, ModeratorSession};
 use crate::error;
-use crate::jobs::YamlAnalysisQueue;
 use crate::guards::{ApRoom, LobbyRoom, MergedSlotInfo};
+use crate::jobs::YamlAnalysisQueue;
 use crate::review::Role;
 use crate::review::db;
+use crate::{
+    Config, TRACKER_CACHE_TTL, TrackerInfoCache, fetch_incomplete_sphere1s, fetch_room_state,
+};
 
 #[derive(Deserialize)]
 struct SetRoomPresetRequest {
@@ -460,15 +462,14 @@ async fn get_tracker_info(
     }
 
     if lobby_room.yamls.len() != ap_room.tracker_info.slots.len() {
-        return Err(error::internal_server_error("The AP room slot number doesn't match the lobby, this won't work"));
+        return Err(error::internal_server_error(
+            "The AP room slot number doesn't match the lobby, this won't work",
+        ));
     }
 
     let room_id = lobby_room.id.to_string();
-    let full_feed_slots = fetch_full_feed_slots(config, &room_id).await.unwrap_or_default();
-    let deathlinks = fetch_deathlinks(config, &room_id).await.unwrap_or_default();
-    let exclusions = fetch_exclusions(config, &room_id).await.unwrap_or_default();
-    let slot_exclusons = fetch_slot_exclusions(config, &room_id).await.unwrap_or_default();
-    let incomplete_sphere1s: HashSet<usize> = fetch_incomplete_sphere1s(config, &room_id)    
+    let room_state = fetch_room_state(config, &room_id).await.unwrap_or_default();
+    let incomplete_sphere1s: HashSet<usize> = fetch_incomplete_sphere1s(config, &room_id)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -483,12 +484,18 @@ async fn get_tracker_info(
             let yaml = &lobby_room.yamls[slot.id - 1];
 
             MergedSlotInfo {
-                // It's moved for `name:` later, feels stupid but it works to put this line higher
-                deathlinks_sent: *deathlinks.get(&slot.id).unwrap_or(&0),
-                deathlink_excluded: exclusions.get(&slot.id).map_or(false, |slots| slots.contains(&deathlink_tag)),
-                bounce_tag_exclusions: exclusions.get(&slot.id).cloned().unwrap_or_default(),
+                deathlinks_sent: *room_state.deaths.get(&slot.id).unwrap_or(&0),
+                deathlink_excluded: room_state
+                    .bounce_tag_exclusions
+                    .get(&slot.id)
+                    .map_or(false, |tags| tags.contains(&deathlink_tag)),
+                bounce_tag_exclusions: room_state
+                    .bounce_tag_exclusions
+                    .get(&slot.id)
+                    .cloned()
+                    .unwrap_or_default(),
                 incomplete_sphere1: incomplete_sphere1s.contains(&slot.id),
-                slot_bounces_excluded: slot_exclusons.contains(&slot.id),
+                slot_bounces_excluded: room_state.slot_bounce_exclusions.contains(&slot.id),
                 id: slot.id,
                 name: slot.name,
                 game: slot.game,
@@ -499,11 +506,10 @@ async fn get_tracker_info(
                 discord_handle: yaml.discord_handle.clone(),
                 discord_id: yaml.discord_id.to_string(),
                 has_patch: yaml.has_patch,
-                full_feed: full_feed_slots.contains(&slot.id)
+                full_feed: room_state.full_feed_slots.contains(&slot.id),
             }
         })
         .collect();
-
 
     // Save to cache
     lock.insert(lobby_room_id.to_string(), (Instant::now(), slots.clone()));

@@ -56,6 +56,8 @@ pub struct RunIndexTpl {
     static_version: i64,
     lobby_room_id: Uuid,
     lobby_root_url: String,
+    normal_addr: String,
+    reduced_addr: String,
 }
 
 #[derive(Template, WebTemplate)]
@@ -78,6 +80,14 @@ struct ExclusionsResponse(HashMap<usize, Vec<String>>);
 
 #[derive(Deserialize, Debug)]
 struct SlotExclusionsResponse(Vec<usize>);
+
+#[derive(Deserialize, Debug, Default)]
+struct RoomStateResponse {
+    pub bounce_tag_exclusions: HashMap<usize, Vec<String>>,
+    pub slot_bounce_exclusions: Vec<usize>,
+    pub full_feed_slots: HashSet<usize>,
+    pub deaths: HashMap<usize, i32>,
+}
 
 #[derive(Deserialize, Serialize)]
 struct ProbabilityResponse {
@@ -156,9 +166,10 @@ async fn dashboard(
     config: &State<Config>,
 ) -> crate::error::Result<DashboardResponse> {
     if apx_room_info.disabled {
-        return Ok(DashboardResponse::Closed(
-            format!("Room {} is closed", lobby_room_id),
-        ));
+        return Ok(DashboardResponse::Closed(format!(
+            "Room {} is closed",
+            lobby_room_id
+        )));
     }
 
     if lobby_room.yamls.len() != ap_room.tracker_info.slots.len() {
@@ -177,6 +188,8 @@ async fn dashboard(
         static_version: config.static_version,
         lobby_room_id: lobby_room.id,
         lobby_root_url,
+        normal_addr: format!("ap{}.{}", apx_room_info.normal_id, config.apx_ws_root),
+        reduced_addr: format!("ap{}.{}", apx_room_info.reduced_id, config.apx_ws_root),
     };
 
     Ok(DashboardResponse::Ok(index))
@@ -204,6 +217,29 @@ async fn fetch_full_feed_slots(
 
     let raw: HashMap<usize, serde_json::Value> = response.json().await?;
     Ok(raw.into_keys().collect())
+}
+
+async fn fetch_room_state(
+    config: &Config,
+    room_id: &str,
+) -> crate::error::Result<RoomStateResponse> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{}/api/{}/state", apx_api_root, room_id))
+        .header("X-API-Key", apx_api_key)
+        .send()
+        .await?;
+
+    Ok(response.json().await?)
 }
 
 async fn fetch_deathlinks(
@@ -654,7 +690,7 @@ async fn set_deathlink_probability(
         .apx_api_key
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
-    
+
     let client = reqwest::Client::new();
     let response = client
         .post(format!(
@@ -1223,11 +1259,14 @@ pub struct Config {
     pub ap_admin_api_key: String,
     pub apx_api_root: Option<Url>,
     pub apx_api_key: Option<String>,
+    pub apx_ws_root: String,
     pub static_version: i64,
     pub api_key: String,
 }
 
-pub struct TrackerInfoCache(pub Arc<tokio::sync::Mutex<HashMap<String, (Instant, Vec<MergedSlotInfo>)>>>);
+pub struct TrackerInfoCache(
+    pub Arc<tokio::sync::Mutex<HashMap<String, (Instant, Vec<MergedSlotInfo>)>>>,
+);
 pub struct ApRoomCache(pub Arc<Mutex<HashMap<String, (Instant, TrackerInfo)>>>);
 pub struct RoomOwnerCache(pub Mutex<HashMap<Uuid, i64>>);
 pub struct SlotMappingCache(pub Mutex<HashMap<String, BTreeMap<usize, String>>>);
@@ -1261,6 +1300,7 @@ async fn main() -> crate::error::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok());
     let apx_api_key = std::env::var("APX_API_KEY").ok();
+    let apx_ws_root = std::env::var("APX_WS_ROOT").expect("Provide an APX_WS_ROOT env variable");
 
     let db_url = std::env::var("DATABASE_URL").expect("Provide a `DATABASE_URL` env variable");
     let db_pool = common::db::get_database_pool(&db_url, MIGRATIONS).await?;
@@ -1279,6 +1319,7 @@ async fn main() -> crate::error::Result<()> {
         ap_admin_api_key,
         apx_api_root,
         apx_api_key,
+        apx_ws_root,
         static_version,
         api_key,
     };
@@ -1351,7 +1392,9 @@ async fn main() -> crate::error::Result<()> {
         .manage(yaml_analysis_queue)
         .manage(queue_tokens)
         .manage(redis_pool)
-        .manage(TrackerInfoCache(Arc::new(tokio::sync::Mutex::new(HashMap::new()))))
+        .manage(TrackerInfoCache(Arc::new(tokio::sync::Mutex::new(
+            HashMap::new(),
+        ))))
         .manage(ApRoomCache(Arc::new(Mutex::new(HashMap::new()))))
         .manage(RoomOwnerCache(Mutex::new(HashMap::new())))
         .manage(SlotMappingCache(Mutex::new(HashMap::new())))

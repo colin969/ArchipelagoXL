@@ -263,6 +263,7 @@ function createTrackerTable(tableId)
         const discordId = row.getData().discord_id;
 
         navigator.clipboard.writeText(`<@${discordId}>`);
+        showToast("Copied Discord Mention");
     }
 
     const table = new Tabulator(tableId, {
@@ -338,6 +339,7 @@ function createTrackerTable(tableId)
                     const { lobby_slot_id } = row.getData();
                     url = `${window.lobby_root_url}/room/${window.lobby_room_id}/patch/${lobby_slot_id}`;
                     navigator.clipboard.writeText(url);
+                    showToast("Copied Patch URL");
                 }
             },
             {
@@ -488,7 +490,7 @@ function refreshSlotsToPing() {
         const seen = new Set();
         const neverConnected = [];
         for (const row of window.review_data) {
-            if (row["last_active"] == null && row["status"] == "Disconnected" && !seen.has(row["discord_id"])) {
+            if (row["checks"][0] == 0 && row["status"] == "Disconnected" && !seen.has(row["discord_id"])) {
                 seen.add(row["discord_id"]);
                 neverConnected.push([row["discord_handle"], row["discord_id"]]);
             }
@@ -513,7 +515,7 @@ function refreshSlotsToPing() {
             button.style.cursor = "pointer";
             button.innerHTML = '<i class="fa-solid fa-copy"></i>';
             button.onclick = function () {
-                navigator.clipboard.writeText(mentions + " you are not connected. If you need help please speak in the AP support channel. If you are connected in the meantime all good, you can ignore the ping");
+                navigator.clipboard.writeText(mentions + " you are disconnected and haven't sent any checks yet. If you need help please speak in the AP support channel. If you are connected in the meantime all good, you can ignore the ping");
             };
             li.appendChild(button);
     

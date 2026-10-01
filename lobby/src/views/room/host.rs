@@ -120,7 +120,10 @@ async fn host_room_start(
     let deathlink_disabled = form.deathlink_disabled.unwrap_or(false);
     let reduced_access = form.reduced_access.unwrap_or(false);
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
 
     if fetch_apx_room_info(&lobby_config.apx_root, &lobby_config.apx_api_key, &room.id.to_string())
         .await
@@ -181,7 +184,10 @@ async fn host_room_start(
         .text("deathlink_disabled", deathlink_disabled.to_string())
         .text("reduced_access", reduced_access.to_string());
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
     let resp = client
         .post(format!("{}/api/room", lobby_config.apx_root))
         .header("X-API-Key", &lobby_config.apx_api_key)

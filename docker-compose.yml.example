@@ -237,6 +237,7 @@ services:
       AP_ADMIN_API_KEY: "ap_changeme"
       APX_API_ROOT: "http://apx:9001"
       APX_API_KEY: "changeme"
+      APX_WS_ROOT: "example.com"
       YAML_ANALYSIS_QUEUE_TOKEN: "changeme"
       API_KEY: "changeme"
       ROCKET_CONFIG: "Rocket.community.toml"

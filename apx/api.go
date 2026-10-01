@@ -162,6 +162,13 @@ type HostedRoom struct {
 	serverPassword       string
 }
 
+type RoomState struct {
+	BounceTagExclusions  map[int][]string `json:"bounce_tag_exclusions"`
+	SlotBounceExclusions []int            `json:"slot_bounce_exclusions"`
+	FullFeedSlots        map[int]struct{} `json:"full_feed_slots"`
+	Deaths               map[int]int      `json:"deaths"`
+}
+
 type Deathlink struct {
 	Slot      string  `json:"slot"`
 	Source    string  `json:"source"`
@@ -250,6 +257,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	room := api.PathPrefix("/{roomId}").Subrouter()
+	room.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
 	room.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
 	room.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
 	room.HandleFunc("/refresh_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
@@ -1716,6 +1724,21 @@ func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (
 		return nil, false
 	}
 	return room, true
+}
+
+func (rm *RoomManager) handleRoomState(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(RoomState{
+		BounceTagExclusions:  room.apx.bounceInfo.GetTagExclusions(),
+		SlotBounceExclusions: room.apx.bounceInfo.GetSlotExclusions(),
+		Deaths:               room.apx.bounceInfo.Get(),
+		FullFeedSlots:        room.apx.fullFeed.Get(),
+	})
 }
 
 func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
