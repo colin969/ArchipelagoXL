@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,7 @@ type Stats struct {
 	TrackersErrors       atomic.Int64
 	BadAuth              atomic.Int64
 	DataPackagesReceived atomic.Int64
+	UnexpectedItemResets atomic.Int64
 }
 
 func startStatsPrinter(ctx context.Context, stats *Stats, total int) {
@@ -52,7 +54,7 @@ func startStatsPrinter(ctx context.Context, stats *Stats, total int) {
 				trackersErrors := stats.TrackersErrors.Load()
 				clientsConnected := totalConnected - (completed + errors)
 				trackersConnected := toatlTrackersConnected - (trackersCompleted + trackersErrors)
-				log.Printf("[Progress] (clients=%d trackers=%d)  completed=%d/%d  checks_sent=%d  checks_processed=%d  send_rate=%d/s  msgs_recv=%d dpr=%d errors=%d (auth: %d)",
+				log.Printf("[Progress] (clients=%d trackers=%d)  completed=%d/%d  checks_sent=%d  checks_processed=%d  send_rate=%d/s  msgs_recv=%d dpr=%d errors=%d (auth: %d) unexpected_item_resets=%d",
 					clientsConnected,
 					trackersConnected,
 					completed,
@@ -64,6 +66,7 @@ func startStatsPrinter(ctx context.Context, stats *Stats, total int) {
 					stats.DataPackagesReceived.Load(),
 					errors+trackersErrors,
 					stats.BadAuth.Load(),
+					stats.UnexpectedItemResets.Load(),
 				)
 			case <-ctx.Done():
 				return
@@ -197,7 +200,7 @@ func run() error {
 	completed := stats.Completed.Load()
 	errors := stats.Errors.Load()
 	trackersErrors := stats.TrackersErrors.Load()
-	log.Printf("  [Results] completed=%d/%d  checks_sent=%d  checks_processed=%d msgs_recv=%d  errors=%d (auth: %d)",
+	log.Printf("  [Results] completed=%d/%d  checks_sent=%d  checks_processed=%d msgs_recv=%d  errors=%d (auth: %d) unexpected_item_resets=%d",
 		completed,
 		len(slots),
 		currentChecksSent,
@@ -205,6 +208,7 @@ func run() error {
 		stats.MsgsReceived.Load(),
 		errors+trackersErrors,
 		stats.BadAuth.Load(),
+		stats.UnexpectedItemResets.Load(),
 	)
 
 	return nil
@@ -507,6 +511,127 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 
 	slotId := msg.Slot
 
+	// Storage simulation goroutine
+
+	storageErr := make(chan error, 1)
+	usesStorage := rand.Float64() < 0.5 // 50% odds to be doing it
+	if usesStorage {
+		go func() {
+			// Spread out start times
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(rand.Int63n(int64(5 * time.Second)))):
+			}
+
+			// Generate up to 200 keys, up to 5KB total
+			const maxKeys = 200
+			const maxTotalBytes = 5 * 1024
+
+			type keyType int
+			const (
+				keyTypeString keyType = iota
+				keyTypeInt
+			)
+
+			type keyMeta struct {
+				key     string
+				value   string // used for string keys
+				keyType keyType
+			}
+
+			keys := make([]keyMeta, 0, maxKeys)
+			totalBytes := 0
+			for i := range maxKeys {
+				valSize := 10 + rand.Intn(41)
+				if totalBytes+valSize > maxTotalBytes {
+					break
+				}
+
+				var km keyMeta
+				if rand.Float64() < 0.5 {
+					// String key
+					val := make([]byte, valSize)
+					if _, err := crand.Read(val); err != nil {
+						storageErr <- fmt.Errorf("generating random bytes: %w", err)
+						return
+					}
+					km = keyMeta{
+						key:     fmt.Sprintf("tracker_0_%d_%d", slotId, i),
+						value:   fmt.Sprintf("%x", val),
+						keyType: keyTypeString,
+					}
+				} else {
+					// Int key
+					km = keyMeta{
+						key:     fmt.Sprintf("tracker_0_%d_%d", slotId, i),
+						keyType: keyTypeInt,
+					}
+				}
+				keys = append(keys, km)
+				totalBytes += valSize
+			}
+
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					km := keys[rand.Intn(len(keys))]
+
+					var ops []map[string]any
+					if km.keyType == keyTypeString {
+						// String keys: always replace with another string
+						val := make([]byte, 10+rand.Intn(41))
+						if _, err := crand.Read(val); err != nil {
+							storageErr <- fmt.Errorf("generating random bytes: %w", err)
+							return
+						}
+						ops = []map[string]any{
+							{"operation": "replace", "value": fmt.Sprintf("%x", val)},
+						}
+					} else {
+						// Int keys: 2% pow, 50% replace, 24% add, 24% sub
+						r := rand.Float64()
+						switch {
+						case r < 0.02:
+							ops = []map[string]any{
+								{"operation": "pow", "value": 2},
+							}
+						case r < 0.52:
+							ops = []map[string]any{
+								{"operation": "replace", "value": rand.Intn(1000)},
+							}
+						case r < 0.76:
+							ops = []map[string]any{
+								{"operation": "add", "value": 1},
+							}
+						default:
+							ops = []map[string]any{
+								{"operation": "add", "value": -1},
+							}
+						}
+					}
+
+					msg := map[string]any{
+						"cmd":        "Set",
+						"key":        km.key,
+						"default":    0,
+						"want_reply": false,
+						"operations": ops,
+					}
+					if err := wsjson.Write(ctx, conn, []any{msg}); err != nil {
+						storageErr <- fmt.Errorf("sending Set: %w", err)
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	// Now we're connected, we can start sending checks and receiving updates
 
 	missingLocations := msg.MissingLocations
@@ -525,6 +650,7 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 
 	// Wait for responses to know how many the server has checked
 	go func() {
+		firstReceivedItems := true
 		for {
 			var msgs []map[string]any
 			if err := wsjson.Read(ctx, conn, &msgs); err != nil {
@@ -534,26 +660,34 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 			for _, m := range msgs {
 				cmd, _ := m["cmd"].(string)
 				stats.MsgsReceived.Add(1)
-				if cmd != "RoomUpdate" {
-					continue
-				}
-				raw, err := json.Marshal(m)
-				if err != nil {
-					readErr <- fmt.Errorf("marshalling RoomUpdate: %w", err)
-					return
-				}
-				var update RoomUpdateMessage
-				if err := json.Unmarshal(raw, &update); err != nil {
-					readErr <- fmt.Errorf("unmarshalling RoomUpdate: %w", err)
-					return
-				}
-				for _, id := range update.CheckedLocations {
-					checkedLocations[id] = struct{}{}
-				}
-				// stats.ChecksReceived.Add(int64(len(update.CheckedLocations)))
-				if len(checkedLocations) >= totalLocations {
-					close(allChecked)
-					return
+
+				switch cmd {
+				case "ReceivedItems":
+					index, _ := m["index"].(float64) // JSON numbers decode as float64
+					if index == 0 && !firstReceivedItems {
+						stats.UnexpectedItemResets.Add(1)
+						log.Printf("[WARN] tracker %s (slot %d) received ReceivedItems with index=0 after connect", slotEntry.PlayerName, slotId)
+					}
+					firstReceivedItems = false
+
+				case "RoomUpdate":
+					raw, err := json.Marshal(m)
+					if err != nil {
+						readErr <- fmt.Errorf("marshalling RoomUpdate: %w", err)
+						return
+					}
+					var update RoomUpdateMessage
+					if err := json.Unmarshal(raw, &update); err != nil {
+						readErr <- fmt.Errorf("unmarshalling RoomUpdate: %w", err)
+						return
+					}
+					for _, id := range update.CheckedLocations {
+						checkedLocations[id] = struct{}{}
+					}
+					if len(checkedLocations) >= totalLocations {
+						close(allChecked)
+						return
+					}
 				}
 			}
 		}
