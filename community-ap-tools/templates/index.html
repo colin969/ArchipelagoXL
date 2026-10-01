@@ -400,8 +400,9 @@ td {
                     const nameSpan = document.createElement("span");
                     nameSpan.innerText = altName;
 
-                    const deleteBtn = document.createElement("button");
+                    const deleteBtn = document.createElement("div");
                     deleteBtn.innerText = "Delete";
+                    deleteBtn.className = "simple-button";
                     deleteBtn.addEventListener("click", async () => {
                         const res = await fetch(
                             `/api/dashboard/${window.lobby_room_id}/alt_connect_name/${encodeURIComponent(altName)}`,
@@ -435,14 +436,20 @@ td {
             altNameInput.style.display = "block";
             altNameInput.style.marginBottom = "10px";
 
-            const submitButton = document.createElement("button");
+            const submitButtonRow = document.createElement("div");
+            submitButtonRow.className = "button-row";
+
+            const submitButton = document.createElement("div");
             submitButton.innerText = "Add Alt Name";
             submitButton.style.display = "block";
             submitButton.style.marginTop = "10px";
+            submitButton.className = "simple-button";
+            submitButton.addEventListener("click", () => form.requestSubmit());
 
             form.appendChild(altNameLabel);
             form.appendChild(altNameInput);
-            form.appendChild(submitButton);
+            submitButtonRow.appendChild(submitButton);
+            form.appendChild(submitButtonRow);
 
             form.addEventListener("submit", async () => {
                 const altName = altNameInput.value.trim();
@@ -687,8 +694,9 @@ td {
             const buttonContainer = document.createElement("div");
             buttonContainer.className = "button-row";
 
-            const yesButton = document.createElement("button")
+            const yesButton = document.createElement("div")
             yesButton.innerText = "Yes"
+            yesButton.className = "simple-button"
             yesButton.addEventListener("click", async () => {
                 const method = isFullFeed ? 'DELETE' : 'POST';
                 const response = await fetch(`/api/dashboard/${window.lobby_room_id}/full_feed/${slotId}`, { method });
@@ -701,8 +709,9 @@ td {
                 }
             })
 
-            const noButton = document.createElement("button")
+            const noButton = document.createElement("div")
             noButton.innerText = "No"
+            noButton.className = "simple-button"
             noButton.addEventListener("click", () => popup.remove())
 
             buttonContainer.appendChild(yesButton)
@@ -833,24 +842,38 @@ td {
                 passwordDisplay.innerText = "No password set"
             }
 
-            const generateButton = document.createElement("button")
+            const btnRow = document.createElement("div");
+            btnRow.className = "button-row";
+
+            const generateButton = document.createElement("div")
             generateButton.innerText = "Generate New Password"
             generateButton.style.marginRight = "10px"
+            generateButton.className = "simple-button";
             generateButton.addEventListener("click", () => {
                 const newPassword = generatePassword()
                 setPassword(yamlId, newPassword)
+                .then(() => {
+                    currentPassword = newPassword;
+                    passwordDisplay.innerText = "Current password: " + currentPassword;
+                    passwordDisplay.style.cursor = "pointer"
+                });
             })
 
-            const removeButton = document.createElement("button")
+            const removeButton = document.createElement("div")
             removeButton.innerText = "Remove Password"
+            removeButton.className = "simple-button";
             removeButton.addEventListener("click", () => {
                 setPassword(yamlId, null)
+                .then(() => {
+                    popup && popup.close();
+                })
             })
 
             popup.appendChild(title)
             popup.appendChild(passwordDisplay)
-            popup.appendChild(generateButton)
-            popup.appendChild(removeButton)
+            btnRow.appendChild(generateButton)
+            btnRow.appendChild(removeButton)
+            popup.appendChild(btnRow)
         }
 
         function genAllPasswords() {
@@ -905,7 +928,7 @@ td {
 
         function setPassword(yamlId, password) {
             const url = new URL(`/api/dashboard/${window.lobby_room_id}/set_password/${yamlId}`, document.location)
-            fetch(url, {
+            return fetch(url, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -914,8 +937,11 @@ td {
             })
             .then((response) => {
                 if (response.ok) {
-                    alert("Password changed");
-                    popup && popup.close();
+                    if (password === null) {
+                        showToast("Password removed");
+                    } else {
+                        showToast("Password changed");
+                    }
                 } else {
                     alert("Failed to update password")
                 }
@@ -952,16 +978,22 @@ td {
             confirmInput.style.display = "block"
             confirmInput.style.marginBottom = "10px"
 
-            const submitButton = document.createElement("button")
+            const submitButtonRow = document.createElement("div");
+            submitButtonRow.className = "button-row";
+
+            const submitButton = document.createElement("div")
             submitButton.innerText = "Change Owner"
             submitButton.style.display = "block"
             submitButton.style.marginTop = "10px"
+            submitButton.className = "simple-button"
+            submitButton.addEventListener("click", () => form.requestSubmit());
 
             form.appendChild(discordIdLabel)
             form.appendChild(discordIdInput)
             form.appendChild(confirmLabel)
             form.appendChild(confirmInput)
-            form.appendChild(submitButton)
+            submitButtonRow.appendChild(submitButton)
+            form.appendChild(submitButtonRow)
 
             form.addEventListener("submit", () => {
                 if (confirmInput.value !== slotName) {
@@ -988,7 +1020,7 @@ td {
                 })
                 .then((response) => {
                     if (response.ok) {
-                        alert("Owner changed")
+                        showToast("Owner changed")
                         popup && popup.close();
                         forceReviewTableRefresh();
                     } else {
