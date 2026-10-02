@@ -166,7 +166,7 @@ type HostedRoom struct {
 type RoomState struct {
 	BounceTagExclusions  map[int][]string `json:"bounce_tag_exclusions"`
 	SlotBounceExclusions []int            `json:"slot_bounce_exclusions"`
-	FullFeedSlots        map[int]struct{} `json:"full_feed_slots"`
+	FullFeedSlots        []int            `json:"full_feed_slots"`
 	Deaths               map[int]int      `json:"deaths"`
 }
 
@@ -1004,6 +1004,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 func (rm *RoomManager) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		next.ServeHTTP(w, r)
 		route := mux.CurrentRoute(r)
 		path, _ := route.GetPathTemplate()
@@ -1736,12 +1737,18 @@ func (rm *RoomManager) handleRoomState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fullFeedMap := room.apx.fullFeed.Get()
+	fullFeedSlots := make([]int, 0, len(fullFeedMap))
+	for slotId := range fullFeedMap {
+		fullFeedSlots = append(fullFeedSlots, slotId)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(RoomState{
 		BounceTagExclusions:  room.apx.bounceInfo.GetTagExclusions(),
 		SlotBounceExclusions: room.apx.bounceInfo.GetSlotExclusions(),
 		Deaths:               room.apx.bounceInfo.Get(),
-		FullFeedSlots:        room.apx.fullFeed.Get(),
+		FullFeedSlots:        fullFeedSlots,
 	})
 }
 

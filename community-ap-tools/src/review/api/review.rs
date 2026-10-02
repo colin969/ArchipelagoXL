@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::{AdminSession, LoggedInSession, ModeratorSession};
-use crate::error;
+use crate::{RoomStateResponse, error};
 use crate::guards::{ApRoom, LobbyRoom, MergedSlotInfo};
 use crate::jobs::YamlAnalysisQueue;
 use crate::review::Role;
@@ -468,7 +468,23 @@ async fn get_tracker_info(
     }
 
     let room_id = lobby_room.id.to_string();
-    let room_state = fetch_room_state(config, &room_id).await.unwrap_or_default();
+    let room_state = match fetch_room_state(config, &room_id).await {
+        Ok(state) => {
+            eprintln!(
+                "[TRACKER] room_state for {}: {} tag exclusions, {} slot exclusions, {} full_feed, {} deaths",
+                room_id,
+                state.bounce_tag_exclusions.len(),
+                state.slot_bounce_exclusions.len(),
+                state.full_feed_slots.len(),
+                state.deaths.len(),
+            );
+            state
+        }
+        Err(e) => {
+            eprintln!("[TRACKER] fetch_room_state failed for {}: {:?}", room_id, e);
+            RoomStateResponse::default()
+        }
+    };
     let incomplete_sphere1s: HashSet<usize> = fetch_incomplete_sphere1s(config, &room_id)
         .await
         .unwrap_or_default()
