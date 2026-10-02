@@ -514,7 +514,7 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 	// Storage simulation goroutine
 
 	storageErr := make(chan error, 1)
-	usesStorage := rand.Float64() < 0.5 // 50% odds to be doing it
+	usesStorage := rand.Float64() < 0.25 // 25% odds to be doing it
 	if usesStorage {
 		go func() {
 			// Spread out start times

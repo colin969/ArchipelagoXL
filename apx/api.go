@@ -872,9 +872,9 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		loadPasswordsIntoStore(connRegistry, passwordStore, roomPlayers, slots)
 	}
 	var lokiLogger *LokiLogger
-	if rm.config.LokiEndpoint != "" {
-		lokiLogger = NewLokiLogger(rm.config.LokiEndpoint, lobbyRoomId, rm.metrics)
-	}
+	// if rm.config.LokiEndpoint != "" {
+	// 	lokiLogger = NewLokiLogger(rm.config.LokiEndpoint, lobbyRoomId, rm.metrics)
+	// }
 
 	var lastActivity atomic.Int64
 	lastActivity.Store(time.Now().Unix())

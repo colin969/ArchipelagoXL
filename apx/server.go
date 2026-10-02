@@ -576,6 +576,7 @@ type Permission int
 
 const (
 	wsReadLimit = 1 << 24 // 16 MB
+	dpReadLimit = 1 << 26 // 64 MB
 )
 
 type apxHandler struct {

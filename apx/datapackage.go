@@ -297,7 +297,7 @@ func (s ApxRoom) fetchDataPackagesFromAPServer(ctx context.Context, games []stri
 		return nil, fmt.Errorf("sending GetDataPackage: %w", err)
 	}
 
-	apConn.SetReadLimit(wsReadLimit)
+	apConn.SetReadLimit(dpReadLimit)
 
 	var responses []map[string]any
 	if err := wsjson.Read(ctx, apConn, &responses); err != nil {
