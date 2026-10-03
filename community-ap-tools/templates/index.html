@@ -500,6 +500,7 @@ td {
                 const response = await fetch(`/api/dashboard/${window.lobby_room_id}/slot_bounce_exclusions/${slotId}`, { method });
                 if (response.ok) {
                     forceReviewTableRefresh();
+                    showToast("Toggle slot bounce exclusion");
                     popup.remove();
                 } else {
                     alert("Failed to toggle - " + response.statusText);
@@ -702,7 +703,7 @@ td {
                 const response = await fetch(`/api/dashboard/${window.lobby_room_id}/full_feed/${slotId}`, { method });
                 if (response.ok) {
                     forceReviewTableRefresh();
-                    showToast("Changed slot isolation");
+                    showToast("Toggled normal access");
                     popup.remove();
                 } else {
                     alert("Failed to toggle - " + response.statusText);
@@ -730,10 +731,10 @@ td {
 
             const confirmationForm = document.createElement("form")
             confirmationForm.action = "javascript:void(0);"
+            confirmationForm.className = "button-row";
+            confirmationForm.style.marginTop = "1rem";
             const confirmationInput = document.createElement("input")
             confirmationInput.type = "text"
-            confirmationButton.className = "button-row";
-            confirmationInput.style.marginTop = "1rem";
 
             const confirmationButton = document.createElement("div")
             confirmationButton.innerText = "Release"

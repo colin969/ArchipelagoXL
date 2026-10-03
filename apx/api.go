@@ -912,6 +912,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		debugTap:         debugTap,
 		lokiLogger:       lokiLogger,
 		perSlotPasswords: perSlotPasswords,
+		ipLimiter:        newIPRateLimiter(),
 		logDeath: func(slotId int) {
 			if err := rm.store.IncrementSlotDeathCount(lobbyRoomId, slotId); err != nil {
 				log.Printf("failed to persist death count for room %s slot %d: %v", lobbyRoomId, slotId, err)

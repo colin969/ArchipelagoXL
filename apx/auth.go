@@ -79,8 +79,8 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		msg.Name = *realName
 	}
 
-	log.Printf("[WS] connect: game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
-		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData)
+	log.Printf("[WS] connect: game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v addr=%s",
+		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData, connState.remoteAddr)
 
 	connState.slotName = &msg.Name
 

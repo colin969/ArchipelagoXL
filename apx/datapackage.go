@@ -331,6 +331,7 @@ func (s ApxRoom) sendDataPackages(ctx context.Context, client *websocket.Conn, g
 		}
 		if s.metrics != nil {
 			s.metrics.datapackageBytesSent.WithLabelValues(s.lobbyRoomId).Add(float64(len(raw)))
+			s.metrics.bytesSent.WithLabelValues(s.lobbyRoomId, "__datapackage__", "__datapackage__").Add(float64(len(raw)))
 		}
 		return client.Write(ctx, websocket.MessageText, raw)
 	}

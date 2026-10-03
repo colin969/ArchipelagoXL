@@ -423,7 +423,7 @@ function createTrackerTable(tableId)
             }, hozAlign: "center", formatter: "tickCross" }, 
             { title: "Last Active", field: "last_activity", formatter: lastActivityFormatter, sorter: lastActivitySorter },
             { title: "Discord Handle", field: "discord_handle", cellClick: onDiscordHandleClick, headerFilter: "input" },
-            { title: "Deaths Allowed", field: "death_allowed", mutator: function (value, data) {
+            { title: "DL Allowed", field: "death_allowed", mutator: function (value, data) {
                 return !data.deathlink_excluded;
             }, hozAlign: "center", formatter: "tickCross" },
             { title: "Deaths", field: "deathlinks_sent", bottomCalc: "sum" },

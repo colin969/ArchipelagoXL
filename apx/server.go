@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"golang.org/x/time/rate"
 )
 
 type fullFeedStore struct {
@@ -194,6 +196,30 @@ type ApxRoom struct {
 	debugTap         *debugTap
 	lokiLogger       *LokiLogger
 	logDeath         func(slotId int)
+	ipLimiter        *IPRateLimiter
+}
+
+// Simple per-ip rate limiter for the WS rooms
+type IPRateLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*rate.Limiter
+}
+
+func (rl *IPRateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	lim, ok := rl.clients[ip]
+	if !ok {
+		lim = rate.NewLimiter(rate.Every(time.Second), 5)
+		rl.clients[ip] = lim
+	}
+	return lim.Allow()
+}
+
+func newIPRateLimiter() *IPRateLimiter {
+	return &IPRateLimiter{
+		clients: make(map[string]*rate.Limiter),
+	}
 }
 
 // No strict lock, but this MUST be immutable to be safe
@@ -554,6 +580,7 @@ type connectionState struct {
 	registeredClient        *registeredClient
 	authFailCount           int
 	prevDatapackageGamesReq string
+	remoteAddr              string
 	// Retry storm may happen before auth, we can read this after connect for metrics
 	isRetryStormClient bool
 	largeDpRequested   int // Max that were requested at once before auth
@@ -596,6 +623,15 @@ func (h apxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool) {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	// TODO: Simple whitelisting for our own stupid services. Dunno
+	if ip != "38.246.56.120" {
+		if s.ipLimiter != nil && !s.ipLimiter.Allow(ip) {
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+	}
+
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// Adds about 32mb memory usage per 1k connections, debatble CPU usage
 		CompressionMode:    websocket.CompressionContextTakeover,
@@ -628,6 +664,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		reduced:              reduced,
 		pendingDatapackGames: []string{},
 		authFailCount:        0,
+		remoteAddr:           r.RemoteAddr,
 	}
 
 	// Start keepalive ping pong

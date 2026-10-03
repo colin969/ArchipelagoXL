@@ -152,8 +152,8 @@ func run() error {
 	var stats Stats
 	startStatsPrinter(ctx, &stats, len(slots))
 
-	// Try and ramp up clients slowly over 30 seconds
-	connLimiter := rate.NewLimiter(rate.Limit(cfg.Concurrency/30), 1)
+	// Try and ramp up clients slowly over 3 minutes
+	connLimiter := rate.NewLimiter(rate.Limit(cfg.Concurrency/120), 1)
 	sem := make(chan struct{}, cfg.Concurrency)
 	var wg sync.WaitGroup
 
@@ -514,7 +514,7 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 	// Storage simulation goroutine
 
 	storageErr := make(chan error, 1)
-	usesStorage := rand.Float64() < 0.25 // 25% odds to be doing it
+	usesStorage := rand.Float64() < 0.2 // 20% odds to be doing it
 	if usesStorage {
 		go func() {
 			// Spread out start times

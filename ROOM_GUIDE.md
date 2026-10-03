@@ -99,7 +99,7 @@ The table displays the current status of every slot in the Archipelago room:
 | Sphere 1 | Whether they've done all Sphere 1 checks |
 | Last Active | Time since last new check found |
 | Discord Handle | Click to copy their id as a mention |
-| Deaths Allowed | Whether DeathLinks will be dropped by the server if they send them |
+| DL Allowed | Whether DeathLinks will be dropped by the server if they send them |
 | Deaths | DeathLinks sent, including those dropped |
 | Isolated | Prevents all bounce packets being sent to or received from other slots |
 | Normal Access | Whether they can connect to the 'Normal Addr' listed on the Host page |

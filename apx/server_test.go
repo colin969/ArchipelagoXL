@@ -786,3 +786,24 @@ func TestConnectNames(t *testing.T) {
 		}
 	})
 }
+
+func TestIPRateLimiter(t *testing.T) {
+	rl := newIPRateLimiter()
+
+	// Burst of 5 should all pass
+	for i := range 5 {
+		if !rl.Allow("1.2.3.4") {
+			t.Fatalf("expected Allow to return true on attempt %d", i+1)
+		}
+	}
+
+	// 6th should be denied
+	if rl.Allow("1.2.3.4") {
+		t.Fatal("expected Allow to return false after burst exhausted")
+	}
+
+	// Different IP should still have full burst
+	if !rl.Allow("5.6.7.8") {
+		t.Fatal("expected Allow to return true for different IP")
+	}
+}
