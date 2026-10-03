@@ -702,6 +702,7 @@ td {
                 const response = await fetch(`/api/dashboard/${window.lobby_room_id}/full_feed/${slotId}`, { method });
                 if (response.ok) {
                     forceReviewTableRefresh();
+                    showToast("Changed slot isolation");
                     popup.remove();
                 } else {
                     alert("Failed to toggle - " + response.statusText);

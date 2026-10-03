@@ -93,7 +93,11 @@ func (ds *bounceInfoStore) GetSlotExclusions() []int {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 	// Make a safe copy of it to return
-	return slices.Collect(maps.Keys(ds.ownSlotOnly))
+	result := slices.Collect(maps.Keys(ds.ownSlotOnly))
+	if result == nil {
+		return []int{}
+	}
+	return result
 }
 
 func (ds *bounceInfoStore) LimitToOwnSlot(slotId int) {

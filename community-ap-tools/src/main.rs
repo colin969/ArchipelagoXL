@@ -82,6 +82,7 @@ struct ExclusionsResponse(HashMap<usize, Vec<String>>);
 struct SlotExclusionsResponse(Vec<usize>);
 
 #[derive(Deserialize, Debug, Default)]
+#[serde(default)]
 struct RoomStateResponse {
     pub bounce_tag_exclusions: HashMap<usize, Vec<String>>,
     pub slot_bounce_exclusions: Vec<usize>,
@@ -239,7 +240,8 @@ async fn fetch_room_state(
         .send()
         .await?;
 
-    Ok(response.json().await?)
+    let raw = response.text().await?;
+    Ok(serde_json::from_str(&raw)?)
 }
 
 async fn fetch_deathlinks(
