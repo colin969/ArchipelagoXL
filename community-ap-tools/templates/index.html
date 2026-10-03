@@ -732,9 +732,13 @@ td {
             confirmationForm.action = "javascript:void(0);"
             const confirmationInput = document.createElement("input")
             confirmationInput.type = "text"
+            confirmationButton.className = "button-row";
+            confirmationInput.style.marginTop = "1rem";
 
-            const confirmationButton = document.createElement("button")
+            const confirmationButton = document.createElement("div")
             confirmationButton.innerText = "Release"
+            confirmationButton.className = "simple-button"
+            confirmationButton.addEventListener("click", () => confirmationForm.requestSubmit());
 
             confirmationForm.appendChild(confirmationInput)
             confirmationForm.appendChild(confirmationButton)
@@ -749,7 +753,8 @@ td {
                 actionUrl = `/api/dashboard/${window.lobby_room_id}/release/${encodeURIComponent(slotName)}`;
                 fetch(actionUrl)
                 .then(() => {
-                    alert("Release action submitted to queue")
+                    showToast("Release action submitted to queue");
+                    popup && popup.close();
                 })
                 .catch(err => {
                     alert(`Failed to complete release action: ${err}`);
