@@ -409,6 +409,63 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 		return nil, fmt.Errorf("locations: %w", err)
 	}
 
+	// datapackage: dict[string -> GamesPackage]
+	raw, err = mustDict("datapackage")
+	if err != nil {
+		return nil, fmt.Errorf("datapackage: %w", err)
+	}
+	md.DataPackage, err = toStringDict(raw, func(v any) (GamesPackage, error) {
+		inner, ok := v.(*types.Dict)
+		if !ok {
+			return GamesPackage{}, fmt.Errorf("expected dict, got %T", v)
+		}
+
+		gp := GamesPackage{}
+
+		if v, ok := dictGet(inner, "checksum"); ok {
+			gp.Checksum, _ = v.(string)
+		}
+
+		if v, ok := dictGet(inner, "item_name_to_id"); ok {
+			d, ok := v.(*types.Dict)
+			if !ok {
+				return GamesPackage{}, fmt.Errorf("item_name_to_id: expected dict, got %T", v)
+			}
+			gp.ItemNameToID, err = toStringDict(d, func(v any) (int, error) {
+				n, ok := toInt(v)
+				if !ok {
+					return 0, fmt.Errorf("expected int, got %T", v)
+				}
+				return n, nil
+			})
+			if err != nil {
+				return GamesPackage{}, fmt.Errorf("item_name_to_id: %w", err)
+			}
+		}
+
+		if v, ok := dictGet(inner, "location_name_to_id"); ok {
+			d, ok := v.(*types.Dict)
+			if !ok {
+				return GamesPackage{}, fmt.Errorf("location_name_to_id: expected dict, got %T", v)
+			}
+			gp.LocationNameToID, err = toStringDict(d, func(v any) (int, error) {
+				n, ok := toInt(v)
+				if !ok {
+					return 0, fmt.Errorf("expected int, got %T", v)
+				}
+				return n, nil
+			})
+			if err != nil {
+				return GamesPackage{}, fmt.Errorf("location_name_to_id: %w", err)
+			}
+		}
+
+		return gp, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("datapackage: %w", err)
+	}
+
 	// precollected_items: dict[int -> []int]
 	raw, err = mustDict("precollected_items")
 	if err != nil {

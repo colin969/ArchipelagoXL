@@ -14,7 +14,6 @@ var migrations = []struct {
 	{1, `
 			CREATE TABLE IF NOT EXISTS rooms (
 					lobby_room_id         TEXT PRIMARY KEY,
-					ap_room_id            TEXT NOT NULL,
 					normal_port           INTEGER NOT NULL,
 					reduced_port          INTEGER NOT NULL,
 					created_at            INTEGER NOT NULL,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -145,23 +146,40 @@ func newDataPackageStore(fullGameResponseOptimization bool, globalCache *GlobalD
 	}
 }
 
-func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, encoded json.RawMessage, itemIDToName, locationIDToName map[int]string) *cachedGameDataPackage {
+func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *DiskDataPackageStore) (*cachedGameDataPackage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	gameKey := checksum + ":" + game
+
 	// Cache hit for wrapper, increase ref on cache and return it
 	if wrapper, ok := c.byGameKey[gameKey]; ok {
 		wrapper.refCount++
-		return wrapper
+		return wrapper, nil
 	}
 
 	// No cache hit for wrapper, try and find cache hit on inner datapackage
 	datapackage, ok := c.byChecksum[checksum]
 	if !ok {
-		// No cache hit, make our own and put it into the cache
+		// No cache hit for inner datapackage, load from disk
+		raw, err := diskStorage.Read(checksum)
+		if err != nil {
+			return nil, fmt.Errorf("reading datapackage %q from disk: %w", checksum, err)
+		}
+		var gd GameData
+		if err := json.Unmarshal(raw, &gd); err != nil {
+			return nil, fmt.Errorf("unmarshaling datapackage %q: %w", checksum, err)
+		}
+		itemIDToName := make(map[int]string, len(gd.ItemNameToID))
+		for name, id := range gd.ItemNameToID {
+			itemIDToName[id] = name
+		}
+		locationIDToName := make(map[int]string, len(gd.LocationNameToID))
+		for name, id := range gd.LocationNameToID {
+			locationIDToName[id] = name
+		}
 		datapackage = &cachedDataPackage{
-			encoded:          encoded,
+			encoded:          raw,
 			itemIDToName:     itemIDToName,
 			locationIDToName: locationIDToName,
 		}
@@ -185,7 +203,7 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, encoded json.Ra
 		refCount:        1,
 	}
 	c.byGameKey[gameKey] = wrapper
-	return wrapper
+	return wrapper, nil
 }
 
 func (c *GlobalDataPackageCache) Get(checksum, game string) (*cachedGameDataPackage, bool) {
@@ -256,35 +274,15 @@ func (ds *DataPackageStore) attachWrapper(game string, wrapper *cachedGameDataPa
 // TODO: This should really be optimized to not open a conn for each
 func (s ApxRoom) loadDataPackages(diskStorage *DiskDataPackageStore) error {
 	checksums := s.roomInfo.GetDataPackageChecksums()
+	log.Printf("loading %d datapackages", len(checksums))
 
 	for game, checksum := range checksums {
-		wrapper, ok := s.datapackages.globalCache.Get(checksum, game)
-		if ok {
-			s.datapackages.attachWrapper(game, wrapper)
-			continue
-		}
-
-		raw, err := diskStorage.Read(checksum)
+		// Get a wrapper ref for this game + checksum combo
+		wrapper, err := s.datapackages.globalCache.GetOrAdd(checksum, game, diskStorage)
 		if err != nil {
-			// In theory we should allow missing datapackages, per Berserker?
+			// Per Berserker, games should work without them anyway?
 			continue
 		}
-
-		var gd GameData
-		if err := json.Unmarshal(raw, &gd); err != nil {
-			return fmt.Errorf("unmarshaling datapackage for game %q: %w", game, err)
-		}
-
-		itemIDToName := make(map[int]string, len(gd.ItemNameToID))
-		for name, id := range gd.ItemNameToID {
-			itemIDToName[id] = name
-		}
-		locationIDToName := make(map[int]string, len(gd.LocationNameToID))
-		for name, id := range gd.LocationNameToID {
-			locationIDToName[id] = name
-		}
-
-		wrapper = s.datapackages.globalCache.GetOrAdd(checksum, game, raw, itemIDToName, locationIDToName)
 		s.datapackages.attachWrapper(game, wrapper)
 	}
 

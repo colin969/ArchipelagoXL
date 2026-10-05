@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"maps"
 	"net"
 	"net/http"
@@ -876,6 +877,8 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 		}
 	}
 
+	log.Printf("slotinfo size %d", len(s.state.SlotInfo))
+
 	so := s.state.ServerOptions
 	so.mu.RLock()
 	defer so.mu.RUnlock()
@@ -1111,6 +1114,7 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 	return ApState{
 		Locations:          locations,
 		NameToSlot:         nameToSlot,
+		SlotInfo:           slotInfoMap,
 		SlotData:           slotData,
 		SlotMinVersions:    slotMinVersions,
 		SlotStartInventory: startInv,

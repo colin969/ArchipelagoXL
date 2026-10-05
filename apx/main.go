@@ -1,6 +1,7 @@
 package main
 
 import (
+	"apx/multidata"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,7 @@ type Config struct {
 	PerSlotPasswords       bool   `json:"per_slot_passwords"`
 	LokiEndpoint           string `json:"loki_endpoint"`
 	DataPackageStoragePath string `json:"datapackage_storage_path"`
+	DebugMultidata         string `json:"debug_multidata"`
 }
 
 func main() {
@@ -81,9 +83,13 @@ func run() error {
 		WriteTimeout: time.Second * 10,
 	}
 
-	if cfg.LobbyRoomId != "" {
-		_, err := rm.startNewHostedRoom(cfg.LobbyRoomId, nil, &cfg.NormalPort, &cfg.ReducedPort,
-			cfg.PerSlotPasswords, true, true, 1, false)
+	if cfg.LobbyRoomId != "" && cfg.DebugMultidata != "" {
+		md, err := multidata.LoadMultiData(cfg.DebugMultidata)
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, err = rm.startRoomFromMultiData(cfg.LobbyRoomId, md, &cfg.NormalPort, &cfg.ReducedPort,
+			false, false, false, 1, false)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)
 		}
@@ -197,6 +203,9 @@ func getConfig() (*Config, error) {
 		dpStoragePath = "./data/datapackages/"
 	}
 	cfg.DataPackageStoragePath = dpStoragePath
+	if v := os.Getenv("DEBUG_MULTIDATA"); v != "" {
+		cfg.DebugMultidata = v
+	}
 	cfg.PerSlotPasswords = true
 	if v := os.Getenv("PER_SLOT_PASSWORDS"); v != "" {
 		enabled, err := strconv.ParseBool(v)

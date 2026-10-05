@@ -383,6 +383,23 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+func (rm *RoomManager) saveDataPackagesToDisk(md *multidata.MultiData) {
+	log.Printf("checking %d dps", len(md.DataPackage))
+	for game, dp := range md.DataPackage {
+		if rm.diskDataPackages.Has(dp.Checksum) {
+			continue
+		}
+		data, err := json.Marshal(dp)
+		if err != nil {
+			log.Printf("failed to marshal datapackage for %q: %v", game, err)
+			continue
+		}
+		if err := rm.diskDataPackages.Write(dp.Checksum, data); err != nil {
+			log.Printf("failed to write datapackage %q (%s) to disk: %v", game, dp.Checksum, err)
+		}
+	}
+}
+
 func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	uploadReq := uploadRoomRequestFromForm(r)
@@ -415,26 +432,12 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Add any missing datapackages to disk cache
-	for game, dp := range md.DataPackage {
-		if !rm.diskDataPackages.Has(dp.Checksum) {
-			data, err := json.Marshal(dp)
-			if err != nil {
-				log.Printf("failed to marshal datapackage for %q: %v", game, err)
-				continue
-			}
-			if err := rm.diskDataPackages.Write(dp.Checksum, data); err != nil {
-				log.Printf("failed to write datapackage %q (%s) to disk: %v", game, dp.Checksum, err)
-			}
-		}
-	}
-
 	lobbyRoomId := uploadReq.LobbyRoomId
 	if lobbyRoomId == "" {
 		lobbyRoomId = randomId(24)
 	}
 
-	room, err := rm.startNewHostedRoom(lobbyRoomId, md, nil, nil,
+	room, err := rm.startRoomFromMultiData(lobbyRoomId, md, nil, nil,
 		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -769,6 +772,19 @@ func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 		DeathlinkDisabled: r.FormValue("deathlink_disabled") == "true",
 		ReducedAccess:     r.FormValue("reduced_access") == "true",
 	}
+}
+
+func (rm *RoomManager) startRoomFromMultiData(
+	lobbyRoomId string,
+	md *multidata.MultiData,
+	normalIdPtr, reducedIdPtr *int,
+	perSlotPasswords, deathlinkDisabled, reducedAccess bool,
+	deathlinkProbability float64,
+	save bool,
+) (*HostedRoom, error) {
+	rm.saveDataPackagesToDisk(md)
+	return rm.startNewHostedRoom(lobbyRoomId, md, normalIdPtr, reducedIdPtr,
+		perSlotPasswords, deathlinkDisabled, reducedAccess, deathlinkProbability, save)
 }
 
 func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.MultiData, normalIdPtr, reducedIdPtr *int,
