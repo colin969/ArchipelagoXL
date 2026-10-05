@@ -206,6 +206,46 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *Di
 	return wrapper, nil
 }
 
+func (c *GlobalDataPackageCache) GetOrAddWithData(checksum, game string, encoded json.RawMessage, itemIDToName, locationIDToName map[int]string) *cachedGameDataPackage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	gameKey := checksum + ":" + game
+
+	if wrapper, ok := c.byGameKey[gameKey]; ok {
+		wrapper.refCount++
+		return wrapper
+	}
+
+	datapackage, ok := c.byChecksum[checksum]
+	if !ok {
+		datapackage = &cachedDataPackage{
+			encoded:          encoded,
+			itemIDToName:     itemIDToName,
+			locationIDToName: locationIDToName,
+		}
+		c.byChecksum[checksum] = datapackage
+	}
+	datapackage.refCount++
+
+	encodedGameName, _ := json.Marshal(game)
+	singleResponse := []byte(`[{"cmd":"DataPackage","data":{"games":{`)
+	singleResponse = append(singleResponse, encodedGameName...)
+	singleResponse = append(singleResponse, ':')
+	singleResponse = append(singleResponse, datapackage.encoded...)
+	singleResponse = append(singleResponse, `}}}]`...)
+
+	wrapper := &cachedGameDataPackage{
+		datapackage:     datapackage,
+		checksum:        checksum,
+		encodedGameName: encodedGameName,
+		singleResponse:  singleResponse,
+		refCount:        1,
+	}
+	c.byGameKey[gameKey] = wrapper
+	return wrapper
+}
+
 func (c *GlobalDataPackageCache) Get(checksum, game string) (*cachedGameDataPackage, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -241,7 +281,6 @@ func (ds *DataPackageStore) AddDataPackage(game string, gd GameData) error {
 	if err != nil {
 		return err
 	}
-
 	itemIDToName := make(map[int]string, len(gd.ItemNameToID))
 	for name, id := range gd.ItemNameToID {
 		itemIDToName[id] = name
@@ -250,8 +289,7 @@ func (ds *DataPackageStore) AddDataPackage(game string, gd GameData) error {
 	for name, id := range gd.LocationNameToID {
 		locationIDToName[id] = name
 	}
-
-	wrapper := ds.globalCache.GetOrAdd(gd.Checksum, game, encodedData, itemIDToName, locationIDToName)
+	wrapper := ds.globalCache.GetOrAddWithData(gd.Checksum, game, encodedData, itemIDToName, locationIDToName)
 	ds.attachWrapper(game, wrapper)
 	return nil
 }

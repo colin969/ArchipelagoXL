@@ -7,17 +7,47 @@ import (
 	"testing"
 )
 
+// Utils
+
+func makeTestDiskStore(t *testing.T) *DiskDataPackageStore {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := NewDiskDataPackageStore(dir)
+	if err != nil {
+		t.Fatalf("NewDiskDataPackageStore: %v", err)
+	}
+	return store
+}
+
+func writeToDisk(t *testing.T, store *DiskDataPackageStore, checksum string, gd GameData) {
+	t.Helper()
+	data, err := json.Marshal(gd)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := store.Write(checksum, data); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+}
+
 // Tests
 
 func TestDatapackage(t *testing.T) {
 	t.Run("GlobalCacheGetOrAdd", func(t *testing.T) {
 		cache := newGlobalDataPackageCache()
+		disk := makeTestDiskStore(t)
 
-		encoded := json.RawMessage(`{"item_name_to_id":{},"location_name_to_id":{},"checksum":"abc"}`)
-		itemIDToName := map[int]string{1: "Sword"}
-		locationIDToName := map[int]string{100: "Chest"}
+		gd := GameData{
+			Checksum:         "abc",
+			ItemNameToID:     map[string]int{"Sword": 1},
+			LocationNameToID: map[string]int{"Chest": 100},
+		}
+		writeToDisk(t, disk, "abc", gd)
 
-		w1 := cache.GetOrAdd("abc", "TestGame", encoded, itemIDToName, locationIDToName)
+		w1, err := cache.GetOrAdd("abc", "TestGame", disk)
+		if err != nil {
+			t.Fatalf("GetOrAdd: %v", err)
+		}
 		if w1 == nil {
 			t.Fatal("expected wrapper, got nil")
 		}
@@ -28,7 +58,10 @@ func TestDatapackage(t *testing.T) {
 			t.Fatalf("expected datapackage refCount 1, got %d", w1.datapackage.refCount)
 		}
 
-		w2 := cache.GetOrAdd("abc", "TestGame", encoded, itemIDToName, locationIDToName)
+		w2, err := cache.GetOrAdd("abc", "TestGame", disk)
+		if err != nil {
+			t.Fatalf("GetOrAdd: %v", err)
+		}
 		if w1 != w2 {
 			t.Fatal("expected same wrapper on cache hit")
 		}
@@ -42,11 +75,13 @@ func TestDatapackage(t *testing.T) {
 
 	t.Run("GlobalCacheSharedDataPackage", func(t *testing.T) {
 		cache := newGlobalDataPackageCache()
+		disk := makeTestDiskStore(t)
 
-		encoded := json.RawMessage(`{"item_name_to_id":{},"location_name_to_id":{},"checksum":"shared"}`)
+		gd := GameData{Checksum: "shared"}
+		writeToDisk(t, disk, "shared", gd)
 
-		w1 := cache.GetOrAdd("shared", "GameA", encoded, nil, nil)
-		w2 := cache.GetOrAdd("shared", "GameB", encoded, nil, nil)
+		w1, _ := cache.GetOrAdd("shared", "GameA", disk)
+		w2, _ := cache.GetOrAdd("shared", "GameB", disk)
 
 		if w1 == w2 {
 			t.Fatal("expected different wrappers for different games")
@@ -59,11 +94,22 @@ func TestDatapackage(t *testing.T) {
 		}
 	})
 
+	t.Run("GlobalCacheMissingFromDisk", func(t *testing.T) {
+		cache := newGlobalDataPackageCache()
+		disk := makeTestDiskStore(t)
+
+		_, err := cache.GetOrAdd("nonexistent", "TestGame", disk)
+		if err == nil {
+			t.Fatal("expected error for missing checksum on disk")
+		}
+	})
+
 	t.Run("ReleaseEvictsWrapper", func(t *testing.T) {
 		cache := newGlobalDataPackageCache()
-		encoded := json.RawMessage(`{}`)
+		disk := makeTestDiskStore(t)
+		writeToDisk(t, disk, "abc", GameData{Checksum: "abc"})
 
-		cache.GetOrAdd("abc", "TestGame", encoded, nil, nil)
+		cache.GetOrAdd("abc", "TestGame", disk)
 		cache.Release([]string{"abc:TestGame"})
 
 		cache.mu.RLock()
@@ -81,11 +127,11 @@ func TestDatapackage(t *testing.T) {
 
 	t.Run("ReleaseSharedDataPackageNotEvictedEarly", func(t *testing.T) {
 		cache := newGlobalDataPackageCache()
-		encoded := json.RawMessage(`{}`)
+		disk := makeTestDiskStore(t)
+		writeToDisk(t, disk, "shared", GameData{Checksum: "shared"})
 
-		cache.GetOrAdd("shared", "GameA", encoded, nil, nil)
-		cache.GetOrAdd("shared", "GameB", encoded, nil, nil)
-
+		cache.GetOrAdd("shared", "GameA", disk)
+		cache.GetOrAdd("shared", "GameB", disk)
 		cache.Release([]string{"shared:GameA"})
 
 		cache.mu.RLock()
@@ -117,11 +163,11 @@ func TestDatapackage(t *testing.T) {
 
 	t.Run("ReleaseMultipleRoomsHoldingWrapper", func(t *testing.T) {
 		cache := newGlobalDataPackageCache()
-		encoded := json.RawMessage(`{}`)
+		disk := makeTestDiskStore(t)
+		writeToDisk(t, disk, "abc", GameData{Checksum: "abc"})
 
-		cache.GetOrAdd("abc", "TestGame", encoded, nil, nil)
-		cache.GetOrAdd("abc", "TestGame", encoded, nil, nil)
-
+		cache.GetOrAdd("abc", "TestGame", disk)
+		cache.GetOrAdd("abc", "TestGame", disk)
 		cache.Release([]string{"abc:TestGame"})
 
 		cache.mu.RLock()
@@ -184,8 +230,7 @@ func TestDatapackage(t *testing.T) {
 		cache := newGlobalDataPackageCache()
 		ds := newDataPackageStore(true, cache)
 
-		gd := GameData{Checksum: "abc"}
-		ds.AddDataPackage("TestGame", gd)
+		ds.AddDataPackage("TestGame", GameData{Checksum: "abc"})
 		ds.Release()
 
 		cache.mu.RLock()
@@ -245,6 +290,23 @@ func TestDatapackage(t *testing.T) {
 		}
 		if datapackageExists {
 			t.Fatal("expected datapackage evicted after both stores released")
+		}
+	})
+
+	t.Run("DiskNotReadTwiceForSameChecksum", func(t *testing.T) {
+		cache := newGlobalDataPackageCache()
+		disk := makeTestDiskStore(t)
+		writeToDisk(t, disk, "abc", GameData{Checksum: "abc"})
+
+		// First call reads from disk
+		cache.GetOrAdd("abc", "GameA", disk)
+
+		// Remove from disk — second call should use in-memory cache
+		os.Remove(disk.path("abc"))
+
+		_, err := cache.GetOrAdd("abc", "GameB", disk)
+		if err != nil {
+			t.Fatalf("expected cache hit without disk read, got error: %v", err)
 		}
 	})
 }
