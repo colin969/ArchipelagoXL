@@ -1,4 +1,4 @@
-module lobby/apx
+module apx
 
 go 1.26.0
 
@@ -7,6 +7,11 @@ require github.com/coder/websocket v1.8.15
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/prometheus/client_golang v1.24.1
+)
+
+require (
+	github.com/nlpodyssey/gopickle v0.3.0
+	golang.org/x/text v0.40.0 // indirect
 )
 
 require (

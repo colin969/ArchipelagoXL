@@ -1,6 +1,7 @@
 package main
 
 import (
+	"apx/multidata"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -13,6 +14,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -25,10 +27,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type Spheres []SphereLocations
+type TrackerSpheres []TrackerSphereLocations
 
 // { slot_id : [loc_id, loc_id, loc_id] }
-type SphereLocations map[int32][]int64
+type TrackerSphereLocations map[int][]int64
 
 type SphereResult struct {
 	Locations []LocationEntry `json:"locations"`
@@ -147,7 +149,7 @@ type HostedRoom struct {
 	lastActivity         *atomic.Int64
 	lobbyRoomId          string
 	apx                  *ApxRoom
-	spheres              Spheres
+	spheres              TrackerSpheres
 	locationIdToName     map[string]map[int]string
 	checkedLocations     *CheckedLocations
 	sphereCache          *slotSphereCache
@@ -288,7 +290,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 	for _, record := range records {
-		room, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalId, &record.ReducedId,
+		room, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
 			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 		if err != nil {
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
@@ -379,6 +381,116 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	uploadReq := uploadRoomRequestFromForm(r)
+
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to parse multipart form"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "no file provided"})
+		return
+	}
+	defer file.Close()
+
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to read file"})
+		return
+	}
+
+	md, err := multidata.ParseMultidata(fileBytes)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid multidata: %v", err)})
+		return
+	}
+
+	// Forward to AP webhost for room ID + storage
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", header.Filename)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create form file"})
+		return
+	}
+	if _, err = fw.Write(fileBytes); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to buffer file"})
+		return
+	}
+	mw.Close()
+
+	uploadURL := fmt.Sprintf("%s/api/upload_room", rm.config.ApApiRoot)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, uploadURL, &buf)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create upstream request"})
+		return
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-Api-Key", rm.config.ApApiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("uploading to AP: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP server error: %s", body)})
+		return
+	}
+
+	var apResult struct {
+		RoomID string `json:"room_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apResult); err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to decode AP response"})
+		return
+	}
+	if apResult.RoomID == "" {
+		w.WriteHeader(http.StatusBadGateway)
+		json.NewEncoder(w).Encode(map[string]string{"error": "AP server returned no room_id"})
+		return
+	}
+
+	lobbyRoomId := uploadReq.LobbyRoomId
+	if lobbyRoomId == "" {
+		lobbyRoomId = apResult.RoomID
+	}
+
+	room, err := rm.startNewHostedRoom(apResult.RoomID, lobbyRoomId, md, nil, nil,
+		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(ApxRoomInfo{
+		LobbyRoomId: room.lobbyRoomId,
+		ApRoomId:    room.apRoomId,
+		NormalId:    room.normalHandler.id,
+		ReducedId:   room.reducedHandler.id,
+		Disabled:    false,
+	})
 }
 
 func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) {
@@ -529,7 +641,7 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = apPort
 
-	room, err := rm.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, &record.NormalId, &record.ReducedId,
+	room, err := rm.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
 		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -693,11 +805,6 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 
 	// Remove from active rooms list
 	rm.registry.Remove(roomId)
-	// Stop backing webhost room (webhost can clean up database record left behind later)
-	apRoomId := record.ApRoomId
-	go func() {
-		rm.stopApRoom(apRoomId)
-	}()
 
 	json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "room_id": roomId})
 }
@@ -718,111 +825,7 @@ func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 	}
 }
 
-func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	uploadReq := uploadRoomRequestFromForm(r)
-
-	// Parse the incoming multipart form (100MB max)
-	if err := r.ParseMultipartForm(100 << 20); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to parse multipart form"})
-		return
-	}
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "no file provided"})
-		return
-	}
-	defer file.Close()
-
-	// Forward the file to the AP server's /api/upload_room
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-
-	fw, err := mw.CreateFormFile("file", header.Filename)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create form file"})
-		return
-	}
-	_, err = io.Copy(fw, file)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to buffer file"})
-		return
-	}
-	mw.Close()
-
-	uploadURL := fmt.Sprintf("%s/api/upload_room", rm.config.ApApiRoot)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, uploadURL, &buf)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create upstream request"})
-		return
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("X-Api-Key", rm.config.ApApiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("uploading to AP: %v", err)})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[UPLOAD] AP webhost room creation error: %s", string(body))
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP server error: %v", string(body))})
-		return
-	}
-
-	var apResult struct {
-		RoomID string `json:"room_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&apResult); err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to decode AP response"})
-		return
-	}
-	if apResult.RoomID == "" {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": "AP server returned no room_id"})
-		return
-	}
-
-	log.Printf("ap room id: %s", apResult.RoomID)
-	// Create the hosted room using the returned AP room ID
-	// Use the AP room ID as both the lobby and AP room ID if no lobby ID is provided,
-	// or accept an optional lobby_room_id form field
-	lobbyRoomId := uploadReq.LobbyRoomId
-	if lobbyRoomId == "" {
-		lobbyRoomId = apResult.RoomID
-	}
-
-	room, err := rm.startNewHostedRoom(apResult.RoomID, lobbyRoomId, nil, nil,
-		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(ApxRoomInfo{
-		LobbyRoomId: room.lobbyRoomId,
-		ApRoomId:    room.apRoomId,
-		NormalId:    room.normalHandler.id,
-		ReducedId:   room.reducedHandler.id,
-		Disabled:    false,
-	})
-}
-
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, normalIdPtr, reducedIdPtr *int,
+func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, md *multidata.MultiData, normalIdPtr, reducedIdPtr *int,
 	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, deathlinkProbability float64, save bool) (*HostedRoom, error) {
 
 	_, exists := rm.registry.Get(lobbyRoomId)
@@ -835,9 +838,10 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		return nil, err
 	}
 
-	roomPlayers, err := fetchRoomPlayers(rm.config.ApApiRoot, apRoomId)
+	// Construct the Ap State from the Multidata
+	apState, err := convertMultiDataToState(md)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get %s/api/room/%s/players from AP server, aborting: %w", rm.config.ApApiRoot, apRoomId, err)
+		return nil, fmt.Errorf("failed to parse multidata: %v", err)
 	}
 
 	roomInfoMsg, err := connectAndGetRoomInfo(rm.config.APHost, apPort)
@@ -863,13 +867,13 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 	datapackageCache := newDataPackageStore(useDatapackageOptimization, rm.registry.datapackages) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	bounceInfo.deathlinkProbability = deathlinkProbability
-	debugTap := newDebugTap(maxRoomPlayerId(roomPlayers.nameToID))
+	debugTap := newDebugTap(len(apState.SlotInfo))
 	if perSlotPasswords == true {
 		slots, err := fetchSlotPasswords(rm.config, lobbyRoomId)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch slot passwords: %w", err)
 		}
-		loadPasswordsIntoStore(connRegistry, passwordStore, roomPlayers, slots)
+		loadPasswordsIntoStore(connRegistry, passwordStore, apState.NameToSlot, slots)
 	}
 	var lokiLogger *LokiLogger
 	// if rm.config.LokiEndpoint != "" {
@@ -881,14 +885,14 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 
 	// Room config options
 	if deathlinkDisabled {
-		for slotId := range roomPlayers.slots {
-			bounceInfo.ExcludeByTag(slotId, "DeathLink")
+		for slotInfo := range apState.SlotInfo {
+			bounceInfo.ExcludeByTag(slotInfo.Slot, "DeathLink")
 		}
 	}
 
 	if !reducedAccess {
-		for slotId := range roomPlayers.slots {
-			fullFeedStore.Set(slotId)
+		for slotInfo := range apState.SlotInfo {
+			fullFeedStore.Set(slotInfo.Slot)
 		}
 	}
 
@@ -899,7 +903,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		logf:             log.Printf,
 		config:           rm.config,
 		roomInfo:         roomInfoStore,
-		roomPlayers:      roomPlayers,
 		altConnectNames:  altConnectNames,
 		passwords:        passwordStore,
 		fullFeed:         fullFeedStore,
@@ -913,6 +916,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, n
 		lokiLogger:       lokiLogger,
 		perSlotPasswords: perSlotPasswords,
 		ipLimiter:        newIPRateLimiter(),
+		state:            &apState,
 		logDeath: func(slotId int) {
 			if err := rm.store.IncrementSlotDeathCount(lobbyRoomId, slotId); err != nil {
 				log.Printf("failed to persist death count for room %s slot %d: %v", lobbyRoomId, slotId, err)
@@ -1043,7 +1047,7 @@ func (rm *RoomManager) handlePasswordRefresh(w http.ResponseWriter, r *http.Requ
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to fetch passwords from lobby"})
 		return
 	}
-	loadPasswordsIntoStore(room.apx.connections, room.apx.passwords, room.apx.roomPlayers, slots)
+	loadPasswordsIntoStore(room.apx.connections, room.apx.passwords, room.apx.state.NameToSlot, slots)
 }
 
 func (rm *RoomManager) handlePassword(w http.ResponseWriter, r *http.Request) {
@@ -1302,14 +1306,14 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 		w.Write(cached)
 		return
 	}
-	slot, ok := room.apx.roomPlayers.slots[slotId]
+	slotInfo, ok := room.apx.state.SlotInfo[TeamSlot{0, slotId}]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "slot not found"})
 		return
 	}
 
-	locationIDToName, ok := room.apx.datapackages.LocationIDToName[slot.Game]
+	locationIDToName, ok := room.apx.datapackages.LocationIDToName[slotInfo.Game]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "datapackage not found"})
@@ -1319,7 +1323,7 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 
 	result := make([]SphereResult, 0, len(room.spheres))
 	for _, sphere := range room.spheres {
-		locIDs, ok := sphere[int32(slotId)]
+		locIDs, ok := sphere[slotId]
 		if !ok {
 			continue
 		}
@@ -1360,23 +1364,23 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 
-	result := make(map[string]json.RawMessage, len(room.apx.roomPlayers.slots))
+	result := make(map[string]json.RawMessage, len(room.apx.state.NameToSlot))
 
-	for slotId, slot := range room.apx.roomPlayers.slots {
-		if cached, ok := room.sphereCache.Get(slotId); ok {
-			result[slot.Name] = json.RawMessage(cached)
+	for teamSlot, slotInfo := range room.apx.state.SlotInfo {
+		if cached, ok := room.sphereCache.Get(teamSlot.Slot); ok {
+			result[slotInfo.Name] = json.RawMessage(cached)
 			continue
 		}
 
-		locationIDToName, ok := room.apx.datapackages.LocationIDToName[slot.Game]
+		locationIDToName, ok := room.apx.datapackages.LocationIDToName[slotInfo.Game]
 		if !ok {
 			continue
 		}
-		checkedLocations := room.checkedLocations.GetSlot(slotId)
+		checkedLocations := room.checkedLocations.GetSlot(slotInfo.Slot)
 
 		slotResult := make([]SphereResult, 0, len(room.spheres))
 		for _, sphere := range room.spheres {
-			locIDs, ok := sphere[int32(slotId)]
+			locIDs, ok := sphere[slotInfo.Slot]
 			if !ok {
 				continue
 			}
@@ -1405,8 +1409,8 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		room.sphereCache.Set(slotId, b)
-		result[slot.Name] = json.RawMessage(b)
+		room.sphereCache.Set(teamSlot.Slot, b)
+		result[slotInfo.Name] = json.RawMessage(b)
 	}
 
 	if err := json.NewEncoder(w).Encode(result); err != nil {
@@ -1443,9 +1447,9 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 
 	// Build list of all incomplete slots
 	result := make([]int, 0)
-	for slotId := range room.apx.roomPlayers.slots {
-		if _, done := room.completeSphere1Slots[slotId]; !done {
-			result = append(result, slotId)
+	for teamSlot := range room.apx.state.SlotInfo {
+		if _, done := room.completeSphere1Slots[teamSlot.Slot]; !done {
+			result = append(result, teamSlot.Slot)
 		}
 	}
 	room.completeSphere1Mu.Unlock()
@@ -1468,7 +1472,7 @@ func (rm *RoomManager) handleDebugTap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate slot exists
-	if _, ok := room.apx.roomPlayers.slots[slotId]; !ok {
+	if _, ok := room.apx.state.SlotInfo[TeamSlot{0, slotId}]; !ok {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "slot not found"})
 		return
@@ -1527,12 +1531,12 @@ func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		_, exists := room.apx.roomPlayers.auth[req.SlotName]
+		_, exists := room.apx.state.NameToSlot[req.SlotName]
 		if !exists {
 			http.Error(w, "slot not found", http.StatusNotFound)
 			return
 		}
-		_, exists = room.apx.roomPlayers.auth[altName]
+		_, exists = room.apx.state.NameToSlot[altName]
 		if exists {
 			http.Error(w, "alt name is already taken by real slot name", http.StatusConflict)
 			return
@@ -1571,7 +1575,7 @@ func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *htt
 	vars := mux.Vars(r)
 	slotName := vars["slotName"]
 
-	_, exists := room.apx.roomPlayers.auth[slotName]
+	_, exists := room.apx.state.NameToSlot[slotName]
 	if !exists {
 		http.Error(w, "slot not found", http.StatusNotFound)
 		return
@@ -1681,7 +1685,7 @@ func (rm *HostedRoom) refreshCheckedLocations(apApiRoot, apRoomId string) error 
 	return nil
 }
 
-func fetchRoomSpheres(apApiRoot string, apRoomId string) (Spheres, error) {
+func fetchRoomSpheres(apApiRoot string, apRoomId string) (TrackerSpheres, error) {
 	url := fmt.Sprintf("%s/api/room/%s/spheres", apApiRoot, apRoomId)
 
 	resp, err := http.Get(url)
@@ -1694,7 +1698,7 @@ func fetchRoomSpheres(apApiRoot string, apRoomId string) (Spheres, error) {
 		return nil, fmt.Errorf("unexpected status %d from /api/room/%s/spheres", resp.StatusCode, apRoomId)
 	}
 
-	var spheres Spheres
+	var spheres TrackerSpheres
 	if err := json.NewDecoder(resp.Body).Decode(&spheres); err != nil {
 		return nil, fmt.Errorf("decoding room spheres: %w", err)
 	}
@@ -1703,18 +1707,18 @@ func fetchRoomSpheres(apApiRoot string, apRoomId string) (Spheres, error) {
 }
 
 // Slot IDs are keys, so JSON turns them to strings, we want the numbers
-func (s *SphereLocations) UnmarshalJSON(data []byte) error {
+func (s *TrackerSphereLocations) UnmarshalJSON(data []byte) error {
 	var raw map[string][]int64
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*s = make(SphereLocations, len(raw))
+	*s = make(TrackerSphereLocations, len(raw))
 	for k, v := range raw {
 		id, err := strconv.ParseInt(k, 10, 32)
 		if err != nil {
 			return fmt.Errorf("invalid slot_id key %q: %w", k, err)
 		}
-		(*s)[int32(id)] = v
+		(*s)[int(id)] = v
 	}
 	return nil
 }
@@ -1800,22 +1804,21 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	slotName := vars["slotName"]
 
-	// Find slot by name
-	var targetSlot *NetworkSlotArray // adjust to your actual slot type
-	for _, slot := range room.apx.roomPlayers.slots {
-		if slot.Name == slotName {
-			s := slot
-			targetSlot = &s
-			break
-		}
-	}
-	if targetSlot == nil {
+	var targetSlot *NetworkSlotArray
+	slotInfo, ok := room.apx.state.NameToSlot[slotName]
+	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "slot not found"})
 		return
 	}
 
+	targetSlot = &NetworkSlotArray{
+		Name:         slotInfo.Name,
+		Game:         slotInfo.Game,
+		Type:         int(slotInfo.Type),
+		GroupMembers: slices.Clone(slotInfo.GroupMembers),
+	}
 	wsURL := fmt.Sprintf("ws://%s:%d", rm.config.APHost, room.apx.apPort)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)

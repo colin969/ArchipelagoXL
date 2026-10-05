@@ -80,6 +80,21 @@ const (
 	PermissionAutoEnabled Permission = 0b111
 )
 
+func permissionFromString(mode string) Permission {
+	switch mode {
+	case "enabled":
+		return PermissionEnabled
+	case "goal":
+		return PermissionGoal
+	case "auto":
+		return PermissionAuto
+	case "auto-enabled":
+		return PermissionAutoEnabled
+	default:
+		return PermissionDisabled
+	}
+}
+
 type RoomInfoMessage struct {
 	Cmd                  MessageType           `json:"cmd"`
 	Version              NetworkVersion        `json:"version"`

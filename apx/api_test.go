@@ -171,15 +171,15 @@ func TestUploadRoomRequestFromForm(t *testing.T) {
 func TestIsSphere1Incomplete(t *testing.T) {
 	cases := []struct {
 		name    string
-		spheres Spheres
+		spheres TrackerSpheres
 		checked map[int64]bool
 		slotId  int32
 		want    bool
 	}{
 		{
 			name: "all checked",
-			spheres: Spheres{
-				SphereLocations{1: []int64{100, 200, 300}},
+			spheres: TrackerSpheres{
+				TrackerSphereLocations{1: []int64{100, 200, 300}},
 			},
 			checked: map[int64]bool{100: true, 200: true, 300: true},
 			slotId:  1,
@@ -187,8 +187,8 @@ func TestIsSphere1Incomplete(t *testing.T) {
 		},
 		{
 			name: "one unchecked",
-			spheres: Spheres{
-				SphereLocations{1: []int64{100, 200, 300}},
+			spheres: TrackerSpheres{
+				TrackerSphereLocations{1: []int64{100, 200, 300}},
 			},
 			checked: map[int64]bool{100: true, 200: true},
 			slotId:  1,
@@ -196,8 +196,8 @@ func TestIsSphere1Incomplete(t *testing.T) {
 		},
 		{
 			name: "no locations for slot",
-			spheres: Spheres{
-				SphereLocations{2: []int64{100}},
+			spheres: TrackerSpheres{
+				TrackerSphereLocations{2: []int64{100}},
 			},
 			checked: map[int64]bool{},
 			slotId:  1,
@@ -205,8 +205,8 @@ func TestIsSphere1Incomplete(t *testing.T) {
 		},
 		{
 			name: "nil checked map",
-			spheres: Spheres{
-				SphereLocations{1: []int64{100}},
+			spheres: TrackerSpheres{
+				TrackerSphereLocations{1: []int64{100}},
 			},
 			checked: nil,
 			slotId:  1,
@@ -214,7 +214,7 @@ func TestIsSphere1Incomplete(t *testing.T) {
 		},
 		{
 			name:    "empty sphere",
-			spheres: Spheres{SphereLocations{}},
+			spheres: TrackerSpheres{TrackerSphereLocations{}},
 			checked: map[int64]bool{},
 			slotId:  1,
 			want:    false,
@@ -224,7 +224,7 @@ func TestIsSphere1Incomplete(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sphere1 := tc.spheres[0]
-			locIDs := sphere1[tc.slotId]
+			locIDs := sphere1[int(tc.slotId)]
 			if got := isSphere1Incomplete(locIDs, tc.checked); got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}

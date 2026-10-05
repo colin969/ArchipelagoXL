@@ -1,6 +1,7 @@
 package main
 
 import (
+	"apx/multidata"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -183,7 +184,6 @@ type ApxRoom struct {
 	logf             func(f string, v ...any)
 	config           *Config
 	roomInfo         *RoomInfoStore
-	roomPlayers      *RoomPlayers // Immutable
 	altConnectNames  *ConnectNames
 	passwords        *passwordStore
 	fullFeed         *fullFeedStore
@@ -197,6 +197,103 @@ type ApxRoom struct {
 	lokiLogger       *LokiLogger
 	logDeath         func(slotId int)
 	ipLimiter        *IPRateLimiter
+	state            *ApState
+}
+
+type Location struct {
+	Item   int32
+	Player int16
+	Flags  int16
+}
+
+type Version struct {
+	Major int
+	Minor int
+	Build int
+}
+
+type NetworkItem struct {
+	Item     int32
+	Location int32
+	Player   int16
+}
+
+type Sphere map[int][]int
+type Spheres []Sphere
+
+type ServerOptions struct {
+	mu                  sync.RWMutex
+	Password            string // "password" - default ""
+	HintCost            int    // "hint_cost" - default 10
+	LocationCheckPoints int    // "location_check_points" - default 1
+	ReleaseMode         string // "release_mode" - default "auto"
+	CollectMode         string // "collect_mode" - default "auto"
+	RemainingMode       string // "remaining_mode" - default "goal"
+	CountdownMode       string // "countdown_mode" - default "auto"
+	DisableItemCheat    bool   // "disable_item_cheat" - default false
+	Compatibility       int    // "compatibility" - default 2
+}
+
+func (so *ServerOptions) PasswordCheck(password *string) bool {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	if so.Password == "" {
+		return true
+	}
+	if password == nil {
+		return false
+	}
+	return so.Password == *password
+}
+
+type TeamSlot struct {
+	Team int
+	Slot int
+}
+
+type Hint struct {
+	ReceivingPlayer int32
+	FindingPlayer   int32
+	Location        int32
+	Item            int32
+	ItemFlags       int16
+	Status          HintStatus
+	Found           bool
+	Entrance        string
+}
+
+type SlotType int
+
+const (
+	SlotTypeSpectator SlotType = 0
+	SlotTypePlayer    SlotType = 1
+	SlotTypeGroup     SlotType = 2
+)
+
+type SlotInfo struct {
+	Team         int
+	Slot         int
+	Name         string
+	Game         string
+	Type         SlotType
+	GroupMembers []int
+}
+
+type ApState struct {
+	Locations     map[TeamSlot]map[int]Location
+	Hints         map[TeamSlot][]Hint
+	ServerOptions *ServerOptions
+	// Immutable
+	NameToSlot         map[string]*SlotInfo
+	SlotInfo           map[TeamSlot]SlotInfo
+	SlotData           map[TeamSlot]map[string]any
+	SlotMinVersions    map[TeamSlot]Version
+	SlotStartInventory map[TeamSlot][]NetworkItem
+	Spheres            Spheres
+	Version            Version
+	Tags               []string
+	Seed               string
+	RaceMode           int
 }
 
 // Simple per-ip rate limiter for the WS rooms
@@ -574,7 +671,6 @@ type connectionState struct {
 	slotName                *string
 	cancel                  context.CancelFunc
 	clientConn              *websocket.Conn
-	apConn                  *websocket.Conn
 	reduced                 bool
 	pendingDatapackGames    []string
 	registeredClient        *registeredClient
@@ -674,9 +770,6 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		if connState.registeredClient != nil {
 			s.connections.Unregister(connState.registeredClient)
 		}
-		if connState.apConn != nil {
-			connState.apConn.CloseNow()
-		}
 	}()
 
 	for {
@@ -763,6 +856,56 @@ func (s ApxRoom) keepalive(ctx context.Context, c *websocket.Conn, cancel contex
 	}
 }
 
+func (s *ApxRoom) buildRoomInfoFromState(md *multidata.MultiData) RoomInfoMessage {
+	checksums := make(map[string]string, len(md.DataPackage))
+	for game, pkg := range md.DataPackage {
+		checksums[game] = pkg.Checksum
+	}
+
+	games := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, info := range s.state.SlotInfo {
+		if info.Type == SlotTypePlayer {
+			if _, ok := seen[info.Game]; !ok {
+				seen[info.Game] = struct{}{}
+				games = append(games, info.Game)
+			}
+		}
+	}
+
+	so := s.state.ServerOptions
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+
+	return RoomInfoMessage{
+		Cmd: "RoomInfo",
+		Version: NetworkVersion{
+			Major: IntOrString(s.state.Version.Major),
+			Minor: IntOrString(s.state.Version.Minor),
+			Build: IntOrString(s.state.Version.Build),
+			Class: "Version",
+		},
+		GeneratorVersion: NetworkVersion{
+			Major: IntOrString(s.state.Version.Major),
+			Minor: IntOrString(s.state.Version.Minor),
+			Build: IntOrString(s.state.Version.Build),
+			Class: "Version",
+		},
+		Tags:     s.state.Tags,
+		Password: s.perSlotPasswords || so.Password != "",
+		Permissions: map[string]Permission{
+			"release":   permissionFromString(so.ReleaseMode),
+			"collect":   permissionFromString(so.CollectMode),
+			"remaining": permissionFromString(so.RemainingMode),
+		},
+		HintCost:             so.HintCost,
+		LocationCheckPoints:  so.LocationCheckPoints,
+		Games:                games,
+		DatapackageChecksums: checksums,
+		SeedName:             s.state.Seed,
+	}
+}
+
 func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw json.RawMessage) error {
 	// Shovel logs to any debug listeners
 	if connState.authenticated && s.debugTap != nil && s.debugTap.HasListeners(connState.registeredClient.slotId) {
@@ -788,13 +931,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 		case MessageTypeSay:
 			return s.handleSay(ctx, connState, raw)
 		default:
-			// We're authed, it's a message we don't care about, pass it on
-			if connState.apConn != nil {
-				wrapped := append([]byte{'['}, append(raw, ']')...)
-				return connState.apConn.Write(ctx, websocket.MessageText, wrapped)
-			} else {
-				connState.cancel()
-			}
+			// TODO: Handle message types
+
 			return nil
 		}
 	} else {
@@ -863,7 +1001,7 @@ func (dt *debugTap) Send(slotId int, raw []byte) {
 
 func (s ApxRoom) StatusString(client *registeredClient) string {
 	connected := s.connections.ConnectedSlotCount()
-	total := len(s.roomPlayers.slots)
+	total := len(s.state.SlotData)
 	probability := s.bounceInfo.GetProbability()
 	deaths := s.bounceInfo.Get()
 
@@ -891,4 +1029,169 @@ func (s ApxRoom) StatusString(client *registeredClient) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
+	slotData := make(map[TeamSlot]map[string]any, len(md.SlotData))
+	for slot, data := range md.SlotData {
+		slotData[TeamSlot{Team: 0, Slot: slot}] = data
+	}
+
+	slotGames := make(map[TeamSlot]string, len(md.SlotInfo))
+	for slot, info := range md.SlotInfo {
+		slotGames[TeamSlot{Team: 0, Slot: slot}] = info.Game
+	}
+
+	slotMinVersions := make(map[TeamSlot]Version, len(md.MinimumVersions.Clients))
+	for slot, v := range md.MinimumVersions.Clients {
+		slotMinVersions[TeamSlot{Team: 0, Slot: slot}] = Version{
+			Major: v[0],
+			Minor: v[1],
+			Build: v[2],
+		}
+	}
+
+	locations := make(map[TeamSlot]map[int]Location, len(md.Locations))
+	for slot, locs := range md.Locations {
+		inner := make(map[int]Location, len(locs))
+		for locID, t := range locs {
+			inner[locID] = Location{
+				Item:   int32(t[0]),
+				Player: int16(t[1]),
+				Flags:  int16(t[2]),
+			}
+		}
+		locations[TeamSlot{Team: 0, Slot: slot}] = inner
+	}
+
+	slotInfoMap := make(map[TeamSlot]SlotInfo, len(md.SlotInfo))
+	for slot, info := range md.SlotInfo {
+		members := make([]int, len(info.GroupMembers))
+		copy(members, info.GroupMembers)
+		slotInfoMap[TeamSlot{Team: 0, Slot: slot}] = SlotInfo{
+			Team:         0,
+			Slot:         slot,
+			Name:         info.Name,
+			Game:         info.Game,
+			Type:         SlotType(info.Type),
+			GroupMembers: members,
+		}
+	}
+
+	nameToSlot := make(map[string]*SlotInfo, len(md.ConnectNames))
+	for name, pair := range md.ConnectNames {
+		ts := TeamSlot{Team: pair[0], Slot: pair[1]}
+		if info, ok := slotInfoMap[TeamSlot{Team: 0, Slot: ts.Slot}]; ok {
+			infoCopy := info
+			nameToSlot[name] = &infoCopy
+		}
+	}
+
+	spheres := make(Spheres, len(md.Spheres))
+	for i, s := range md.Spheres {
+		spheres[i] = Sphere(s)
+	}
+
+	startInv := make(map[TeamSlot][]NetworkItem, len(md.PrecollectedItems))
+	for slot, itemIDs := range md.PrecollectedItems {
+		items := make([]NetworkItem, len(itemIDs))
+		for i, id := range itemIDs {
+			items[i] = NetworkItem{
+				Item:     int32(id),
+				Location: -2, // sentinel: start inventory location
+				Player:   0,
+			}
+		}
+		startInv[TeamSlot{Team: 0, Slot: slot}] = items
+	}
+
+	return ApState{
+		Locations:          locations,
+		NameToSlot:         nameToSlot,
+		SlotData:           slotData,
+		SlotMinVersions:    slotMinVersions,
+		SlotStartInventory: startInv,
+		Version: Version{
+			Major: md.Version[0],
+			Minor: md.Version[1],
+			Build: md.Version[2],
+		},
+		ServerOptions: parseEmbeddedServerOptions(md.ServerOptions),
+		Spheres:       spheres,
+		Tags:          md.Tags,
+		Seed:          md.SeedName,
+		RaceMode:      md.RaceMode,
+	}, nil
+}
+
+func defaultServerOptions() ServerOptions {
+	return ServerOptions{
+		HintCost:            10,
+		LocationCheckPoints: 1,
+		ReleaseMode:         "auto",
+		CollectMode:         "auto",
+		RemainingMode:       "goal",
+		CountdownMode:       "auto",
+		Compatibility:       2,
+	}
+}
+
+func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
+	opts := defaultServerOptions()
+	if v, ok := raw["password"]; ok {
+		if s, ok := v.(string); ok {
+			opts.Password = s
+		}
+	}
+	if v, ok := raw["hint_cost"]; ok {
+		if n, ok := toInt(v); ok {
+			opts.HintCost = n
+		}
+	}
+	if v, ok := raw["location_check_points"]; ok {
+		if n, ok := toInt(v); ok {
+			opts.LocationCheckPoints = n
+		}
+	}
+	if v, ok := raw["release_mode"]; ok {
+		if s, ok := v.(string); ok {
+			opts.ReleaseMode = s
+		}
+	}
+	if v, ok := raw["collect_mode"]; ok {
+		if s, ok := v.(string); ok {
+			opts.CollectMode = s
+		}
+	}
+	if v, ok := raw["remaining_mode"]; ok {
+		if s, ok := v.(string); ok {
+			opts.RemainingMode = s
+		}
+	}
+	if v, ok := raw["countdown_mode"]; ok {
+		if s, ok := v.(string); ok {
+			opts.CountdownMode = s
+		}
+	}
+	if v, ok := raw["disable_item_cheat"]; ok {
+		if b, ok := v.(bool); ok {
+			opts.DisableItemCheat = b
+		}
+	}
+	if v, ok := raw["compatibility"]; ok {
+		if n, ok := toInt(v); ok {
+			opts.Compatibility = n
+		}
+	}
+	return &opts
+}
+
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	}
+	return 0, false
 }

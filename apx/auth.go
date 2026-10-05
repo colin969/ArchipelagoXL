@@ -49,10 +49,7 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 	// Don't allow to change from reduced to full feed or vice versa
 	msg.ReducedTraffic = connState.reduced
 
-	// Send on to AP, they'll still expect a Connected message back
-	if err := wsjson.Write(ctx, connState.apConn, []any{msg}); err != nil {
-		return fmt.Errorf("forwarding reconnect to AP: %w", err)
-	}
+	// TODO: Implement Connect for authed clients
 
 	// Update tags on existing registration in case they changed
 	s.connections.UpdateTags(connState.registeredClient, msg.Tags)
@@ -84,17 +81,17 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 	connState.slotName = &msg.Name
 
-	slotEntry, ok := s.validateSlot(msg.Name)
+	slotInfo, ok := s.state.NameToSlot[msg.Name]
 	if !ok {
 		return s.sendConnectionRefused(ctx, connState, "InvalidSlot", msg.Name)
 	}
 
 	// We've got a connect message, we should log it to the slot even if not authed yet, for debugging
 	if s.debugTap != nil {
-		slotId, ok := s.roomPlayers.nameToID[msg.Name]
-		if ok && s.debugTap.HasListeners(slotId) {
+		slot, ok := s.state.NameToSlot[msg.Name]
+		if ok && s.debugTap.HasListeners(slot.Slot) {
 			if raw, err := json.Marshal(raw); err == nil {
-				s.debugTap.Send(slotId, raw)
+				s.debugTap.Send(slot.Slot, raw)
 			}
 		}
 	}
@@ -106,13 +103,13 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	}
 
 	if s.perSlotPasswords == true {
-		if !s.validatePassword(slotEntry[1], msg.Password) {
+		if !s.validatePassword(slotInfo.Slot, msg.Password) {
 			return s.sendConnectionRefused(ctx, connState, "InvalidPassword", msg.Name)
 		}
 	}
 
 	// Restrict full feed client access
-	if !connState.reduced && !s.isFullFeedAllowed(slotEntry[1]) {
+	if !connState.reduced && !s.isFullFeedAllowed(slotInfo.Slot) {
 		return s.sendConnectionRefused(ctx, connState, "FullFeedDenial", msg.Name)
 	}
 
@@ -123,28 +120,17 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		connState.pendingDatapackGames = nil
 	}
 
-	apConn, slotId, slotName, game, err := s.connectAP(ctx, connState, connState.reduced, msg, s.apPort)
-	if err != nil {
-		return fmt.Errorf("connecting to AP: %w", err)
-	}
-	if game == nil {
-		// Conn refused by server
-		connState.authFailCount += 1
-		if connState.authFailCount > 10 {
-			return connState.clientConn.Close(websocket.StatusNormalClosure, "ConnectionRefused")
-		}
-		return nil
-	}
-	connState.apConn = apConn
+	// TODO: Send connected message back
+
 	client := registeredClient{
-		slotId:     slotId,
-		slotName:   slotName,
-		game:       game,
+		slotId:     slotInfo.Slot,
+		slotName:   &slotInfo.Name,
+		game:       &slotInfo.Game,
 		cancel:     connState.cancel,
 		clientConn: connState.clientConn,
 		reduced:    connState.reduced,
 	}
-	s.connections.Register(slotId, &client, *game, msg.Tags)
+	s.connections.Register(slotInfo.Slot, &client, slotInfo.Game, msg.Tags)
 	connState.authenticated = true
 	connState.registeredClient = &client
 
@@ -176,9 +162,7 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 		return err
 	}
 
-	if connState.apConn != nil {
-		return wsjson.Write(ctx, connState.apConn, []any{raw})
-	}
+	// TODO: Implement Say
 
 	return nil
 }
@@ -192,9 +176,8 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 
 	s.connections.UpdateTags(connState.registeredClient, msg.Tags)
 
-	if connState.apConn != nil {
-		return wsjson.Write(ctx, connState.apConn, []any{raw})
-	}
+	// TODO: Implement Connect Update
+
 	return nil
 }
 
@@ -322,11 +305,6 @@ func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, redu
 	}()
 
 	return apConn, slotId, &slotName, &game, nil
-}
-
-func (s ApxRoom) validateSlot(name string) ([2]int, bool) {
-	slotEntry, ok := s.roomPlayers.auth[name]
-	return slotEntry, ok
 }
 
 func (s ApxRoom) validatePassword(slotKey int, provided *string) bool {

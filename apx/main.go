@@ -89,7 +89,7 @@ func run() error {
 		if cfg.LobbyRoomId == "" {
 			cfg.LobbyRoomId = uuid.New().String()
 		}
-		_, err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, &cfg.NormalPort, &cfg.ReducedPort,
+		_, err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, nil, &cfg.NormalPort, &cfg.ReducedPort,
 			cfg.PerSlotPasswords, true, true, 1, false)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)

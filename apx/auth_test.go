@@ -8,9 +8,11 @@ import (
 
 // Helpers
 
-func roomWithAuth(auth map[string][2]int) ApxRoom {
+func roomWithAuth(auth map[string]*SlotInfo) ApxRoom {
 	return ApxRoom{
-		roomPlayers: &RoomPlayers{auth: auth},
+		state: &ApState{
+			NameToSlot: auth,
+		},
 	}
 }
 
@@ -20,29 +22,32 @@ func strPtr(s string) *string { return &s }
 
 func TestAuth(t *testing.T) {
 	t.Run("ValidateSlot", func(t *testing.T) {
-		s := roomWithAuth(map[string][2]int{
-			"Alice": {1, 42},
+		s := roomWithAuth(map[string]*SlotInfo{
+			"Alice": {Team: 1, Slot: 42},
 		})
 
 		tests := []struct {
 			name      string
 			slot      string
 			wantOK    bool
-			wantEntry [2]int
+			wantEntry TeamSlot
 		}{
-			{"known slot", "Alice", true, [2]int{1, 42}},
-			{"unknown slot", "Bob", false, [2]int{}},
-			{"empty name", "", false, [2]int{}},
+			{"known slot", "Alice", true, TeamSlot{1, 42}},
+			{"unknown slot", "Bob", false, TeamSlot{}},
+			{"empty name", "", false, TeamSlot{}},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				entry, ok := s.validateSlot(tt.slot)
+				slotInfo, ok := s.state.NameToSlot[tt.slot]
 				if ok != tt.wantOK {
 					t.Errorf("ok = %v, want %v", ok, tt.wantOK)
 				}
-				if ok && entry != tt.wantEntry {
-					t.Errorf("entry = %v, want %v", entry, tt.wantEntry)
+				if ok {
+					teamSlot := TeamSlot{slotInfo.Team, slotInfo.Slot}
+					if ok && teamSlot != tt.wantEntry {
+						t.Errorf("entry = %v, want %v", teamSlot, tt.wantEntry)
+					}
 				}
 			})
 		}
