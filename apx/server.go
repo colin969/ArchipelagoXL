@@ -149,11 +149,10 @@ type RoomInfoStore struct {
 	DatapackageChecksums map[string]string
 }
 
-func newRoomInfoStore(msg RoomInfoMessage) *RoomInfoStore {
-	checksums := make(map[string]string, len(msg.DatapackageChecksums))
-	maps.Copy(checksums, msg.DatapackageChecksums)
+func newRoomInfoStore(dpChecksums map[string]string) *RoomInfoStore {
+	checksums := make(map[string]string, len(dpChecksums))
+	maps.Copy(checksums, dpChecksums)
 	return &RoomInfoStore{
-		msg:                  msg,
 		DatapackageChecksums: checksums,
 	}
 }
@@ -856,12 +855,7 @@ func (s ApxRoom) keepalive(ctx context.Context, c *websocket.Conn, cancel contex
 	}
 }
 
-func (s *ApxRoom) buildRoomInfoFromState(md *multidata.MultiData) RoomInfoMessage {
-	checksums := make(map[string]string, len(md.DataPackage))
-	for game, pkg := range md.DataPackage {
-		checksums[game] = pkg.Checksum
-	}
-
+func (s *ApxRoom) buildRoomInfoFromState() {
 	games := make([]string, 0)
 	seen := make(map[string]struct{})
 	for _, info := range s.state.SlotInfo {
@@ -877,7 +871,7 @@ func (s *ApxRoom) buildRoomInfoFromState(md *multidata.MultiData) RoomInfoMessag
 	so.mu.RLock()
 	defer so.mu.RUnlock()
 
-	return RoomInfoMessage{
+	s.roomInfo.Store(RoomInfoMessage{
 		Cmd: "RoomInfo",
 		Version: NetworkVersion{
 			Major: IntOrString(s.state.Version.Major),
@@ -901,9 +895,9 @@ func (s *ApxRoom) buildRoomInfoFromState(md *multidata.MultiData) RoomInfoMessag
 		HintCost:             so.HintCost,
 		LocationCheckPoints:  so.LocationCheckPoints,
 		Games:                games,
-		DatapackageChecksums: checksums,
+		DatapackageChecksums: s.roomInfo.DatapackageChecksums,
 		SeedName:             s.state.Seed,
-	}
+	})
 }
 
 func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw json.RawMessage) error {

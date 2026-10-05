@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -12,8 +11,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 	"github.com/google/uuid"
 )
 
@@ -212,98 +209,4 @@ func getConfig() (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// Get the room info from the AP multiserver so we can cache it
-func connectAndGetRoomInfo(apHost string, apPort int) (*RoomInfoMessage, error) {
-	url := fmt.Sprintf("ws://%s:%d", apHost, apPort)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-
-	c, _, err := websocket.Dial(ctx, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Archipelago server at %s: %w", url, err)
-	}
-	defer c.CloseNow()
-
-	var raw []map[string]any
-	if err := wsjson.Read(ctx, c, &raw); err != nil {
-		return nil, fmt.Errorf("failed to read initial message: %w", err)
-	}
-
-	for _, msg := range raw {
-		cmd, _ := msg["cmd"].(string)
-		if cmd != "RoomInfo" {
-			continue
-		}
-
-		data, err := json.Marshal(msg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal RoomInfo: %w", err)
-		}
-
-		var roomInfo RoomInfoMessage
-		if err := json.Unmarshal(data, &roomInfo); err != nil {
-			return nil, fmt.Errorf("failed to parse RoomInfo: %w", err)
-		}
-
-		return &roomInfo, nil
-	}
-
-	return nil, errors.New("no RoomInfo packet received in initial message")
-}
-
-type RoomPlayers struct {
-	slots    map[int]NetworkSlotArray
-	auth     map[string][2]int
-	nameToID map[string]int
-}
-
-func fetchRoomPlayers(apApiRoot string, apRoomId string) (*RoomPlayers, error) {
-	url := fmt.Sprintf("%s/api/room/%s/players", apApiRoot, apRoomId)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("fetching room players: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d from /api/room/%s/players", resp.StatusCode, apRoomId)
-	}
-
-	var roomPlayers RoomPlayers
-	if err := json.NewDecoder(resp.Body).Decode(&roomPlayers); err != nil {
-		return nil, fmt.Errorf("decoding room players: %w", err)
-	}
-
-	roomPlayers.nameToID = make(map[string]int, len(roomPlayers.slots))
-	for slotId, slotInfo := range roomPlayers.slots {
-		roomPlayers.nameToID[slotInfo.Name] = slotId
-	}
-
-	return &roomPlayers, nil
-}
-
-func (rp *RoomPlayers) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Slots map[string]NetworkSlotArray `json:"slots"`
-		Auth  map[string][2]int           `json:"auth"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-
-	rp.slots = make(map[int]NetworkSlotArray, len(raw.Slots))
-	for k, v := range raw.Slots {
-		id, err := strconv.Atoi(k)
-		if err != nil {
-			return fmt.Errorf("invalid slot id %q: %w", k, err)
-		}
-		rp.slots[id] = v
-	}
-
-	rp.auth = raw.Auth
-	return nil
 }

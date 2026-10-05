@@ -172,41 +172,41 @@ func TestIsSphere1Incomplete(t *testing.T) {
 	cases := []struct {
 		name    string
 		spheres TrackerSpheres
-		checked map[int64]bool
+		checked map[int]bool
 		slotId  int32
 		want    bool
 	}{
 		{
 			name: "all checked",
 			spheres: TrackerSpheres{
-				TrackerSphereLocations{1: []int64{100, 200, 300}},
+				TrackerSphereLocations{1: []int{100, 200, 300}},
 			},
-			checked: map[int64]bool{100: true, 200: true, 300: true},
+			checked: map[int]bool{100: true, 200: true, 300: true},
 			slotId:  1,
 			want:    false,
 		},
 		{
 			name: "one unchecked",
 			spheres: TrackerSpheres{
-				TrackerSphereLocations{1: []int64{100, 200, 300}},
+				TrackerSphereLocations{1: []int{100, 200, 300}},
 			},
-			checked: map[int64]bool{100: true, 200: true},
+			checked: map[int]bool{100: true, 200: true},
 			slotId:  1,
 			want:    true,
 		},
 		{
 			name: "no locations for slot",
 			spheres: TrackerSpheres{
-				TrackerSphereLocations{2: []int64{100}},
+				TrackerSphereLocations{2: []int{100}},
 			},
-			checked: map[int64]bool{},
+			checked: map[int]bool{},
 			slotId:  1,
 			want:    false,
 		},
 		{
 			name: "nil checked map",
 			spheres: TrackerSpheres{
-				TrackerSphereLocations{1: []int64{100}},
+				TrackerSphereLocations{1: []int{100}},
 			},
 			checked: nil,
 			slotId:  1,
@@ -215,7 +215,7 @@ func TestIsSphere1Incomplete(t *testing.T) {
 		{
 			name:    "empty sphere",
 			spheres: TrackerSpheres{TrackerSphereLocations{}},
-			checked: map[int64]bool{},
+			checked: map[int]bool{},
 			slotId:  1,
 			want:    false,
 		},

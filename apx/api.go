@@ -14,7 +14,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -30,7 +29,7 @@ import (
 type TrackerSpheres []TrackerSphereLocations
 
 // { slot_id : [loc_id, loc_id, loc_id] }
-type TrackerSphereLocations map[int][]int64
+type TrackerSphereLocations map[int][]int
 
 type SphereResult struct {
 	Locations []LocationEntry `json:"locations"`
@@ -105,22 +104,22 @@ func (r *RoomRegistry) Remove(roomId string) {
 
 type CheckedLocations struct {
 	checkedLocationsMu sync.RWMutex
-	checkedLocations   map[int]map[int64]bool
+	checkedLocations   map[int]map[int]bool
 }
 
-func (cl *CheckedLocations) Get() map[int]map[int64]bool {
+func (cl *CheckedLocations) Get() map[int]map[int]bool {
 	cl.checkedLocationsMu.RLock()
 	defer cl.checkedLocationsMu.RUnlock()
 	return cl.checkedLocations
 }
 
-func (cl *CheckedLocations) GetSlot(slotId int) map[int64]bool {
+func (cl *CheckedLocations) GetSlot(slotId int) map[int]bool {
 	cl.checkedLocationsMu.RLock()
 	defer cl.checkedLocationsMu.RUnlock()
 	return cl.checkedLocations[slotId]
 }
 
-func (cl *CheckedLocations) Set(newCl map[int]map[int64]bool) {
+func (cl *CheckedLocations) Set(newCl map[int]map[int]bool) {
 	cl.checkedLocationsMu.Lock()
 	defer cl.checkedLocationsMu.Unlock()
 	cl.checkedLocations = newCl
@@ -128,7 +127,7 @@ func (cl *CheckedLocations) Set(newCl map[int]map[int64]bool) {
 
 func newCheckedLocations() CheckedLocations {
 	return CheckedLocations{
-		checkedLocations: make(map[int]map[int64]bool),
+		checkedLocations: make(map[int]map[int]bool),
 	}
 }
 
@@ -149,7 +148,6 @@ type HostedRoom struct {
 	lastActivity         *atomic.Int64
 	lobbyRoomId          string
 	apx                  *ApxRoom
-	spheres              TrackerSpheres
 	locationIdToName     map[string]map[int]string
 	checkedLocations     *CheckedLocations
 	sphereCache          *slotSphereCache
@@ -180,7 +178,7 @@ type Deathlink struct {
 }
 
 type LocationEntry struct {
-	ID      int64
+	ID      int
 	Name    string
 	Checked bool
 }
@@ -844,26 +842,13 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 		return nil, fmt.Errorf("failed to parse multidata: %v", err)
 	}
 
-	roomInfoMsg, err := connectAndGetRoomInfo(rm.config.APHost, apPort)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get RoomInfo from AP server, aborting: %w", err)
-	}
-	if perSlotPasswords == true {
-		roomInfoMsg.Password = true
-	}
-
-	spheres, err := fetchRoomSpheres(rm.config.ApApiRoot, apRoomId)
-	if err != nil {
-		return nil, fmt.Errorf("prefetching spheres: %v", err)
-	}
-
 	altConnectNames := newAltConnectNames()
 	passwordStore := newPasswordStore()
 	fullFeedStore := newFullFeedStore()
 	connRegistry := newConnectionRegistry(&lobbyRoomId, rm.metrics)
 
 	// Only use memory costly optimizations when at least 50 datapackages in the room
-	var useDatapackageOptimization = len(roomInfoMsg.DatapackageChecksums) >= 50
+	var useDatapackageOptimization = len(md.DataPackage) >= 50
 	datapackageCache := newDataPackageStore(useDatapackageOptimization, rm.registry.datapackages) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	bounceInfo.deathlinkProbability = deathlinkProbability
@@ -896,7 +881,12 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 		}
 	}
 
-	roomInfoStore := newRoomInfoStore(*roomInfoMsg)
+	dpChecksums := make(map[string]string)
+	for game, dp := range md.DataPackage {
+		dpChecksums[game] = dp.Checksum
+	}
+
+	roomInfoStore := newRoomInfoStore(dpChecksums)
 	// Create APX room
 	apx := &ApxRoom{
 		lastActivity:     &lastActivity,
@@ -923,6 +913,7 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 			}
 		},
 	}
+	apx.buildRoomInfoFromState()
 
 	if err := apx.prefetchDataPackages(context.Background()); err != nil {
 		log.Fatalf("prefetching datapackages: %v", err)
@@ -936,7 +927,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 		lobbyRoomId:          lobbyRoomId,
 		apRoomId:             apRoomId,
 		apx:                  apx,
-		spheres:              spheres,
 		sphereCache:          newSlotSphereCache(),
 		completeSphere1Slots: map[int]struct{}{},
 		checkedLocations:     &checkedLocs,
@@ -951,12 +941,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 		log.Printf("room %s: failed to fetch server password: %v", lobbyRoomId, err)
 	}
 	room.serverPassword = password
-
-	if err := room.refreshCheckedLocations(rm.config.ApApiRoot, apRoomId); err != nil {
-		log.Printf("initial checked locations fetch failed: %v", err)
-	}
-	room.startCheckedLocationPoller(ctx, rm.config.ApApiRoot, apRoomId, 30*time.Second)
-	room.startRoomInfoPoller(ctx, rm.config.APHost, 30*time.Second)
 
 	var normalId, reducedId int
 	if normalIdPtr != nil {
@@ -1321,8 +1305,8 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 	}
 	checkedLocations := room.checkedLocations.GetSlot(slotId)
 
-	result := make([]SphereResult, 0, len(room.spheres))
-	for _, sphere := range room.spheres {
+	result := make([]SphereResult, 0, len(room.apx.state.Spheres))
+	for _, sphere := range room.apx.state.Spheres {
 		locIDs, ok := sphere[slotId]
 		if !ok {
 			continue
@@ -1378,8 +1362,8 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 		}
 		checkedLocations := room.checkedLocations.GetSlot(slotInfo.Slot)
 
-		slotResult := make([]SphereResult, 0, len(room.spheres))
-		for _, sphere := range room.spheres {
+		slotResult := make([]SphereResult, 0, len(room.apx.state.Spheres))
+		for _, sphere := range room.apx.state.Spheres {
 			locIDs, ok := sphere[slotInfo.Slot]
 			if !ok {
 				continue
@@ -1426,12 +1410,12 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if len(room.spheres) == 0 {
+	if len(room.apx.state.Spheres) == 0 {
 		json.NewEncoder(w).Encode([]int{})
 		return
 	}
 
-	sphere1 := room.spheres[0]
+	sphere1 := room.apx.state.Spheres[0]
 
 	// Check if status of incomplete slots has changed
 	checkedLocs := room.checkedLocations.Get()
@@ -1587,7 +1571,7 @@ func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *htt
 	json.NewEncoder(w).Encode(altNames)
 }
 
-func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
+func isSphere1Incomplete(locIDs []int, checkedLocations map[int]bool) bool {
 	for _, locID := range locIDs {
 		if !checkedLocations[locID] {
 			return true
@@ -1596,119 +1580,9 @@ func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
 	return false
 }
 
-func (hr *HostedRoom) startRoomInfoPoller(ctx context.Context, apHost string, interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				msg, err := connectAndGetRoomInfo(apHost, hr.apx.apPort)
-				if err != nil {
-					log.Printf("room %s: failed to refresh RoomInfo: %v", hr.lobbyRoomId, err)
-					continue
-				}
-				// Preserve password override set at startup
-				if hr.apx.perSlotPasswords {
-					msg.Password = true
-				}
-				hr.apx.roomInfo.Store(*msg)
-			}
-		}
-	}()
-}
-
-func (rm *HostedRoom) startCheckedLocationPoller(ctx context.Context, apApiRoot, apRoomId string, interval time.Duration) {
-	go func() {
-		for {
-			if err := rm.refreshCheckedLocations(apApiRoot, apRoomId); err != nil {
-				log.Printf("refreshing checked locations: %v", err)
-			}
-			// Interval before polling again
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(interval):
-			}
-		}
-	}()
-}
-
-func (rm *HostedRoom) refreshCheckedLocations(apApiRoot, apRoomId string) error {
-	url := fmt.Sprintf("%s/api/room/%s/checked_locations", apApiRoot, apRoomId)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("fetching checked locations: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-
-	var raw map[string][]int64
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return fmt.Errorf("decoding checked locations: %w", err)
-	}
-
-	newChecked := make(map[int]map[int64]bool, len(raw))
-	for slotStr, locIDs := range raw {
-		slotId, err := strconv.Atoi(slotStr)
-		if err != nil {
-			return fmt.Errorf("invalid slot key %q: %w", slotStr, err)
-		}
-		locs := make(map[int64]bool, len(locIDs))
-		for _, id := range locIDs {
-			locs[id] = true
-		}
-		newChecked[slotId] = locs
-	}
-
-	// Invalidate cache for any slot whose checked locations changed
-	anyNewLocations := false
-	for slotId, newLocs := range newChecked {
-		oldLocs := rm.checkedLocations.GetSlot(slotId)
-		if len(oldLocs) != len(newLocs) {
-			rm.sphereCache.Invalidate(slotId)
-			anyNewLocations = true
-		}
-	}
-
-	if anyNewLocations {
-		rm.lastActivity.Store(time.Now().Unix())
-	}
-
-	rm.checkedLocations.Set(newChecked)
-	return nil
-}
-
-func fetchRoomSpheres(apApiRoot string, apRoomId string) (TrackerSpheres, error) {
-	url := fmt.Sprintf("%s/api/room/%s/spheres", apApiRoot, apRoomId)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("fetching room spheres: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d from /api/room/%s/spheres", resp.StatusCode, apRoomId)
-	}
-
-	var spheres TrackerSpheres
-	if err := json.NewDecoder(resp.Body).Decode(&spheres); err != nil {
-		return nil, fmt.Errorf("decoding room spheres: %w", err)
-	}
-
-	return spheres, nil
-}
-
 // Slot IDs are keys, so JSON turns them to strings, we want the numbers
 func (s *TrackerSphereLocations) UnmarshalJSON(data []byte) error {
-	var raw map[string][]int64
+	var raw map[string][]int
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
@@ -1768,7 +1642,7 @@ func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
 	typeName := vars["typeName"]
 	log.Printf("[handleItemNames] requested game=%q type=%q", gameName, typeName)
 
-	var names map[int64]string
+	var names map[int]string
 	switch typeName {
 	case "item":
 		names, ok = room.apx.datapackages.ItemIDToName[gameName]
@@ -1804,7 +1678,6 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	slotName := vars["slotName"]
 
-	var targetSlot *NetworkSlotArray
 	slotInfo, ok := room.apx.state.NameToSlot[slotName]
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
@@ -1813,12 +1686,6 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetSlot = &NetworkSlotArray{
-		Name:         slotInfo.Name,
-		Game:         slotInfo.Game,
-		Type:         int(slotInfo.Type),
-		GroupMembers: slices.Clone(slotInfo.GroupMembers),
-	}
 	wsURL := fmt.Sprintf("ws://%s:%d", rm.config.APHost, room.apx.apPort)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -1835,7 +1702,7 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 
 	msg := fmt.Sprintf(
 		`[{"cmd":"Connect","version":{"major":9000,"minor":0,"build":1,"class":"Version"},"items_handling":7,"uuid":"","tags":["Admin"],"password":null,"game":%q,"name":%q},{"cmd":"StatusUpdate","status":30}]`,
-		targetSlot.Game, slotName,
+		slotInfo.Game, slotName,
 	)
 
 	if err := c.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
@@ -1859,15 +1726,6 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 		for range ticker.C {
 			deadline := time.Now().Add(-timeout).Unix()
 			for _, room := range rm.registry.List() {
-				if room.lastActivity.Load() >= deadline {
-					continue
-				}
-
-				// Activity looks stale - do a check just incase a check came in the last period between checks
-				if err := room.refreshCheckedLocations(rm.config.ApApiRoot, room.apRoomId); err != nil {
-					log.Printf("room %s: pre-reap location refresh failed: %v", room.lobbyRoomId, err)
-				}
-
 				if room.lastActivity.Load() >= deadline {
 					continue
 				}

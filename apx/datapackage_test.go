@@ -14,8 +14,8 @@ func TestDatapackage(t *testing.T) {
 		cache := newGlobalDataPackageCache()
 
 		encoded := json.RawMessage(`{"item_name_to_id":{},"location_name_to_id":{},"checksum":"abc"}`)
-		itemIDToName := map[int64]string{1: "Sword"}
-		locationIDToName := map[int64]string{100: "Chest"}
+		itemIDToName := map[int]string{1: "Sword"}
+		locationIDToName := map[int]string{100: "Chest"}
 
 		w1 := cache.GetOrAdd("abc", "TestGame", encoded, itemIDToName, locationIDToName)
 		if w1 == nil {
@@ -152,8 +152,8 @@ func TestDatapackage(t *testing.T) {
 
 		gd := GameData{
 			Checksum:         "abc",
-			ItemNameToID:     map[string]int64{"Sword": 1},
-			LocationNameToID: map[string]int64{"Chest": 100},
+			ItemNameToID:     map[string]int{"Sword": 1},
+			LocationNameToID: map[string]int{"Chest": 100},
 		}
 
 		if err := ds.AddDataPackage("TestGame", gd); err != nil {
@@ -206,8 +206,8 @@ func TestDatapackage(t *testing.T) {
 
 		gd := GameData{
 			Checksum:         "abc",
-			ItemNameToID:     map[string]int64{"Sword": 1},
-			LocationNameToID: map[string]int64{"Chest": 100},
+			ItemNameToID:     map[string]int{"Sword": 1},
+			LocationNameToID: map[string]int{"Chest": 100},
 		}
 
 		ds1 := newDataPackageStore(true, cache)
