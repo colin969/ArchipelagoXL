@@ -4,11 +4,60 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
+	"github.com/klauspost/compress/zstd"
 )
+
+type DiskDataPackageStore struct {
+	dir     string
+	encoder *zstd.Encoder
+	decoder *zstd.Decoder
+}
+
+func NewDiskDataPackageStore(dir string) (*DiskDataPackageStore, error) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("creating datapackage dir: %w", err)
+	}
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	if err != nil {
+		return nil, err
+	}
+	dec, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, err
+	}
+	return &DiskDataPackageStore{dir: dir, encoder: enc, decoder: dec}, nil
+}
+
+func (d *DiskDataPackageStore) path(checksum string) string {
+	return filepath.Join(d.dir, checksum+".zst")
+}
+
+func (d *DiskDataPackageStore) Has(checksum string) bool {
+	_, err := os.Stat(d.path(checksum))
+	return err == nil
+}
+
+func (d *DiskDataPackageStore) Write(checksum string, data []byte) error {
+	compressed := d.encoder.EncodeAll(data, nil)
+	tmp := d.path(checksum) + ".tmp"
+	if err := os.WriteFile(tmp, compressed, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, d.path(checksum))
+}
+
+func (d *DiskDataPackageStore) Read(checksum string) ([]byte, error) {
+	compressed, err := os.ReadFile(d.path(checksum))
+	if err != nil {
+		return nil, err
+	}
+	return d.decoder.DecodeAll(compressed, nil)
+}
 
 type cachedDataPackage struct {
 	encoded          json.RawMessage
@@ -139,6 +188,17 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, encoded json.Ra
 	return wrapper
 }
 
+func (c *GlobalDataPackageCache) Get(checksum, game string) (*cachedGameDataPackage, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	gameKey := checksum + ":" + game
+	if wrapper, ok := c.byGameKey[gameKey]; ok {
+		wrapper.refCount++
+		return wrapper, true
+	}
+	return nil, false
+}
+
 func (c *GlobalDataPackageCache) Release(gameKeys []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -194,28 +254,41 @@ func (ds *DataPackageStore) attachWrapper(game string, wrapper *cachedGameDataPa
 
 // MUST be called before server is live to other users. CANNOT be called safely after.
 // TODO: This should really be optimized to not open a conn for each
-func (s ApxRoom) prefetchDataPackages(ctx context.Context) error {
-	var missing []string
-	// Only get ones we haven't already gotten locally
-	for game := range s.roomInfo.DatapackageChecksums {
-		if _, ok := s.datapackages.packages[game]; !ok {
-			missing = append(missing, game)
-		}
-	}
+func (s ApxRoom) loadDataPackages(diskStorage *DiskDataPackageStore) error {
+	checksums := s.roomInfo.GetDataPackageChecksums()
 
-	if len(missing) > 0 {
-		gameData, err := s.fetchDataPackagesFromAPServer(ctx, missing)
+	for game, checksum := range checksums {
+		wrapper, ok := s.datapackages.globalCache.Get(checksum, game)
+		if ok {
+			s.datapackages.attachWrapper(game, wrapper)
+			continue
+		}
+
+		raw, err := diskStorage.Read(checksum)
 		if err != nil {
-			return fmt.Errorf("prefetching datapackage for %d games: %w", len(missing), err)
+			// In theory we should allow missing datapackages, per Berserker?
+			continue
 		}
-		// This will add to global store if missing, then we get the ref
-		for game, gd := range gameData {
-			if err := s.datapackages.AddDataPackage(game, gd); err != nil {
-				return fmt.Errorf("adding datapackage for %q: %w", game, err)
-			}
+
+		var gd GameData
+		if err := json.Unmarshal(raw, &gd); err != nil {
+			return fmt.Errorf("unmarshaling datapackage for game %q: %w", game, err)
 		}
+
+		itemIDToName := make(map[int]string, len(gd.ItemNameToID))
+		for name, id := range gd.ItemNameToID {
+			itemIDToName[id] = name
+		}
+		locationIDToName := make(map[int]string, len(gd.LocationNameToID))
+		for name, id := range gd.LocationNameToID {
+			locationIDToName[id] = name
+		}
+
+		wrapper = s.datapackages.globalCache.GetOrAdd(checksum, game, raw, itemIDToName, locationIDToName)
+		s.datapackages.attachWrapper(game, wrapper)
 	}
 
+	// All DataPackages in memory, if we want to do a full game optimization, do it now
 	if s.datapackages.fullGameResponseOptimization {
 		games := make([]string, 0, len(s.datapackages.packages))
 		for game := range s.datapackages.packages {
@@ -245,23 +318,6 @@ func (s ApxRoom) handleGetDataPackage(ctx context.Context, connState *connection
 		}
 	}
 
-	// TODO: Verify this works before allowing to go live
-	// If the client immediately requests an identical message, bad client!
-	// Probably an application level timeout
-	// slices.Sort(requestedGames)
-	// gamesKey := strings.Join(requestedGames, ",")
-	// if connState.prevDatapackageGamesReq == gamesKey {
-	// 	// We'll log it and also metric it here if already authed, otherwise mark
-	// 	if connState.authenticated {
-	// 		log.Printf("retry storm client: %s, %s, %s", s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game)
-	// 		s.metrics.retryStormClients.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game).Inc()
-	// 	} else {
-	// 		connState.isRetryStormClient = true
-	// 	}
-	// 	return nil
-	// }
-	// connState.prevDatapackageGamesReq = gamesKey
-
 	games := make([]string, 0)
 	for _, game := range requestedGames {
 		if _, ok := s.roomInfo.DatapackageChecksums[game]; ok {
@@ -269,57 +325,6 @@ func (s ApxRoom) handleGetDataPackage(ctx context.Context, connState *connection
 		}
 	}
 	return s.sendDataPackages(ctx, connState.clientConn, games)
-
-	// We can uncomment this if we want to delay datapackages again later. Need to do before the branches above, extra changes still.
-
-	// if !connState.authenticated {
-	// 	// Don't send datapackages until after authed
-	// 	connState.pendingDatapackGames = append(connState.pendingDatapackGames, games...)
-	// 	return nil
-	// }
-}
-
-// Grab datapackage from AP server and cache locally so we can provide it to clients ourselves
-func (s ApxRoom) fetchDataPackagesFromAPServer(ctx context.Context, games []string) (map[string]GameData, error) {
-	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, s.apPort), nil)
-	if err != nil {
-		return nil, fmt.Errorf("dialing upstream: %w", err)
-	}
-	defer apConn.CloseNow()
-
-	var roomInfo []map[string]any
-	if err := wsjson.Read(ctx, apConn, &roomInfo); err != nil {
-		return nil, fmt.Errorf("reading RoomInfo: %w", err)
-	}
-
-	req := GetDataPackageMessage{Cmd: MessageTypeGetDataPackage, Games: games}
-	if err := wsjson.Write(ctx, apConn, []any{req}); err != nil {
-		return nil, fmt.Errorf("sending GetDataPackage: %w", err)
-	}
-
-	apConn.SetReadLimit(dpReadLimit)
-
-	var responses []map[string]any
-	if err := wsjson.Read(ctx, apConn, &responses); err != nil {
-		return nil, fmt.Errorf("reading DataPackage response from fetch: %w", err)
-	}
-
-	for _, resp := range responses {
-		if cmd, _ := resp["cmd"].(string); cmd != string(MessageTypeDataPackage) {
-			continue
-		}
-		raw, err := json.Marshal(resp)
-		if err != nil {
-			return nil, fmt.Errorf("marshalling DataPackage: %w", err)
-		}
-		var pkg DataPackageMessage
-		if err := json.Unmarshal(raw, &pkg); err != nil {
-			return nil, fmt.Errorf("unmarshalling DataPackage: %w", err)
-		}
-		return pkg.Data.Games, nil
-	}
-
-	return nil, fmt.Errorf("DataPackage fetch Response did not contain DataPackages?")
 }
 
 // Stitch together to avoid doing any json ops on the already encoded datapackage

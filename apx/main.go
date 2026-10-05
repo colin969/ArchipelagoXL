@@ -10,29 +10,28 @@ import (
 	"os"
 	"strconv"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type Config struct {
-	WsPort           int    `json:"ws_port"`
-	NormalPort       int    `json:"normal_port"`
-	ReducedPort      int    `json:"reduced_port"`
-	APHost           string `json:"ap_room_host"`
-	APPassword       string `json:"ap_room_password"`
-	LobbyEnabled     bool   `json:"lobby_enabled"`
-	LobbyRootUrl     string `json:"lobby_root_url"`
-	LobbyRoomId      string `json:"lobby_room_id"`
-	LobbyApiKey      string `json:"lobby_api_key"`
-	ApiListenAddr    string `json:"apx_api_listen"`
-	ApiKey           string `json:"apx_api_key"`
-	ApRoomId         string `json:"ap_room_id"`
-	ApApiRoot        string `json:"ap_api_root"`
-	ApApiKey         string `json:"ap_admin_api_key"`
-	TLSCertFile      string `json:"tls_cert_file"`
-	TLSKeyFile       string `json:"tls_key_file"`
-	PerSlotPasswords bool   `json:"per_slot_passwords"`
-	LokiEndpoint     string `json:"loki_endpoint"`
+	WsPort                 int    `json:"ws_port"`
+	NormalPort             int    `json:"normal_port"`
+	ReducedPort            int    `json:"reduced_port"`
+	APHost                 string `json:"ap_room_host"`
+	APPassword             string `json:"ap_room_password"`
+	LobbyEnabled           bool   `json:"lobby_enabled"`
+	LobbyRootUrl           string `json:"lobby_root_url"`
+	LobbyRoomId            string `json:"lobby_room_id"`
+	LobbyApiKey            string `json:"lobby_api_key"`
+	ApiListenAddr          string `json:"apx_api_listen"`
+	ApiKey                 string `json:"apx_api_key"`
+	ApRoomId               string `json:"ap_room_id"`
+	ApApiRoot              string `json:"ap_api_root"`
+	ApApiKey               string `json:"ap_admin_api_key"`
+	TLSCertFile            string `json:"tls_cert_file"`
+	TLSKeyFile             string `json:"tls_key_file"`
+	PerSlotPasswords       bool   `json:"per_slot_passwords"`
+	LokiEndpoint           string `json:"loki_endpoint"`
+	DataPackageStoragePath string `json:"datapackage_storage_path"`
 }
 
 func main() {
@@ -82,11 +81,8 @@ func run() error {
 		WriteTimeout: time.Second * 10,
 	}
 
-	if cfg.ApRoomId != "" {
-		if cfg.LobbyRoomId == "" {
-			cfg.LobbyRoomId = uuid.New().String()
-		}
-		_, err := rm.startNewHostedRoom(cfg.ApRoomId, cfg.LobbyRoomId, nil, &cfg.NormalPort, &cfg.ReducedPort,
+	if cfg.LobbyRoomId != "" {
+		_, err := rm.startNewHostedRoom(cfg.LobbyRoomId, nil, &cfg.NormalPort, &cfg.ReducedPort,
 			cfg.PerSlotPasswords, true, true, 1, false)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)
@@ -196,6 +192,11 @@ func getConfig() (*Config, error) {
 	if v := os.Getenv("TLS_KEY_FILE"); v != "" {
 		cfg.TLSKeyFile = v
 	}
+	dpStoragePath := os.Getenv("DATAPACKAGE_STORAGE_PATH")
+	if dpStoragePath == "" {
+		dpStoragePath = "./data/datapackages/"
+	}
+	cfg.DataPackageStoragePath = dpStoragePath
 	cfg.PerSlotPasswords = true
 	if v := os.Getenv("PER_SLOT_PASSWORDS"); v != "" {
 		enabled, err := strconv.ParseBool(v)

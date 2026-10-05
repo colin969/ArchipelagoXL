@@ -165,6 +165,16 @@ func (ris *RoomInfoStore) Load() RoomInfoMessage {
 	return msg
 }
 
+func (ris *RoomInfoStore) GetDataPackageChecksums() map[string]string {
+	ris.mu.RLock()
+	defer ris.mu.RUnlock()
+	copy := make(map[string]string, len(ris.DatapackageChecksums))
+	for k, v := range ris.DatapackageChecksums {
+		copy[k] = v
+	}
+	return copy
+}
+
 func (ris *RoomInfoStore) Store(msg RoomInfoMessage) {
 	ris.mu.Lock()
 	defer ris.mu.Unlock()
@@ -191,7 +201,6 @@ type ApxRoom struct {
 	datapackages     *DataPackageStore
 	metrics          *metrics
 	lobbyRoomId      string
-	apPort           int
 	debugTap         *debugTap
 	lokiLogger       *LokiLogger
 	logDeath         func(slotId int)

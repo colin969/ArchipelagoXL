@@ -11,7 +11,6 @@ import (
 	"log"
 	"maps"
 	"math/rand"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"strconv"
@@ -38,12 +37,13 @@ type SphereResult struct {
 }
 
 type RoomManager struct {
-	config   *Config
-	registry *RoomRegistry
-	metrics  *metrics
-	tlsCfg   *tls.Config
-	reg      *prometheus.Registry
-	store    *RoomStore
+	config           *Config
+	registry         *RoomRegistry
+	metrics          *metrics
+	tlsCfg           *tls.Config
+	reg              *prometheus.Registry
+	store            *RoomStore
+	diskDataPackages *DiskDataPackageStore
 }
 
 type RoomRegistry struct {
@@ -133,7 +133,6 @@ func newCheckedLocations() CheckedLocations {
 
 type ApxRoomInfo struct {
 	LobbyRoomId       string `json:"lobby_room_id"`
-	ApRoomId          string `json:"ap_room_id"`
 	NormalId          int    `json:"normal_id"`
 	ReducedId         int    `json:"reduced_id"`
 	Disabled          bool   `json:"disabled"`
@@ -153,14 +152,12 @@ type HostedRoom struct {
 	sphereCache          *slotSphereCache
 	completeSphere1Mu    sync.Mutex
 	completeSphere1Slots map[int]struct{}
-	apRoomId             string
 	normalHandler        *apxHandler
 	reducedHandler       *apxHandler
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	deathlinkDisabled    bool
 	reducedAccess        bool
-	serverPassword       string
 }
 
 type RoomState struct {
@@ -233,13 +230,19 @@ func newRoomRegistry() *RoomRegistry {
 }
 
 func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, tlsCfg *tls.Config, store *RoomStore) (*RoomManager, *mux.Router, error) {
+	dpDiskStorage, err := NewDiskDataPackageStore(cfg.DataPackageStoragePath)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	srv := &RoomManager{
-		config:   cfg,
-		registry: newRoomRegistry(),
-		reg:      reg,
-		metrics:  metrics,
-		tlsCfg:   tlsCfg,
-		store:    store,
+		config:           cfg,
+		registry:         newRoomRegistry(),
+		reg:              reg,
+		metrics:          metrics,
+		tlsCfg:           tlsCfg,
+		store:            store,
+		diskDataPackages: dpDiskStorage,
 	}
 
 	roomLoggedHandler := func(h http.HandlerFunc) http.HandlerFunc {
@@ -288,7 +291,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 	for _, record := range records {
-		room, err := srv.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
+		room, err := srv.startNewHostedRoom(record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
 			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 		if err != nil {
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
@@ -366,14 +369,13 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	for _, room := range rooms {
 		result = append(result, ApxRoomInfo{
 			LobbyRoomId:       room.lobbyRoomId,
-			ApRoomId:          room.apRoomId,
 			NormalId:          room.normalHandler.id,
 			ReducedId:         room.reducedHandler.id,
 			Disabled:          false,
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
-			ServerPassword:    room.serverPassword,
+			ServerPassword:    room.apx.state.ServerOptions.Password,
 		})
 	}
 
@@ -391,7 +393,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	file, header, err := r.FormFile("file")
+	file, _, err := r.FormFile("file")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "no file provided"})
@@ -413,67 +415,26 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Forward to AP webhost for room ID + storage
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	fw, err := mw.CreateFormFile("file", header.Filename)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create form file"})
-		return
-	}
-	if _, err = fw.Write(fileBytes); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to buffer file"})
-		return
-	}
-	mw.Close()
-
-	uploadURL := fmt.Sprintf("%s/api/upload_room", rm.config.ApApiRoot)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, uploadURL, &buf)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to create upstream request"})
-		return
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("X-Api-Key", rm.config.ApApiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("uploading to AP: %v", err)})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP server error: %s", body)})
-		return
-	}
-
-	var apResult struct {
-		RoomID string `json:"room_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&apResult); err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to decode AP response"})
-		return
-	}
-	if apResult.RoomID == "" {
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": "AP server returned no room_id"})
-		return
+	// Add any missing datapackages to disk cache
+	for game, dp := range md.DataPackage {
+		if !rm.diskDataPackages.Has(dp.Checksum) {
+			data, err := json.Marshal(dp)
+			if err != nil {
+				log.Printf("failed to marshal datapackage for %q: %v", game, err)
+				continue
+			}
+			if err := rm.diskDataPackages.Write(dp.Checksum, data); err != nil {
+				log.Printf("failed to write datapackage %q (%s) to disk: %v", game, dp.Checksum, err)
+			}
+		}
 	}
 
 	lobbyRoomId := uploadReq.LobbyRoomId
 	if lobbyRoomId == "" {
-		lobbyRoomId = apResult.RoomID
+		lobbyRoomId = randomId(24)
 	}
 
-	room, err := rm.startNewHostedRoom(apResult.RoomID, lobbyRoomId, md, nil, nil,
+	room, err := rm.startNewHostedRoom(lobbyRoomId, md, nil, nil,
 		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -484,11 +445,19 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: room.lobbyRoomId,
-		ApRoomId:    room.apRoomId,
 		NormalId:    room.normalHandler.id,
 		ReducedId:   room.reducedHandler.id,
 		Disabled:    false,
 	})
+}
+
+func randomId(n int) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
 }
 
 func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) {
@@ -513,14 +482,13 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 	if room, ok := rm.registry.Get(roomId); ok {
 		info := ApxRoomInfo{
 			LobbyRoomId:       room.lobbyRoomId,
-			ApRoomId:          room.apRoomId,
 			NormalId:          room.normalHandler.id,
 			ReducedId:         room.reducedHandler.id,
 			Disabled:          false,
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
-			ServerPassword:    room.serverPassword,
+			ServerPassword:    room.apx.state.ServerOptions.Password,
 		}
 		json.NewEncoder(w).Encode(info)
 		return
@@ -528,7 +496,6 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId:       record.LobbyRoomId,
-		ApRoomId:          record.ApRoomId,
 		NormalId:          0,
 		ReducedId:         0,
 		Disabled:          true,
@@ -610,7 +577,6 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		if room, ok := rm.registry.Get(roomId); ok {
 			json.NewEncoder(w).Encode(ApxRoomInfo{
 				LobbyRoomId: room.lobbyRoomId,
-				ApRoomId:    room.apRoomId,
 				NormalId:    room.normalHandler.id,
 				ReducedId:   room.reducedHandler.id,
 				Disabled:    false,
@@ -619,27 +585,7 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Poll for the backing AP room to come online (30s timeout, 3s interval)
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	var apPort int
-	for {
-		apPort, err = ensureApRoomPort(rm.config.ApApiRoot, rm.config.ApApiKey, record.ApRoomId)
-		if err == nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			w.WriteHeader(http.StatusGatewayTimeout)
-			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("AP room did not come online in time: %v", err)})
-			return
-		case <-time.After(3 * time.Second):
-		}
-	}
-	_ = apPort
-
-	room, err := rm.startNewHostedRoom(record.ApRoomId, record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
+	room, err := rm.startNewHostedRoom(record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
 		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -656,7 +602,6 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: room.lobbyRoomId,
-		ApRoomId:    room.apRoomId,
 		NormalId:    room.normalHandler.id,
 		ReducedId:   room.reducedHandler.id,
 		Disabled:    false,
@@ -676,6 +621,8 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	room.Close()
+
 	if err := rm.store.Disable(roomId); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to disable room in store"})
@@ -683,10 +630,6 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rm.registry.Remove(roomId)
-	apRoomId := room.apRoomId
-	go func() {
-		rm.stopApRoom(apRoomId)
-	}()
 
 	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "room_id": roomId})
 }
@@ -765,6 +708,11 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 
+	room, ok := rm.registry.Get(roomId)
+	if ok {
+		room.Close()
+	}
+
 	record, err := rm.store.FindByLobbyRoomId(roomId)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -823,17 +771,12 @@ func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 	}
 }
 
-func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, md *multidata.MultiData, normalIdPtr, reducedIdPtr *int,
+func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.MultiData, normalIdPtr, reducedIdPtr *int,
 	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, deathlinkProbability float64, save bool) (*HostedRoom, error) {
 
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
 		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
-	}
-
-	apPort, err := ensureApRoomPort(rm.config.ApApiRoot, rm.config.ApApiKey, apRoomId)
-	if err != nil {
-		return nil, err
 	}
 
 	// Construct the Ap State from the Multidata
@@ -901,7 +844,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 		datapackages:     datapackageCache,
 		metrics:          rm.metrics,
 		lobbyRoomId:      lobbyRoomId,
-		apPort:           apPort,
 		debugTap:         debugTap,
 		lokiLogger:       lokiLogger,
 		perSlotPasswords: perSlotPasswords,
@@ -915,8 +857,8 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 	}
 	apx.buildRoomInfoFromState()
 
-	if err := apx.prefetchDataPackages(context.Background()); err != nil {
-		log.Fatalf("prefetching datapackages: %v", err)
+	if err := apx.loadDataPackages(rm.diskDataPackages); err != nil {
+		log.Fatalf("loading datapackages: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -925,7 +867,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 	room := &HostedRoom{
 		lastActivity:         &lastActivity,
 		lobbyRoomId:          lobbyRoomId,
-		apRoomId:             apRoomId,
 		apx:                  apx,
 		sphereCache:          newSlotSphereCache(),
 		completeSphere1Slots: map[int]struct{}{},
@@ -935,12 +876,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 		deathlinkDisabled:    deathlinkDisabled,
 		reducedAccess:        reducedAccess,
 	}
-
-	password, err := fetchApxServerPassword(rm.config, apRoomId)
-	if err != nil {
-		log.Printf("room %s: failed to fetch server password: %v", lobbyRoomId, err)
-	}
-	room.serverPassword = password
 
 	var normalId, reducedId int
 	if normalIdPtr != nil {
@@ -963,7 +898,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 
 	log.Printf("room %s: listening on id %d", lobbyRoomId, room.normalHandler.id)
 	log.Printf("room %s: reduced listening on id %d", lobbyRoomId, room.reducedHandler.id)
-	log.Printf("room %s: multiserver port %d", lobbyRoomId, apPort)
 
 	// Add room to registry
 	err = rm.registry.Add(room)
@@ -975,7 +909,6 @@ func (rm *RoomManager) startNewHostedRoom(apRoomId string, lobbyRoomId string, m
 	if save {
 		if err := rm.store.Save(RoomRecord{
 			LobbyRoomId:       lobbyRoomId,
-			ApRoomId:          apRoomId,
 			NormalId:          room.normalHandler.id,
 			ReducedId:         room.reducedHandler.id,
 			CreatedAt:         time.Now(),
@@ -1678,7 +1611,7 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	slotName := vars["slotName"]
 
-	slotInfo, ok := room.apx.state.NameToSlot[slotName]
+	_, ok = room.apx.state.NameToSlot[slotName]
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -1686,34 +1619,7 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wsURL := fmt.Sprintf("ws://%s:%d", rm.config.APHost, room.apx.apPort)
-
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	c, _, err := websocket.Dial(ctx, wsURL, nil)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("connecting to AP: %v", err)})
-		return
-	}
-	defer c.CloseNow()
-
-	msg := fmt.Sprintf(
-		`[{"cmd":"Connect","version":{"major":9000,"minor":0,"build":1,"class":"Version"},"items_handling":7,"uuid":"","tags":["Admin"],"password":null,"game":%q,"name":%q},{"cmd":"StatusUpdate","status":30}]`,
-		slotInfo.Game, slotName,
-	)
-
-	if err := c.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("sending release command: %v", err)})
-		return
-	}
-
-	// Give the server a moment to process, then close
-	c.Close(websocket.StatusNormalClosure, "")
+	// TODO: Release
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "released", "slot": slotName})
@@ -1731,16 +1637,13 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 				}
 
 				log.Printf("killing idle room %s", room.lobbyRoomId)
-				apRoomId := room.apRoomId
+				room.Close()
 				if rm.store != nil {
 					if err := rm.store.Disable(room.lobbyRoomId); err != nil {
 						log.Printf("failed to disable room %s in store: %v", room.lobbyRoomId, err)
 					}
 				}
 				rm.registry.Remove(room.lobbyRoomId)
-				go func() {
-					rm.stopApRoom(apRoomId)
-				}()
 			}
 		}
 	}()
@@ -1810,89 +1713,6 @@ func (r *RoomRegistry) AllocateAndRegisterHandlerPair(normal, reduced *apxHandle
 	return nil
 }
 
-func (rm *RoomManager) stopApRoom(apRoomId string) {
-	url := fmt.Sprintf("%s/room/%s/stop", rm.config.ApApiRoot, apRoomId)
-	req, err := http.NewRequest(http.MethodPost, url, nil)
-	if err != nil {
-		log.Printf("stop AP room %s: creating request: %v", apRoomId, err)
-		return
-	}
-	req.Header.Set("X-Api-Key", rm.config.ApApiKey)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("stop AP room %s: %v", apRoomId, err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("stop AP room %s: unexpected status %d: %s", apRoomId, resp.StatusCode, body)
-	}
-}
-
-type ApRoomStatus struct {
-	Alive bool `json:"alive"`
-	Port  int  `json:"port"`
-}
-
-func ensureApRoomPort(apApiRoot string, apApiKey string, apRoomId string) (int, error) {
-	url := fmt.Sprintf("%s/room/%s/status", apApiRoot, apRoomId)
-
-	const timeout = 30 * time.Second
-	const interval = 3 * time.Second
-	deadline := time.Now().Add(timeout)
-
-	for {
-		port, err := tryGetApRoomPort(url, apApiKey, apRoomId)
-		if err == nil {
-			return port, nil
-		}
-
-		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("AP room %s did not come online within %s: %w", apRoomId, timeout, err)
-		}
-
-		log.Printf("AP room %s not ready, retrying in %s: %v", apRoomId, interval, err)
-		time.Sleep(interval)
-	}
-}
-
-func tryGetApRoomPort(url, apApiKey, apRoomId string) (int, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("X-Api-Key", apApiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("fetching room status: %w", err)
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		// good, pass through
-	case http.StatusForbidden:
-		return 0, fmt.Errorf("access denied to room %s status (check API key)", apRoomId)
-	case http.StatusServiceUnavailable:
-		return 0, fmt.Errorf("room %s not yet available", apRoomId)
-	default:
-		return 0, fmt.Errorf("unexpected status %d from /room/%s/status", resp.StatusCode, apRoomId)
-	}
-
-	var status ApRoomStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return 0, fmt.Errorf("decoding room status: %w", err)
-	}
-
-	if !status.Alive {
-		return 0, fmt.Errorf("room %s is not alive", apRoomId)
-	}
-
-	return status.Port, nil
-}
-
 func maxRoomPlayerId(nameToId map[string]int) int {
 	var maxNumber int
 	for _, id := range nameToId {
@@ -1929,4 +1749,12 @@ func fetchApxServerPassword(cfg *Config, apRoomId string) (string, error) {
 	}
 
 	return data.ApxServerPassword, nil
+}
+
+func (hs *HostedRoom) Close() {
+	// Unassign handlers so no new conns are made
+	hs.normalHandler = nil
+	hs.reducedHandler = nil
+
+	// TODO: Save now
 }
