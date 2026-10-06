@@ -121,6 +121,25 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	}
 
 	// TODO: Send connected message back
+	teamSlot := TeamSlot{slotInfo.Team, slotInfo.Slot}
+	connectedMsg := ConnectedMessage{
+		Cmd:              "Connected",
+		Team:             slotInfo.Team,
+		Slot:             slotInfo.Slot,
+		MissingLocations: s.state.Checks.GetMissing(teamSlot),
+		CheckedLocations: s.state.Checks.GetChecked(teamSlot),
+		Players:          s.state.PlayersNetwork.Get(),
+		SlotInfo:         s.state.SlotInfoNetwork,
+		HintPoints:       s.state.ServerOptions.GetHintCost(),
+	}
+	if msg.SlotData != nil && *msg.SlotData != false {
+		connectedMsg.SlotData = s.state.SlotData[teamSlot]
+	}
+
+	err := wsjson.Write(ctx, connState.clientConn, []any{connectedMsg})
+	if err != nil {
+		return err
+	}
 
 	client := registeredClient{
 		slotId:     slotInfo.Slot,

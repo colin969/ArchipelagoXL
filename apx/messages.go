@@ -183,11 +183,12 @@ type ConnectUpdateMessage struct {
 }
 
 type ConnectedMessage struct {
+	Cmd              MessageType         `json:"cmd"`
 	Team             int                 `json:"team"`
 	Slot             int                 `json:"slot"`
 	Players          []NetworkPlayer     `json:"players"`
-	MissingLocations []int64             `json:"missing_locations"`
-	CheckedLocations []int64             `json:"checked_locations"`
+	MissingLocations []int               `json:"missing_locations"`
+	CheckedLocations []int               `json:"checked_locations"`
 	SlotData         map[string]any      `json:"slot_data,omitempty"`
 	SlotInfo         map[int]NetworkSlot `json:"slot_info"`
 	HintPoints       int                 `json:"hint_points"`
@@ -247,11 +248,33 @@ type NetworkPlayer struct {
 	Name  string `json:"name"`
 }
 
+func (np NetworkPlayer) MarshalJSON() ([]byte, error) {
+	type Alias NetworkPlayer
+	return json.Marshal(struct {
+		Alias
+		Class string `json:"class"`
+	}{
+		Alias: Alias(np),
+		Class: "NetworkPlayer",
+	})
+}
+
 type NetworkSlot struct {
 	Name         string `json:"name"`
 	Game         string `json:"game"`
 	Type         int    `json:"type"`
 	GroupMembers []int  `json:"group_members"`
+}
+
+func (ns NetworkSlot) MarshalJSON() ([]byte, error) {
+	type Alias NetworkSlot
+	return json.Marshal(struct {
+		Alias
+		Class string `json:"class"`
+	}{
+		Alias: Alias(ns),
+		Class: "NetworkSlot",
+	})
 }
 
 type NetworkSlotArray struct {

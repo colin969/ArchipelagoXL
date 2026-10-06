@@ -375,7 +375,7 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
-			ServerPassword:    room.apx.state.ServerOptions.Password,
+			ServerPassword:    room.apx.state.ServerOptions.GetPassword(),
 		})
 	}
 
@@ -491,7 +491,7 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
-			ServerPassword:    room.apx.state.ServerOptions.Password,
+			ServerPassword:    room.apx.state.ServerOptions.GetPassword(),
 		}
 		json.NewEncoder(w).Encode(info)
 		return

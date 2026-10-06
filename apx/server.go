@@ -210,9 +210,10 @@ type ApxRoom struct {
 }
 
 type Location struct {
-	Item   int32
-	Player int16
-	Flags  int16
+	Item    int32
+	Player  int16
+	Flags   int16
+	Checked bool
 }
 
 type Version struct {
@@ -232,27 +233,39 @@ type Spheres []Sphere
 
 type ServerOptions struct {
 	mu                  sync.RWMutex
-	Password            string // "password" - default ""
-	HintCost            int    // "hint_cost" - default 10
-	LocationCheckPoints int    // "location_check_points" - default 1
-	ReleaseMode         string // "release_mode" - default "auto"
-	CollectMode         string // "collect_mode" - default "auto"
-	RemainingMode       string // "remaining_mode" - default "goal"
-	CountdownMode       string // "countdown_mode" - default "auto"
-	DisableItemCheat    bool   // "disable_item_cheat" - default false
-	Compatibility       int    // "compatibility" - default 2
+	password            string // "password" - default ""
+	hintCost            int    // "hint_cost" - default 10
+	locationCheckPoints int    // "location_check_points" - default 1
+	releaseMode         string // "release_mode" - default "auto"
+	collectMode         string // "collect_mode" - default "auto"
+	remainingMode       string // "remaining_mode" - default "goal"
+	countdownMode       string // "countdown_mode" - default "auto"
+	disableItemCheat    bool   // "disable_item_cheat" - default false
+	compatibility       int    // "compatibility" - default 2
+}
+
+func (so *ServerOptions) GetPassword() string {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.password
+}
+
+func (so *ServerOptions) GetHintCost() int {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.hintCost
 }
 
 func (so *ServerOptions) PasswordCheck(password *string) bool {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
-	if so.Password == "" {
+	if so.password == "" {
 		return true
 	}
 	if password == nil {
 		return false
 	}
-	return so.Password == *password
+	return so.password == *password
 }
 
 type TeamSlot struct {
@@ -288,11 +301,84 @@ type SlotInfo struct {
 	GroupMembers []int
 }
 
+type NetworkPlayers struct {
+	mu      sync.RWMutex
+	players []NetworkPlayer
+}
+
+func (np *NetworkPlayers) SetAlias(slotId int, alias string) {
+	np.mu.Lock()
+	defer np.mu.Unlock()
+	for i := range np.players {
+		if np.players[i].Slot == slotId {
+			if alias == "" {
+				np.players[i].Alias = np.players[i].Name
+			} else {
+				np.players[i].Alias = alias
+			}
+			return
+		}
+	}
+}
+
+func (np *NetworkPlayers) Get() []NetworkPlayer {
+	np.mu.RLock()
+	defer np.mu.RUnlock()
+	out := make([]NetworkPlayer, len(np.players))
+	copy(out, np.players)
+	return out
+}
+
+type Checks struct {
+	mu        sync.RWMutex
+	locations map[TeamSlot]map[int]Location // ref to immutable
+	checked   map[TeamSlot]map[int]struct{}
+}
+
+func newChecksState(locations map[TeamSlot]map[int]Location) Checks {
+	checked := make(map[TeamSlot]map[int]struct{}, len(locations))
+	for ts := range locations {
+		checked[ts] = make(map[int]struct{})
+	}
+	return Checks{locations: locations, checked: checked}
+}
+
+func (ls *Checks) IsChecked(ts TeamSlot, locID int) bool {
+	ls.mu.RLock()
+	defer ls.mu.RUnlock()
+	_, ok := ls.checked[ts][locID]
+	return ok
+}
+
+func (ls *Checks) GetChecked(ts TeamSlot) []int {
+	ls.mu.RLock()
+	defer ls.mu.RUnlock()
+	ids := make([]int, 0, len(ls.checked[ts]))
+	for id := range ls.checked[ts] {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (ls *Checks) GetMissing(ts TeamSlot) []int {
+	ls.mu.RLock()
+	defer ls.mu.RUnlock()
+	checked := ls.checked[ts]
+	missing := make([]int, 0, len(ls.locations[ts])-len(checked))
+	for id := range ls.locations[ts] {
+		if _, ok := checked[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
 type ApState struct {
-	Locations     map[TeamSlot]map[int]Location
+	Checks        Checks
 	Hints         map[TeamSlot][]Hint
 	ServerOptions *ServerOptions
 	// Immutable
+	Locations          map[TeamSlot]map[int]Location
 	NameToSlot         map[string]*SlotInfo
 	SlotInfo           map[TeamSlot]SlotInfo
 	SlotData           map[TeamSlot]map[string]any
@@ -303,6 +389,9 @@ type ApState struct {
 	Tags               []string
 	Seed               string
 	RaceMode           int
+	// Immutable for v3 Network Sending
+	PlayersNetwork  NetworkPlayers
+	SlotInfoNetwork map[int]NetworkSlot
 }
 
 // Simple per-ip rate limiter for the WS rooms
@@ -898,14 +987,14 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 			Class: "Version",
 		},
 		Tags:     s.state.Tags,
-		Password: s.perSlotPasswords || so.Password != "",
+		Password: s.perSlotPasswords || so.password != "",
 		Permissions: map[string]Permission{
-			"release":   permissionFromString(so.ReleaseMode),
-			"collect":   permissionFromString(so.CollectMode),
-			"remaining": permissionFromString(so.RemainingMode),
+			"release":   permissionFromString(so.releaseMode),
+			"collect":   permissionFromString(so.collectMode),
+			"remaining": permissionFromString(so.remainingMode),
 		},
-		HintCost:             so.HintCost,
-		LocationCheckPoints:  so.LocationCheckPoints,
+		HintCost:             so.hintCost,
+		LocationCheckPoints:  so.locationCheckPoints,
 		Games:                games,
 		DatapackageChecksums: s.roomInfo.DatapackageChecksums,
 		SeedName:             s.state.Seed,
@@ -1062,9 +1151,10 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 		inner := make(map[int]Location, len(locs))
 		for locID, t := range locs {
 			inner[locID] = Location{
-				Item:   int32(t[0]),
-				Player: int16(t[1]),
-				Flags:  int16(t[2]),
+				Item:    int32(t[0]),
+				Player:  int16(t[1]),
+				Flags:   int16(t[2]),
+				Checked: false,
 			}
 		}
 		locations[TeamSlot{Team: 0, Slot: slot}] = inner
@@ -1111,7 +1201,28 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 		startInv[TeamSlot{Team: 0, Slot: slot}] = items
 	}
 
+	// Change with teams support in future
+	playersNetwork := make([]NetworkPlayer, 0, len(md.SlotInfo))
+	slotInfoNetwork := make(map[int]NetworkSlot, len(md.SlotInfo))
+	for slot, info := range md.SlotInfo {
+		playersNetwork = append(playersNetwork, NetworkPlayer{
+			Team:  0,
+			Slot:  slot,
+			Alias: info.Name,
+			Name:  info.Name,
+		})
+		members := make([]int, len(info.GroupMembers))
+		copy(members, info.GroupMembers)
+		slotInfoNetwork[slot] = NetworkSlot{
+			Name:         info.Name,
+			Game:         info.Game,
+			Type:         int(info.Type),
+			GroupMembers: members,
+		}
+	}
+
 	return ApState{
+		Checks:             newChecksState(locations),
 		Locations:          locations,
 		NameToSlot:         nameToSlot,
 		SlotInfo:           slotInfoMap,
@@ -1128,18 +1239,22 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 		Tags:          md.Tags,
 		Seed:          md.SeedName,
 		RaceMode:      md.RaceMode,
+		PlayersNetwork: NetworkPlayers{
+			players: playersNetwork,
+		},
+		SlotInfoNetwork: slotInfoNetwork,
 	}, nil
 }
 
 func defaultServerOptions() ServerOptions {
 	return ServerOptions{
-		HintCost:            10,
-		LocationCheckPoints: 1,
-		ReleaseMode:         "auto",
-		CollectMode:         "auto",
-		RemainingMode:       "goal",
-		CountdownMode:       "auto",
-		Compatibility:       2,
+		hintCost:            10,
+		locationCheckPoints: 1,
+		releaseMode:         "auto",
+		collectMode:         "auto",
+		remainingMode:       "goal",
+		countdownMode:       "auto",
+		compatibility:       2,
 	}
 }
 
@@ -1147,47 +1262,47 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 	opts := defaultServerOptions()
 	if v, ok := raw["password"]; ok {
 		if s, ok := v.(string); ok {
-			opts.Password = s
+			opts.password = s
 		}
 	}
 	if v, ok := raw["hint_cost"]; ok {
 		if n, ok := toInt(v); ok {
-			opts.HintCost = n
+			opts.hintCost = n
 		}
 	}
 	if v, ok := raw["location_check_points"]; ok {
 		if n, ok := toInt(v); ok {
-			opts.LocationCheckPoints = n
+			opts.locationCheckPoints = n
 		}
 	}
 	if v, ok := raw["release_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.ReleaseMode = s
+			opts.releaseMode = s
 		}
 	}
 	if v, ok := raw["collect_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.CollectMode = s
+			opts.collectMode = s
 		}
 	}
 	if v, ok := raw["remaining_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.RemainingMode = s
+			opts.remainingMode = s
 		}
 	}
 	if v, ok := raw["countdown_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.CountdownMode = s
+			opts.countdownMode = s
 		}
 	}
 	if v, ok := raw["disable_item_cheat"]; ok {
 		if b, ok := v.(bool); ok {
-			opts.DisableItemCheat = b
+			opts.disableItemCheat = b
 		}
 	}
 	if v, ok := raw["compatibility"]; ok {
 		if n, ok := toInt(v); ok {
-			opts.Compatibility = n
+			opts.compatibility = n
 		}
 	}
 	return &opts
