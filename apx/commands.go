@@ -41,7 +41,7 @@ func (g *chatCommandGroup) Handle(ctx context.Context, connState *connectionStat
 	for _, cmd := range g.commands {
 		lines = append(lines, fmt.Sprintf("!%s %s - %s", g.prefix, cmd.name, cmd.description))
 	}
-	SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, strings.Join(lines, "\n"))
+	SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, strings.Join(lines, "\n"))
 	return true, nil
 }
 
@@ -51,7 +51,7 @@ func (s ApxRoom) apxCommandGroup() *chatCommandGroup {
 			name:        "status",
 			description: "Show room status",
 			handler: func(ctx context.Context, connState *connectionState, args string) error {
-				SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, s.StatusString(connState.registeredClient))
+				SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, s.StatusString(connState.registeredClient))
 				return nil
 			},
 		},

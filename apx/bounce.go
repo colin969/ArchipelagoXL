@@ -185,7 +185,7 @@ func (s ApxRoom) handleBounce(ctx context.Context, connState *connectionState, r
 		}
 	}
 
-	s.connections.BroadcastBounceFromSlot(ctx, msg, s.bounceInfo, connState.registeredClient.slotId, connState.slotName, connState.registeredClient.game, s.metrics)
+	s.connections.BroadcastBounceFromSlot(ctx, msg, s.bounceInfo, connState.registeredClient.Slot, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
 }
@@ -223,10 +223,10 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 		dl.Source = connState.slotName
 	}
 
-	s.bounceInfo.Add(connState.registeredClient.slotId)
+	s.bounceInfo.Add(connState.registeredClient.Slot)
 	log.Printf("deathlink: slot=%q source=%q cause=%v", *connState.slotName, *dl.Source, dl.Cause)
 	if s.logDeath != nil {
-		s.logDeath(connState.registeredClient.slotId)
+		s.logDeath(connState.registeredClient.Slot)
 	}
 
 	probability := s.bounceInfo.GetProbability()
@@ -253,7 +253,7 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 		return fmt.Errorf("updating bounce message data: %w", err)
 	}
 
-	s.connections.BroadcastBounceFromSlot(ctx, msg, s.bounceInfo, connState.registeredClient.slotId, connState.slotName, connState.registeredClient.game, s.metrics)
+	s.connections.BroadcastBounceFromSlot(ctx, msg, s.bounceInfo, connState.registeredClient.Slot, connState.slotName, connState.registeredClient.game, s.metrics)
 
 	return nil
 }

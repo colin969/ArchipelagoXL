@@ -61,7 +61,7 @@ func TestBroadcastBounce(t *testing.T) {
 			conn, received := newTestWSClient(t)
 
 			rc := &registeredClient{
-				slotId:     tc.clientSlot,
+				Slot:       tc.clientSlot,
 				game:       &tc.clientGame,
 				clientConn: conn,
 				cancel:     func() {},
@@ -105,7 +105,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 
 	t.Run("all nil, no delivery", func(t *testing.T) {
 		conn, received := newTestWSClient(t)
-		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: 1, game: &game, clientConn: conn, cancel: func() {}}
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(1, rc, game, []string{"DeathLink"})
 
@@ -125,7 +125,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 
 	t.Run("nil slots and games, tags set, tag match", func(t *testing.T) {
 		conn, received := newTestWSClient(t)
-		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: 1, game: &game, clientConn: conn, cancel: func() {}}
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(1, rc, game, []string{"DeathLink"})
 
@@ -146,7 +146,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 
 	t.Run("nil tags and games, slots set, slot match", func(t *testing.T) {
 		conn, received := newTestWSClient(t)
-		rc := &registeredClient{slotId: 3, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: 3, game: &game, clientConn: conn, cancel: func() {}}
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(3, rc, game, nil)
 
@@ -167,7 +167,7 @@ func TestBroadcastBounceNilFields(t *testing.T) {
 
 	t.Run("nil tags and slots, games set, game match", func(t *testing.T) {
 		conn, received := newTestWSClient(t)
-		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: 1, game: &game, clientConn: conn, cancel: func() {}}
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(1, rc, game, nil)
 
@@ -245,7 +245,7 @@ func TestBroadcastBounceNilFieldsPassthrough(t *testing.T) {
 			t.Fatalf("dial: %v", err)
 		}
 
-		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: 1, game: &game, clientConn: conn, cancel: func() {}}
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(1, rc, game, []string{"DeathLink"})
 
@@ -393,7 +393,7 @@ func TestBroadcastBounceSenderTagExclusion(t *testing.T) {
 			t.Fatalf("dial: %v", err)
 		}
 
-		rc := &registeredClient{slotId: slotId, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: slotId, game: &game, clientConn: conn, cancel: func() {}}
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(slotId, rc, game, tags)
 
@@ -453,7 +453,7 @@ func TestBroadcastBounceSenderTagExclusion(t *testing.T) {
 			t.Fatalf("dial slot2 client: %v", err)
 		}
 
-		rc2 := &registeredClient{slotId: 2, game: &game, clientConn: conn2, cancel: func() {}}
+		rc2 := &registeredClient{Slot: 2, game: &game, clientConn: conn2, cancel: func() {}}
 		reg := newConnectionRegistry(nil, nil)
 		reg.Register(2, rc2, game, []string{"DeathLink", "AP"})
 
@@ -488,7 +488,7 @@ func TestHandleDeathLink(t *testing.T) {
 	makeConnState := func(t *testing.T, reg *connectionRegistry, slotId int) *connectionState {
 		t.Helper()
 		conn, _ := newTestWSClient(t)
-		rc := &registeredClient{slotId: slotId, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: slotId, game: &game, clientConn: conn, cancel: func() {}}
 		reg.Register(slotId, rc, game, []string{"DeathLink"})
 		return &connectionState{
 			registeredClient: rc,
@@ -551,7 +551,7 @@ func TestHandleDeathLink(t *testing.T) {
 		}
 
 		reg := newConnectionRegistry(nil, nil)
-		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: 1, game: &game, clientConn: conn, cancel: func() {}}
 		reg.Register(1, rc, game, []string{"DeathLink"})
 
 		cs := &connectionState{registeredClient: rc, slotName: &slotName}
@@ -580,7 +580,7 @@ func TestHandleDeathLink(t *testing.T) {
 	t.Run("missing source field returns error", func(t *testing.T) {
 		reg := newConnectionRegistry(nil, nil)
 		conn, _ := newTestWSClient(t)
-		rc := &registeredClient{slotId: 1, game: &game, clientConn: conn, cancel: func() {}}
+		rc := &registeredClient{Slot: 1, game: &game, clientConn: conn, cancel: func() {}}
 		reg.Register(1, rc, game, []string{"DeathLink"})
 
 		cs := &connectionState{registeredClient: rc, slotName: &slotName}
@@ -628,8 +628,8 @@ func TestHandleDeathLink(t *testing.T) {
 		conn1 := makeRawConn(t)
 		conn2 := makeRawConn(t)
 
-		rc1 := &registeredClient{slotId: 1, game: &game, clientConn: conn1, cancel: func() {}}
-		rc2 := &registeredClient{slotId: 2, game: &game, clientConn: conn2, cancel: func() {}}
+		rc1 := &registeredClient{Slot: 1, game: &game, clientConn: conn1, cancel: func() {}}
+		rc2 := &registeredClient{Slot: 2, game: &game, clientConn: conn2, cancel: func() {}}
 		reg.Register(1, rc1, game, []string{"DeathLink"})
 		reg.Register(2, rc2, game, []string{"DeathLink"})
 
@@ -664,8 +664,8 @@ func TestConnectionRegistry(t *testing.T) {
 		cr := newConnectionRegistry(nil, nil)
 		game := "TestGame"
 		client := &registeredClient{
-			slotId: 1,
-			game:   &game,
+			Slot: 1,
+			game: &game,
 		}
 
 		cr.Register(1, client, game, []string{"DeathLink"})
@@ -693,8 +693,8 @@ func TestConnectionRegistry(t *testing.T) {
 		cr := newConnectionRegistry(nil, nil)
 		game := "TestGame"
 		client := &registeredClient{
-			slotId: 1,
-			game:   &game,
+			Slot: 1,
+			game: &game,
 		}
 
 		cr.Register(1, client, game, []string{"DeathLink"})
@@ -722,8 +722,8 @@ func TestConnectionRegistry(t *testing.T) {
 	t.Run("MultipleConnectsSameSlot", func(t *testing.T) {
 		cr := newConnectionRegistry(nil, nil)
 		game := "TestGame"
-		c1 := &registeredClient{slotId: 1, game: &game}
-		c2 := &registeredClient{slotId: 1, game: &game}
+		c1 := &registeredClient{Slot: 1, game: &game}
+		c2 := &registeredClient{Slot: 1, game: &game}
 
 		cr.Register(1, c1, game, []string{})
 		cr.Register(1, c2, game, []string{})

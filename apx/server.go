@@ -373,8 +373,30 @@ func (ls *Checks) GetMissing(ts TeamSlot) []int {
 	return missing
 }
 
+type ReceivedItemsKey struct {
+	Team        int
+	Slot        int
+	RemoteItems bool
+}
+
+type ReceivedItems struct {
+	mu            sync.RWMutex
+	receivedItems map[ReceivedItemsKey][]NetworkItem
+}
+
+func newReceivedItems() ReceivedItems {
+	return ReceivedItems{receivedItems: make(map[ReceivedItemsKey][]NetworkItem)}
+}
+
+func (ri *ReceivedItems) Get(key ReceivedItemsKey) []NetworkItem {
+	ri.mu.RLock()
+	defer ri.mu.RUnlock()
+	return ri.receivedItems[key]
+}
+
 type ApState struct {
 	Checks        Checks
+	ReceivedItems ReceivedItems
 	Hints         map[TeamSlot][]Hint
 	ServerOptions *ServerOptions
 	// Immutable
@@ -419,7 +441,8 @@ func newIPRateLimiter() *IPRateLimiter {
 
 // No strict lock, but this MUST be immutable to be safe
 type registeredClient struct {
-	slotId     int
+	Team       int
+	Slot       int
 	slotName   *string
 	game       *string
 	cancel     context.CancelFunc
@@ -528,15 +551,15 @@ func (cr *connectionRegistry) Unregister(client *registeredClient) {
 	cr.mu.Lock()
 
 	// Remove client from slot names arrays
-	clients := cr.clients[client.slotId]
+	clients := cr.clients[client.Slot]
 	i := slices.Index(clients, client)
 	if i < 0 {
 		cr.mu.Unlock()
 		return
 	}
-	cr.clients[client.slotId] = slices.Delete(clients, i, i+1)
-	if len(cr.clients[client.slotId]) == 0 {
-		delete(cr.clients, client.slotId)
+	cr.clients[client.Slot] = slices.Delete(clients, i, i+1)
+	if len(cr.clients[client.Slot]) == 0 {
+		delete(cr.clients, client.Slot)
 	}
 
 	game := *client.game
@@ -594,7 +617,7 @@ func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg Bou
 	seen := make(map[*registeredClient]struct{}, 4)
 
 	addTarget := func(c *registeredClient) {
-		if c.slotId != senderSlot {
+		if c.Slot != senderSlot {
 			return
 		}
 		if _, ok := seen[c]; ok {
@@ -653,14 +676,14 @@ func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMes
 	seen := make(map[*registeredClient]struct{}, 4)
 
 	addTarget := func(c *registeredClient) {
-		if c.slotId == senderSlot {
+		if c.Slot == senderSlot {
 			return
 		}
 		if _, ok := seen[c]; ok {
 			return
 		}
 		seen[c] = struct{}{}
-		if bounceInfo.IsLimitedToOwnSlot(c.slotId) {
+		if bounceInfo.IsLimitedToOwnSlot(c.Slot) {
 			return
 		}
 		targets = append(targets, c)
@@ -713,7 +736,7 @@ func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMes
 }
 
 func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, slotId int, msg string) {
-	message := PrintJsonChatMessage{
+	message := PrintJsonMessage{
 		Cmd: "PrintJSON",
 		Data: []JsonMessagePart{
 			{
@@ -723,16 +746,16 @@ func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, sl
 			},
 		},
 		Type:    "Chat",
-		Team:    0,
-		Slot:    slotId,
-		Message: msg,
+		Team:    new(0),
+		Slot:    new(slotId),
+		Message: new(msg),
 	}
 
 	_ = wsjson.Write(ctx, clientConn, []any{message})
 }
 
 func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId int, msg string, metrics *metrics) error {
-	message := PrintJsonChatMessage{
+	message := PrintJsonMessage{
 		Cmd: "PrintJSON",
 		Data: []JsonMessagePart{
 			{
@@ -742,9 +765,9 @@ func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId 
 			},
 		},
 		Type:    "Chat",
-		Team:    0,
-		Slot:    slotId,
-		Message: msg,
+		Team:    new(0),
+		Slot:    new(slotId),
+		Message: new(msg),
 	}
 
 	cr.mu.RLock()
@@ -1003,9 +1026,9 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 
 func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw json.RawMessage) error {
 	// Shovel logs to any debug listeners
-	if connState.authenticated && s.debugTap != nil && s.debugTap.HasListeners(connState.registeredClient.slotId) {
+	if connState.authenticated && s.debugTap != nil && s.debugTap.HasListeners(connState.registeredClient.Slot) {
 		if raw, err := json.Marshal(raw); err == nil {
-			s.debugTap.Send(connState.registeredClient.slotId, raw)
+			s.debugTap.Send(connState.registeredClient.Slot, raw)
 		}
 	}
 
@@ -1114,16 +1137,49 @@ func (s ApxRoom) StatusString(client *registeredClient) string {
 
 	if client != nil {
 		lines = append(lines, "--- Your Status ---")
-		lines = append(lines, fmt.Sprintf("Deaths: %d", deaths[client.slotId]))
-		if tags := s.bounceInfo.GetTagExclusionsForSlot(client.slotId); len(tags) > 0 {
+		lines = append(lines, fmt.Sprintf("Deaths: %d", deaths[client.Slot]))
+		if tags := s.bounceInfo.GetTagExclusionsForSlot(client.Slot); len(tags) > 0 {
 			lines = append(lines, fmt.Sprintf("Blocked Bounce tags: %s", strings.Join(tags, ", ")))
 		}
-		if s.bounceInfo.IsLimitedToOwnSlot(client.slotId) {
+		if s.bounceInfo.IsLimitedToOwnSlot(client.Slot) {
 			lines = append(lines, "You are isolated from other players bounces")
 		}
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func (s ApxRoom) SendInitialItems(ctx context.Context, client registeredClient, itemsHandling int) error {
+	if itemsHandling == 0 {
+		return nil
+	}
+
+	// Grab both arrays if appropriate first, to avoid extra allocations
+	var startInv, received []NetworkItem
+
+	if (itemsHandling & 0b100) != 0 {
+		startInv = s.state.SlotStartInventory[TeamSlot{client.Team, client.Slot}]
+	}
+
+	if (itemsHandling & 0b001) != 0 {
+		remoteItems := itemsHandling&0b010 != 0
+		received = s.state.ReceivedItems.Get(ReceivedItemsKey{Team: client.Team, Slot: client.Slot, RemoteItems: remoteItems})
+	}
+
+	if len(startInv) == 0 && len(received) == 0 {
+		return nil
+	}
+
+	items := make([]NetworkItem, 0, len(startInv)+len(received))
+	items = append(items, startInv...)
+	items = append(items, received...)
+
+	msg := ReceivedItemsMessage{
+		Cmd:   "ReceivedItems",
+		Index: 0,
+		Items: items,
+	}
+	return wsjson.Write(ctx, client.clientConn, []any{msg})
 }
 
 func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
@@ -1223,6 +1279,7 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 
 	return ApState{
 		Checks:             newChecksState(locations),
+		ReceivedItems:      newReceivedItems(),
 		Locations:          locations,
 		NameToSlot:         nameToSlot,
 		SlotInfo:           slotInfoMap,

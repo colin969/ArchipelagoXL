@@ -142,7 +142,8 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	}
 
 	client := registeredClient{
-		slotId:     slotInfo.Slot,
+		Team:       slotInfo.Team,
+		Slot:       slotInfo.Slot,
 		slotName:   &slotInfo.Name,
 		game:       &slotInfo.Game,
 		cancel:     connState.cancel,
@@ -152,6 +153,34 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	s.connections.Register(slotInfo.Slot, &client, slotInfo.Game, msg.Tags)
 	connState.authenticated = true
 	connState.registeredClient = &client
+
+	// Send items (if they asked)
+	if msg.ItemsHandling == nil {
+		*msg.ItemsHandling = 7
+	}
+	err = s.SendInitialItems(ctx, client, *msg.ItemsHandling)
+	if err != nil {
+		return err
+	}
+
+	m := "You are connected :)"
+	// Send initial connection messages
+	printMsg := PrintJsonMessage{
+		Cmd:  "PrintJSON",
+		Type: "Tutorial",
+		Data: []JsonMessagePart{
+			{
+				Type:  "text",
+				Text:  m,
+				Color: "bold",
+			},
+		},
+		Message: &m,
+	}
+	err = wsjson.Write(ctx, client.clientConn, []any{printMsg})
+	if err != nil {
+		return err
+	}
 
 	log.Printf("[WS] Connected to %s", msg.Name)
 
@@ -170,18 +199,19 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 
 	trimmed := strings.ToLower(strings.TrimSpace(text))
 	if strings.HasPrefix(trimmed, "!countdown") {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, "You're not allowed to do this")
 		return nil
 	}
 	if strings.HasPrefix(trimmed, "!players") {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.slotId, "You're not allowed to do this")
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, "You're not allowed to do this")
 		return nil
 	}
 	if handled, err := s.apxCommandGroup().Handle(ctx, connState, trimmed); handled {
 		return err
 	}
 
-	// TODO: Implement Say
+	// TODO: Implement Say properly
+	SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, fmt.Sprintf("%s: %s", *connState.registeredClient.slotName, packet.Text))
 
 	return nil
 }

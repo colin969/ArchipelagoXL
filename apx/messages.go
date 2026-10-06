@@ -199,13 +199,17 @@ type SayMessage struct {
 	Text string      `json:"text"`
 }
 
-type PrintJsonChatMessage struct {
-	Cmd     MessageType       `json:"cmd"`
-	Data    []JsonMessagePart `json:"data"`
-	Type    string            `json:"type"`
-	Team    int               `json:"team"`
-	Slot    int               `json:"slot"`
-	Message string            `json:"message"`
+type PrintJsonMessage struct {
+	Cmd       MessageType       `json:"cmd"`
+	Data      []JsonMessagePart `json:"data"`
+	Type      string            `json:"type"`
+	Receiving *int              `json:"receiving,omitempty"`
+	Item      *NetworkItem      `json:"item,omitempty"`
+	Found     *bool             `json:"found,omitempty"`
+	Team      *int              `json:"team,omitempty"`
+	Slot      *int              `json:"slot,omitempty"`
+	Tags      []string          `json:"tags,omitempty"`
+	Message   *string           `json:"message,omitempty"`
 }
 
 type HintStatus int
@@ -333,6 +337,12 @@ type NetworkVersion struct {
 	Major IntOrString `json:"major"`
 	Minor IntOrString `json:"minor"`
 	Build IntOrString `json:"build"`
+}
+
+type ReceivedItemsMessage struct {
+	Cmd   MessageType   `json:"cmd"`
+	Index int           `json:"index"`
+	Items []NetworkItem `json:"items"`
 }
 
 type PacketProblemType string
