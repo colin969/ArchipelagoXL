@@ -123,7 +123,6 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	// TODO: Send connected message back
 	teamSlot := TeamSlot{slotInfo.Team, slotInfo.Slot}
 	connectedMsg := ConnectedMessage{
-		Cmd:              "Connected",
 		Team:             slotInfo.Team,
 		Slot:             slotInfo.Slot,
 		MissingLocations: s.state.Checks.GetMissing(teamSlot),
@@ -141,7 +140,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		return err
 	}
 
-	client := registeredClient{
+	client := RegisteredClient{
 		Team:       slotInfo.Team,
 		Slot:       slotInfo.Slot,
 		slotName:   &slotInfo.Name,
@@ -158,25 +157,13 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	if msg.ItemsHandling == nil {
 		*msg.ItemsHandling = 7
 	}
-	err = s.SendInitialItems(ctx, client, *msg.ItemsHandling)
+	err = s.SyncReceivedItems(ctx, &client, *msg.ItemsHandling)
 	if err != nil {
 		return err
 	}
 
-	m := "You are connected :)"
 	// Send initial connection messages
-	printMsg := PrintJsonMessage{
-		Cmd:  "PrintJSON",
-		Type: "Tutorial",
-		Data: []JsonMessagePart{
-			{
-				Type:  "text",
-				Text:  m,
-				Color: "bold",
-			},
-		},
-		Message: &m,
-	}
+	printMsg := simplePrintJsonMessage("Tutorial", "You are connected :)")
 	err = wsjson.Write(ctx, client.clientConn, []any{printMsg})
 	if err != nil {
 		return err
@@ -374,7 +361,7 @@ func (s ApxRoom) isFullFeedAllowed(slotKey int) bool {
 
 func (s ApxRoom) sendConnectionRefused(ctx context.Context, connState *connectionState, reason string, name string) error {
 	s.logf("%s for %s", reason, name)
-	msg := ConnectionRefusedMessage{Cmd: "ConnectionRefused", Errors: []string{reason}}
+	msg := ConnectionRefusedMessage{Errors: []string{reason}}
 
 	if s.lokiLogger != nil {
 		if raw, err := json.Marshal(msg); err == nil {

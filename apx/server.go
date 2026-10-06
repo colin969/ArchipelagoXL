@@ -373,6 +373,104 @@ func (ls *Checks) GetMissing(ts TeamSlot) []int {
 	return missing
 }
 
+func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState, teamSlot TeamSlot, locations []int) error {
+	newChecks := make(map[int]struct{})
+
+	// Mark new locations as found, and collect the items found
+	s.state.Checks.mu.Lock()
+
+	checked := s.state.Checks.checked[teamSlot]
+	known := s.state.Checks.locations[teamSlot]
+
+	var newItems []NetworkItem
+	for _, locID := range locations {
+		if _, alreadyChecked := checked[locID]; alreadyChecked {
+			continue
+		}
+		loc, ok := known[locID]
+		if !ok {
+			continue // ignore unknown location IDs
+		}
+		checked[locID] = struct{}{}
+		newChecks[locID] = struct{}{}
+		newItems = append(newItems, NetworkItem{
+			Item:     loc.Item,
+			Location: int32(locID),
+			Player:   loc.Player,
+		})
+	}
+
+	s.state.Checks.mu.Unlock()
+
+	// Send items out to relevant clients
+	if len(newItems) > 0 {
+		s.state.ReceivedItems.mu.Lock()
+		for _, item := range newItems {
+			keyAll := ReceivedItemsKey{Team: teamSlot.Team, Slot: int(item.Player), RemoteItems: true}
+			s.state.ReceivedItems.receivedItems[keyAll] = append(s.state.ReceivedItems.receivedItems[keyAll], item)
+			if int(item.Player) != teamSlot.Slot {
+				keyForeign := ReceivedItemsKey{Team: teamSlot.Team, Slot: int(item.Player), RemoteItems: false}
+				s.state.ReceivedItems.receivedItems[keyForeign] = append(s.state.ReceivedItems.receivedItems[keyForeign], item)
+			}
+		}
+		s.state.ReceivedItems.mu.Unlock()
+
+		affectedSlots := make(map[TeamSlot]struct{})
+		for _, item := range newItems {
+			affectedSlots[TeamSlot{0, int(item.Player)}] = struct{}{}
+		}
+
+		if len(affectedSlots) > 0 {
+			s.SendNewItems(ctx, affectedSlots)
+		}
+	}
+
+	// Send room update to sender
+	if len(newChecks) > 0 {
+		checkedList := make([]int, 0, len(newChecks))
+		for locID := range newChecks {
+			checkedList = append(checkedList, locID)
+		}
+		return wsjson.Write(ctx, connState.clientConn, []any{RoomUpdateMessage{
+			CheckedLocations: checkedList,
+			HintPoints:       new(100),
+		}})
+	}
+
+	return nil
+}
+
+func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]struct{}) {
+	s.connections.mu.Lock()
+	for teamSlot := range affectedSlots {
+		for _, client := range s.connections.clients[teamSlot.Slot] {
+			clientItemsHandling := int(client.itemsHandling.Load())
+			if clientItemsHandling == ItemsHandlingNone {
+				continue
+			}
+
+			var startInv, receivedItems []NetworkItem
+
+			if clientItemsHandling&ItemsHandlingStartingInventory != 0 {
+				startInv = s.state.SlotStartInventory[TeamSlot{client.Team, client.Slot}]
+			}
+
+			receivedItems = s.state.ReceivedItems.Get(ReceivedItemsKey{teamSlot.Team, teamSlot.Slot, clientItemsHandling&ItemsHandlingOwn != 0})
+
+			sendIndex := int(client.sendIndex.Load())
+			if len(startInv)+len(receivedItems) > sendIndex {
+				firstNewItem := max(0, sendIndex-len(startInv))
+				items := append(startInv[sendIndex:], receivedItems[firstNewItem:]...)
+				wsjson.Write(ctx, client.clientConn, []any{ReceivedItemsMessage{
+					Index: sendIndex,
+					Items: items,
+				}})
+				client.sendIndex.Store(int32(len(startInv) + len(receivedItems)))
+			}
+		}
+	}
+}
+
 type ReceivedItemsKey struct {
 	Team        int
 	Slot        int
@@ -398,6 +496,7 @@ type ApState struct {
 	Checks        Checks
 	ReceivedItems ReceivedItems
 	Hints         map[TeamSlot][]Hint
+	HintsUsed     map[TeamSlot]int
 	ServerOptions *ServerOptions
 	// Immutable
 	Locations          map[TeamSlot]map[int]Location
@@ -440,17 +539,27 @@ func newIPRateLimiter() *IPRateLimiter {
 }
 
 // No strict lock, but this MUST be immutable to be safe
-type registeredClient struct {
-	Team       int
-	Slot       int
-	slotName   *string
-	game       *string
-	cancel     context.CancelFunc
-	clientConn *websocket.Conn
-	reduced    bool
+type RegisteredClient struct {
+	Team          int
+	Slot          int
+	slotName      *string
+	game          *string
+	cancel        context.CancelFunc
+	clientConn    *websocket.Conn
+	reduced       bool
+	sendIndex     atomic.Int32
+	itemsHandling atomic.Int32
 }
 
-func removeClient(clients []*registeredClient, target *registeredClient) []*registeredClient {
+func (c *RegisteredClient) GetItemsHandling() int {
+	return int(c.itemsHandling.Load())
+}
+
+func (c *RegisteredClient) SetItemsHandling(v int) {
+	c.itemsHandling.Store(int32(v))
+}
+
+func removeClient(clients []*RegisteredClient, target *RegisteredClient) []*RegisteredClient {
 	i := slices.Index(clients, target)
 	if i < 0 {
 		return clients
@@ -461,11 +570,11 @@ func removeClient(clients []*registeredClient, target *registeredClient) []*regi
 // Stores data from all connected clients which is needed globally
 type connectionRegistry struct {
 	mu      sync.RWMutex
-	clients map[int][]*registeredClient
+	clients map[int][]*RegisteredClient
 	// Tags being covered here means registeredClient can stay immutable
-	tags          map[*registeredClient][]string
-	clientsByGame map[string][]*registeredClient
-	clientsByTag  map[string][]*registeredClient
+	tags          map[*RegisteredClient][]string
+	clientsByGame map[string][]*RegisteredClient
+	clientsByTag  map[string][]*RegisteredClient
 	// Just a copy of the static data so we can use it during register / unregister etc
 	lobbyRoomId *string
 	metrics     *metrics
@@ -473,16 +582,16 @@ type connectionRegistry struct {
 
 func newConnectionRegistry(lobbyRoomId *string, metrics *metrics) *connectionRegistry {
 	return &connectionRegistry{
-		clients:       make(map[int][]*registeredClient),
-		tags:          make(map[*registeredClient][]string),
-		clientsByGame: make(map[string][]*registeredClient),
-		clientsByTag:  make(map[string][]*registeredClient),
+		clients:       make(map[int][]*RegisteredClient),
+		tags:          make(map[*RegisteredClient][]string),
+		clientsByGame: make(map[string][]*RegisteredClient),
+		clientsByTag:  make(map[string][]*RegisteredClient),
 		lobbyRoomId:   lobbyRoomId,
 		metrics:       metrics,
 	}
 }
 
-func (cr *connectionRegistry) Register(slotId int, client *registeredClient, game string, tags []string) {
+func (cr *connectionRegistry) Register(slotId int, client *RegisteredClient, game string, tags []string) {
 	cr.mu.Lock()
 	cr.clients[slotId] = append(cr.clients[slotId], client)
 	cr.tags[client] = tags
@@ -501,7 +610,7 @@ func (cr *connectionRegistry) Register(slotId int, client *registeredClient, gam
 }
 
 // There HAS to be a safer way of doing this surely
-func (cr *connectionRegistry) UpdateTags(client *registeredClient, tags []string) {
+func (cr *connectionRegistry) UpdateTags(client *RegisteredClient, tags []string) {
 	cr.mu.Lock()
 	defer cr.mu.Unlock()
 	// Remove from old tag indices
@@ -547,7 +656,7 @@ func (cr *connectionRegistry) Kick(slotId int) {
 	}
 }
 
-func (cr *connectionRegistry) Unregister(client *registeredClient) {
+func (cr *connectionRegistry) Unregister(client *RegisteredClient) {
 	cr.mu.Lock()
 
 	// Remove client from slot names arrays
@@ -613,10 +722,10 @@ func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg B
 
 // broadcastBounceToSlot sends to senderSlot clients that match the message criteria, before tag exclusion.
 func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg BounceMessage, senderSlot int, slotName *string, gameName *string, metrics *metrics) error {
-	targets := make([]*registeredClient, 0, 4)
-	seen := make(map[*registeredClient]struct{}, 4)
+	targets := make([]*RegisteredClient, 0, 4)
+	seen := make(map[*RegisteredClient]struct{}, 4)
 
-	addTarget := func(c *registeredClient) {
+	addTarget := func(c *RegisteredClient) {
 		if c.Slot != senderSlot {
 			return
 		}
@@ -672,10 +781,10 @@ func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg Bou
 
 func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) error {
 	// Most will match 2 clients, but give a tiny bit of give
-	targets := make([]*registeredClient, 0, 4)
-	seen := make(map[*registeredClient]struct{}, 4)
+	targets := make([]*RegisteredClient, 0, 4)
+	seen := make(map[*RegisteredClient]struct{}, 4)
 
-	addTarget := func(c *registeredClient) {
+	addTarget := func(c *RegisteredClient) {
 		if c.Slot == senderSlot {
 			return
 		}
@@ -737,7 +846,6 @@ func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMes
 
 func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, slotId int, msg string) {
 	message := PrintJsonMessage{
-		Cmd: "PrintJSON",
 		Data: []JsonMessagePart{
 			{
 				Type:  "text",
@@ -756,7 +864,6 @@ func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, sl
 
 func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId int, msg string, metrics *metrics) error {
 	message := PrintJsonMessage{
-		Cmd: "PrintJSON",
 		Data: []JsonMessagePart{
 			{
 				Type:  "text",
@@ -794,7 +901,7 @@ type connectionState struct {
 	clientConn              *websocket.Conn
 	reduced                 bool
 	pendingDatapackGames    []string
-	registeredClient        *registeredClient
+	registeredClient        *RegisteredClient
 	authFailCount           int
 	prevDatapackageGamesReq string
 	remoteAddr              string
@@ -860,8 +967,10 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 	}
 	defer c.CloseNow()
 
-	s.metrics.connectedClients.WithLabelValues(s.lobbyRoomId).Inc()
-	defer s.metrics.connectedClients.WithLabelValues(s.lobbyRoomId).Dec()
+	if s.metrics != nil {
+		s.metrics.connectedClients.WithLabelValues(s.lobbyRoomId).Inc()
+		defer s.metrics.connectedClients.WithLabelValues(s.lobbyRoomId).Dec()
+	}
 
 	c.SetReadLimit(wsReadLimit)
 
@@ -917,15 +1026,12 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		}
 
 		for _, message := range messages {
-			var header struct {
-				Cmd string `json:"cmd"`
-			}
-			if err := json.Unmarshal(message, &header); err != nil || header.Cmd == "" {
+			cmd, err := getPacketCmd(message)
+			if err != nil {
 				sendInvalidPacket(ctx, connState.clientConn, PacketProblemCmd, nil,
 					fmt.Sprintf("message missing or invalid cmd field: %s", message), s.lokiLogger, connState.slotName)
 				continue
 			}
-			cmd := header.Cmd
 
 			if cmd == "" {
 				sendInvalidPacket(ctx, connState.clientConn, PacketProblemCmd, nil, fmt.Sprintf("message missing or invalid cmd field: %v", message), s.lokiLogger, connState.slotName)
@@ -947,6 +1053,19 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 			}
 		}
 	}
+}
+
+func getPacketCmd(msg json.RawMessage) (string, error) {
+	var header struct {
+		Cmd string `json:"cmd"`
+	}
+	if err := json.Unmarshal(msg, &header); err != nil {
+		return "", err
+	}
+	if header.Cmd == "" {
+		return "", fmt.Errorf("message missing or invalid cmd field: %s", msg)
+	}
+	return header.Cmd, nil
 }
 
 // Multiserver defaults are 20 and 20, we're a little more generous I guess
@@ -996,7 +1115,6 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 	defer so.mu.RUnlock()
 
 	s.roomInfo.Store(RoomInfoMessage{
-		Cmd: "RoomInfo",
 		Version: NetworkVersion{
 			Major: IntOrString(s.state.Version.Major),
 			Minor: IntOrString(s.state.Version.Minor),
@@ -1048,6 +1166,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleConnectUpdate(ctx, connState, raw)
 		case MessageTypeSay:
 			return s.handleSay(ctx, connState, raw)
+		case MessageTypeLocationChecks:
+			return s.handleLocationChecks(ctx, connState, raw)
 		default:
 			// TODO: Handle message types
 
@@ -1064,6 +1184,17 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return nil
 		}
 	}
+}
+
+func (s ApxRoom) handleLocationChecks(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg LocationChecksMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeLocationChecks
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid LocationChecks arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	err := s.RegisterChecks(ctx, connState, TeamSlot{connState.registeredClient.Slot, connState.registeredClient.Team}, msg.Locations)
+	return err
 }
 
 func (dt *debugTap) HasListeners(slotId int) bool {
@@ -1117,7 +1248,7 @@ func (dt *debugTap) Send(slotId int, raw []byte) {
 	}
 }
 
-func (s ApxRoom) StatusString(client *registeredClient) string {
+func (s ApxRoom) StatusString(client *RegisteredClient) string {
 	connected := s.connections.ConnectedSlotCount()
 	total := len(s.state.SlotData)
 	probability := s.bounceInfo.GetProbability()
@@ -1149,36 +1280,37 @@ func (s ApxRoom) StatusString(client *registeredClient) string {
 	return strings.Join(lines, "\n")
 }
 
-func (s ApxRoom) SendInitialItems(ctx context.Context, client registeredClient, itemsHandling int) error {
+func (s ApxRoom) SyncReceivedItems(ctx context.Context, client *RegisteredClient, itemsHandling int) error {
 	if itemsHandling == 0 {
 		return nil
 	}
 
 	// Grab both arrays if appropriate first, to avoid extra allocations
-	var startInv, received []NetworkItem
+	var startInv, recvItems []NetworkItem
 
-	if (itemsHandling & 0b100) != 0 {
+	if itemsHandling&ItemsHandlingStartingInventory != 0 {
 		startInv = s.state.SlotStartInventory[TeamSlot{client.Team, client.Slot}]
 	}
 
-	if (itemsHandling & 0b001) != 0 {
-		remoteItems := itemsHandling&0b010 != 0
-		received = s.state.ReceivedItems.Get(ReceivedItemsKey{Team: client.Team, Slot: client.Slot, RemoteItems: remoteItems})
+	if itemsHandling&ItemsHandlingForeign != 0 {
+		remoteItems := itemsHandling&ItemsHandlingOwn != 0
+		recvItems = s.state.ReceivedItems.Get(ReceivedItemsKey{Team: client.Team, Slot: client.Slot, RemoteItems: remoteItems})
 	}
 
-	if len(startInv) == 0 && len(received) == 0 {
+	if len(startInv) == 0 && len(recvItems) == 0 {
 		return nil
 	}
 
-	items := make([]NetworkItem, 0, len(startInv)+len(received))
+	items := make([]NetworkItem, 0, len(startInv)+len(recvItems))
 	items = append(items, startInv...)
-	items = append(items, received...)
+	items = append(items, recvItems...)
 
 	msg := ReceivedItemsMessage{
 		Cmd:   "ReceivedItems",
 		Index: 0,
 		Items: items,
 	}
+	client.sendIndex.Store(int32(len(startInv) + len(recvItems)))
 	return wsjson.Write(ctx, client.clientConn, []any{msg})
 }
 
