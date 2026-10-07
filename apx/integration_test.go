@@ -390,3 +390,71 @@ func TestClient_Say_TextConcernsSelf(t *testing.T) {
 	// since Chat has no Receiving or Item.Player matching slot 2
 	reader2.assertNoCmdWithin("PrintJSON", 300*time.Millisecond, t)
 }
+
+func TestClient_CreateHints_OwnLocation(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	reader := newExpectedMessageReader(ctx, conn, t)
+	_ = reader.readExpectedMessage("RoomInfo", t)
+
+	err = wsjson.Write(ctx, conn, []any{ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader.readExpectedMessage("Connected", t)
+	_ = reader.readExpectedMessage("ReceivedItems", t)
+
+	// Pick any location belonging to slot 1
+	missing := room.apx.state.Checks.GetMissing(TeamSlot{0, 1})
+	require.NotEmpty(t, missing, "need at least one unchecked location")
+	locID := missing[0]
+
+	reader.discardFor(100 * time.Millisecond)
+
+	err = wsjson.Write(ctx, conn, []any{map[string]any{
+		"cmd":       "CreateHints",
+		"locations": []int{locID},
+	}})
+	require.NoError(t, err)
+
+	// Make sure we got a notification message back
+	raw := reader.readUntil("PrintJSON", t)
+
+	var msg PrintJsonMessage
+	err = json.Unmarshal(raw, &msg)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Hint", msg.Type)
+	require.NotNil(t, msg.Item)
+	assert.Equal(t, int32(locID), msg.Item.Location)
+	require.NotNil(t, msg.Found)
+	assert.False(t, *msg.Found)
+
+	// Verify stored in state
+	hints := room.apx.state.Hints.GetSlotHints(TeamSlot{0, 1})
+	require.NotEmpty(t, hints)
+	found := false
+	for _, h := range hints {
+		if int(h.Location) == locID {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "hint should be stored in state for slot 1")
+}

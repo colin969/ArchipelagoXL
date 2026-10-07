@@ -277,11 +277,11 @@ func (m PrintJsonMessage) MarshalJSON() ([]byte, error) {
 type HintStatus int
 
 const (
-	HintUnspecified HintStatus = 0
-	HintNoPriority  HintStatus = 10
-	HintAvoid       HintStatus = 20
-	HintPriority    HintStatus = 30
-	HintFound       HintStatus = 40
+	HintStatusUnspecified HintStatus = 0
+	HintStatusNoPriority  HintStatus = 10
+	HintStatusAvoid       HintStatus = 20
+	HintStatusPriority    HintStatus = 30
+	HintStatusFound       HintStatus = 40
 )
 
 type JsonMessagePart struct {
@@ -434,6 +434,34 @@ func (m ReceivedItemsMessage) MarshalJSON() ([]byte, error) {
 		Cmd MessageType `json:"cmd"`
 		Alias
 	}{Cmd: MessageTypeReceivedItems, Alias: Alias(m)})
+}
+
+type CreateHintsMessage struct {
+	Locations []int `json:"locations"`
+	Player    *int  `json:"player"`
+	Status    *int  `json:"status"`
+}
+
+func (m CreateHintsMessage) MarshalJSON() ([]byte, error) {
+	type Alias CreateHintsMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeCreateHints, Alias: Alias(m)})
+}
+
+type UpdateHintMessage struct {
+	Player   int  `json:"player"`
+	Location int  `json:"location"`
+	Status   *int `json:"status"`
+}
+
+func (m UpdateHintMessage) MarshalJSON() ([]byte, error) {
+	type Alias UpdateHintMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeUpdateHint, Alias: Alias(m)})
 }
 
 type PacketProblemType string

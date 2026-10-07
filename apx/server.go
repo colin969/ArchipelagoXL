@@ -227,6 +227,7 @@ type NetworkItem struct {
 	Item     int32
 	Location int32
 	Player   int16
+	Flags    int16
 }
 
 type Sphere map[int][]int
@@ -398,6 +399,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 			Item:     loc.Item,
 			Location: int32(locID),
 			Player:   loc.Player,
+			Flags:    loc.Flags,
 		})
 	}
 
@@ -562,11 +564,59 @@ func (ri *ReceivedItems) Get(key ReceivedItemsKey) []NetworkItem {
 	return ri.receivedItems[key]
 }
 
+type HintsState struct {
+	mu        sync.RWMutex
+	hints     map[TeamSlot][]Hint
+	hintsUsed map[TeamSlot]int
+}
+
+func newHintsState() HintsState {
+	return HintsState{
+		hints:     make(map[TeamSlot][]Hint),
+		hintsUsed: make(map[TeamSlot]int),
+	}
+}
+
+func (h *HintsState) GetSlotHints(ts TeamSlot) []Hint {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]Hint, len(h.hints[ts]))
+	copy(out, h.hints[ts])
+	return out
+}
+
+func (h *HintsState) AddSlotHint(ts TeamSlot, hint Hint) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, existing := range h.hints[ts] {
+		if existing.FindingPlayer == hint.FindingPlayer && existing.Location == hint.Location {
+			return
+		}
+	}
+	h.hints[ts] = append(h.hints[ts], hint)
+}
+
+func (h *HintsState) UpdateSlotHint(ts TeamSlot, hint Hint) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, existing := range h.hints[ts] {
+		if existing.FindingPlayer == hint.FindingPlayer && existing.Location == hint.Location {
+			h.hints[ts][i] = hint
+			return
+		}
+	}
+}
+
+func (h *HintsState) GetHintsUsed(ts TeamSlot) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.hintsUsed[ts]
+}
+
 type ApState struct {
 	Checks        Checks
 	ReceivedItems ReceivedItems
-	Hints         map[TeamSlot][]Hint
-	HintsUsed     map[TeamSlot]int
+	Hints         HintsState
 	ServerOptions *ServerOptions
 	// Immutable
 	Locations          map[TeamSlot]map[int]Location
@@ -583,6 +633,25 @@ type ApState struct {
 	// Immutable for v3 Network Sending
 	PlayersNetwork  NetworkPlayers
 	SlotInfoNetwork map[int]NetworkSlot
+}
+
+func (s *ApState) GetSlotHintCost(teamSlot TeamSlot) int {
+	hintCost := s.ServerOptions.GetHintCost()
+	if hintCost == 0 {
+		return 0
+	}
+	locCount := len(s.Locations[teamSlot])
+	cost := int(float64(hintCost) * 0.01 * float64(locCount))
+	if cost < 1 {
+		return 1
+	}
+	return cost
+}
+
+func (s *ApState) GetSlotRemainingPoints(teamSlot TeamSlot) int {
+	checked := len(s.Checks.GetChecked(teamSlot))
+	used := s.Hints.GetHintsUsed(teamSlot)
+	return s.ServerOptions.locationCheckPoints*checked - s.GetSlotHintCost(teamSlot)*used
 }
 
 // Simple per-ip rate limiter for the WS rooms
@@ -1257,6 +1326,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleSay(ctx, connState, raw)
 		case MessageTypeLocationChecks:
 			return s.handleLocationChecks(ctx, connState, raw)
+		case MessageTypeCreateHints:
+			return s.handleCreateHints(ctx, connState, raw)
 		default:
 			// TODO: Handle message types
 
@@ -1283,6 +1354,170 @@ func (s ApxRoom) handleLocationChecks(ctx context.Context, connState *connection
 	}
 	err := s.RegisterChecks(ctx, connState, TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}, msg.Locations)
 	return err
+}
+
+func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg CreateHintsMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeCreateHints
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			fmt.Sprintf("invalid CreateHints arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	client := connState.registeredClient
+	locationPlayer := client.Slot
+	if msg.Player != nil {
+		locationPlayer = *msg.Player
+	}
+
+	status := HintStatusUnspecified
+	if msg.Status != nil {
+		hintStatus := HintStatus(*msg.Status)
+		if hintStatus == HintStatusFound {
+			cmd := MessageTypeCreateHints
+			return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+				"CreateHints: cannot set status to HINT_FOUND", s.lokiLogger, connState.slotName)
+		}
+		status = hintStatus
+	}
+
+	locationTS := TeamSlot{Team: client.Team, Slot: locationPlayer}
+	clientTS := TeamSlot{Team: client.Team, Slot: client.Slot}
+
+	var newHints []Hint
+
+	for _, locID := range msg.Locations {
+		loc, ok := s.state.Locations[locationTS][locID]
+		if !ok {
+			if locationPlayer != client.Slot {
+				// Off-world: fail if location doesn't exist
+				cmd := MessageTypeCreateHints
+				return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+					"CreateHints: location does not exist for specified player", s.lokiLogger, connState.slotName)
+			}
+			// Own slot: silently skip unknown locations
+			continue
+		}
+
+		// Off-world: location must contain an item for the requesting slot
+		if locationPlayer != client.Slot && int(loc.Player) != client.Slot {
+			cmd := MessageTypeCreateHints
+			return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+				"CreateHints: location does not contain your item", s.lokiLogger, connState.slotName)
+		}
+
+		// Skip if hint already exists
+		existing := s.state.Hints.GetSlotHints(clientTS)
+		alreadyExists := false
+		for _, h := range existing {
+			if h.FindingPlayer == int32(locationPlayer) && h.Location == int32(locID) {
+				alreadyExists = true
+				break
+			}
+		}
+		if alreadyExists {
+			continue
+		}
+
+		found := s.state.Checks.IsChecked(locationTS, locID)
+		hintStatus := status
+		if found {
+			hintStatus = HintStatusFound
+		}
+
+		hint := Hint{
+			ReceivingPlayer: int32(loc.Player),
+			FindingPlayer:   int32(locationPlayer),
+			Location:        int32(locID),
+			Item:            loc.Item,
+			ItemFlags:       loc.Flags,
+			Found:           found,
+			Status:          hintStatus,
+		}
+		newHints = append(newHints, hint)
+	}
+
+	// Store bidirectionally and notify
+	for _, hint := range newHints {
+		receiverTS := TeamSlot{Team: client.Team, Slot: int(hint.ReceivingPlayer)}
+		finderTS := TeamSlot{Team: client.Team, Slot: int(hint.FindingPlayer)}
+		s.state.Hints.AddSlotHint(receiverTS, hint)
+		if hint.ReceivingPlayer != hint.FindingPlayer {
+			s.state.Hints.AddSlotHint(finderTS, hint)
+		}
+	}
+
+	// Broadcast hint PrintJSON messages to concerned slots
+	if len(newHints) > 0 {
+		var msgs []PrintJsonMessage
+		for _, hint := range newHints {
+			msgs = append(msgs, formatHintMessage(hint))
+		}
+		s.broadcastPrintJson(ctx, msgs)
+	}
+
+	return nil
+}
+
+func formatHintMessage(hint Hint) PrintJsonMessage {
+	found := hint.Found
+	receiving := int(hint.ReceivingPlayer)
+	item := NetworkItem{
+		Item:     hint.Item,
+		Location: hint.Location,
+		Player:   int16(hint.FindingPlayer),
+		Flags:    hint.ItemFlags,
+	}
+
+	parts := []JsonMessagePart{
+		{Type: "text", Text: "[Hint]: "},
+		{Type: "player_id", Text: fmt.Sprintf("%d", hint.ReceivingPlayer)},
+		{Type: "text", Text: "'s "},
+		{Type: "item_id", Text: fmt.Sprintf("%d", hint.Item), Player: int(hint.ReceivingPlayer), Flags: int(hint.ItemFlags)},
+		{Type: "text", Text: " is at "},
+		{Type: "location_id", Text: fmt.Sprintf("%d", hint.Location), Player: int(hint.FindingPlayer)},
+		{Type: "text", Text: " in "},
+		{Type: "player_id", Text: fmt.Sprintf("%d", hint.FindingPlayer)},
+		{Type: "text", Text: "'s World"},
+	}
+
+	if hint.Entrance != "" {
+		parts = append(parts,
+			JsonMessagePart{Type: "text", Text: " at "},
+			JsonMessagePart{Type: "entrance_name", Text: hint.Entrance},
+		)
+	}
+
+	parts = append(parts, JsonMessagePart{
+		Type:       "hint_status",
+		Text:       hintStatusText(hint.Status),
+		HintStatus: hint.Status,
+	})
+
+	return PrintJsonMessage{
+		Type:      "Hint",
+		Data:      parts,
+		Receiving: &receiving,
+		Item:      &item,
+		Found:     &found,
+	}
+}
+
+func hintStatusText(s HintStatus) string {
+	switch s {
+	case HintStatusFound:
+		return "(found)"
+	case HintStatusUnspecified:
+		return "(unspecified)"
+	case HintStatusNoPriority:
+		return "(no priority)"
+	case HintStatusAvoid:
+		return "(avoid)"
+	case HintStatusPriority:
+		return "(priority)"
+	default:
+		return "(unknown)"
+	}
 }
 
 func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessage) {
@@ -1546,6 +1781,7 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 	return ApState{
 		Checks:             newChecksState(locations),
 		ReceivedItems:      newReceivedItems(),
+		Hints:              newHintsState(),
 		Locations:          locations,
 		NameToSlot:         nameToSlot,
 		SlotInfo:           slotInfoMap,
