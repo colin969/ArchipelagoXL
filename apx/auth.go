@@ -199,8 +199,15 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 		return err
 	}
 
-	// TODO: Implement Say properly
-	SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, fmt.Sprintf("%s: %s", *connState.registeredClient.slotName, packet.Text))
+	slot := connState.registeredClient.Slot
+	team := connState.registeredClient.Team
+	s.broadcastPrintJson(ctx, []PrintJsonMessage{{
+		Type:    "Chat",
+		Data:    []JsonMessagePart{{Type: "text", Text: text}},
+		Team:    &team,
+		Slot:    &slot,
+		Message: &text,
+	}})
 
 	return nil
 }

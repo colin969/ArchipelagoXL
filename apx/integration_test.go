@@ -34,7 +34,7 @@ func TestClient_RoomInfo(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.CloseNow()
 
-	msgReader := newExpectedMessageReader(ctx, conn)
+	msgReader := newExpectedMessageReader(ctx, conn, t)
 
 	rawMsg := msgReader.readExpectedMessage("RoomInfo", t)
 
@@ -66,7 +66,7 @@ func TestClient_DataPackages(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.CloseNow()
 
-	msgReader := newExpectedMessageReader(ctx, conn)
+	msgReader := newExpectedMessageReader(ctx, conn, t)
 
 	rawMsg := msgReader.readExpectedMessage("RoomInfo", t)
 
@@ -108,7 +108,7 @@ func TestClient_Connected_WithItems(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.CloseNow()
 
-	msgReader := newExpectedMessageReader(ctx, conn)
+	msgReader := newExpectedMessageReader(ctx, conn, t)
 
 	_ = msgReader.readExpectedMessage("RoomInfo", t)
 
@@ -163,7 +163,7 @@ func TestClient_LocationChecks(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.CloseNow()
 
-	msgReader := newExpectedMessageReader(ctx, conn)
+	msgReader := newExpectedMessageReader(ctx, conn, t)
 	_ = msgReader.readExpectedMessage("RoomInfo", t)
 
 	connectMsg := ConnectMessage{
@@ -215,7 +215,7 @@ func TestClient_ReceivesItems(t *testing.T) {
 	require.NoError(t, err)
 	defer conn1.CloseNow()
 
-	reader1 := newExpectedMessageReader(ctx, conn1)
+	reader1 := newExpectedMessageReader(ctx, conn1, t)
 	_ = reader1.readExpectedMessage("RoomInfo", t)
 
 	err = wsjson.Write(ctx, conn1, []any{ConnectMessage{
@@ -235,7 +235,7 @@ func TestClient_ReceivesItems(t *testing.T) {
 	require.NoError(t, err)
 	defer conn2.CloseNow()
 
-	reader2 := newExpectedMessageReader(ctx, conn2)
+	reader2 := newExpectedMessageReader(ctx, conn2, t)
 	_ = reader2.readExpectedMessage("RoomInfo", t)
 
 	err = wsjson.Write(ctx, conn2, []any{ConnectMessage{
@@ -279,4 +279,114 @@ func TestClient_ReceivesItems(t *testing.T) {
 
 	assert.NotEmpty(t, recvItems.Items)
 	assert.Len(t, recvItems.Items, 3, "slot 1 should have received at least 3 new items")
+}
+
+func TestClient_Say_NoText(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// Connect client with full feed
+	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn1.CloseNow()
+	reader1 := newExpectedMessageReader(ctx, conn1, t)
+	_ = reader1.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn1, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player", UUID: StringOrBigInt("1"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader1.readExpectedMessage("Connected", t)
+
+	// Connect client with NoText
+	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn2.CloseNow()
+	reader2 := newExpectedMessageReader(ctx, conn2, t)
+	_ = reader2.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn2, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player2", UUID: StringOrBigInt("2"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+		Tags: []string{"NoText"},
+	}})
+	require.NoError(t, err)
+	_ = reader2.readExpectedMessage("Connected", t)
+
+	// Drain join-related messages before sending Say
+	reader1.discardFor(100 * time.Millisecond)
+	reader2.discardFor(100 * time.Millisecond)
+
+	// Send Say message
+	sayMsg := SayMessage{
+		Text: "hello world",
+	}
+	err = wsjson.Write(ctx, conn1, []any{sayMsg})
+	require.NoError(t, err)
+
+	// Expect read on full feed client
+	raw := reader1.readUntil("PrintJSON", t)
+	assert.Contains(t, string(raw), "hello world")
+
+	// Expect no read on NoText client
+	reader2.assertNoCmdWithin("PrintJSON", 300*time.Millisecond, t)
+}
+
+func TestClient_Say_TextConcernsSelf(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn1.CloseNow()
+	reader1 := newExpectedMessageReader(ctx, conn1, t)
+	_ = reader1.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn1, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player", UUID: StringOrBigInt("1"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader1.readExpectedMessage("Connected", t)
+	_ = reader1.readExpectedMessage("ReceivedItems", t)
+
+	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn2.CloseNow()
+	reader2 := newExpectedMessageReader(ctx, conn2, t)
+	_ = reader2.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn2, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player2", UUID: StringOrBigInt("2"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+		Tags: []string{"TextConcernsSelf"},
+	}})
+	require.NoError(t, err)
+	_ = reader2.readExpectedMessage("Connected", t)
+
+	// Drain join-related messages before sending Say
+	reader1.discardFor(250 * time.Millisecond)
+	reader2.discardFor(250 * time.Millisecond)
+
+	err = wsjson.Write(ctx, conn1, []any{map[string]any{"cmd": "Say", "text": "hello from slot 1"}})
+	require.NoError(t, err)
+
+	// Slot 1 (full client) receives the chat
+	raw := reader1.readUntil("PrintJSON", t)
+	assert.Contains(t, string(raw), "hello from slot 1")
+
+	// Slot 2 (TextConcernsSelf) should not receive a chat from slot 1
+	// since Chat has no Receiving or Item.Player matching slot 2
+	reader2.assertNoCmdWithin("PrintJSON", 300*time.Millisecond, t)
 }
