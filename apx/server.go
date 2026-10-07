@@ -381,7 +381,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 	s.state.Checks.mu.Lock()
 
 	checked := s.state.Checks.checked[teamSlot]
-	known := s.state.Checks.locations[teamSlot]
+	known := s.state.Locations[teamSlot]
 
 	var newItems []NetworkItem
 	for _, locID := range locations {
@@ -442,7 +442,13 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 }
 
 func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]struct{}) {
-	s.connections.mu.Lock()
+	type pendingSend struct {
+		conn *websocket.Conn
+		msg  ReceivedItemsMessage
+	}
+	var sends []pendingSend
+
+	s.connections.mu.RLock()
 	for teamSlot := range affectedSlots {
 		for _, client := range s.connections.clients[teamSlot.Slot] {
 			clientItemsHandling := int(client.itemsHandling.Load())
@@ -451,25 +457,31 @@ func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]s
 			}
 
 			var startInv, receivedItems []NetworkItem
-
 			if clientItemsHandling&ItemsHandlingStartingInventory != 0 {
 				startInv = s.state.SlotStartInventory[TeamSlot{client.Team, client.Slot}]
 			}
-
 			receivedItems = s.state.ReceivedItems.Get(ReceivedItemsKey{teamSlot.Team, teamSlot.Slot, clientItemsHandling&ItemsHandlingOwn != 0})
 
 			sendIndex := int(client.sendIndex.Load())
 			if len(startInv)+len(receivedItems) > sendIndex {
 				firstNewItem := max(0, sendIndex-len(startInv))
 				items := append(startInv[sendIndex:], receivedItems[firstNewItem:]...)
-				wsjson.Write(ctx, client.clientConn, []any{ReceivedItemsMessage{
-					Index: sendIndex,
-					Items: items,
-				}})
+				sends = append(sends, pendingSend{
+					conn: client.clientConn,
+					msg:  ReceivedItemsMessage{Index: sendIndex, Items: items},
+				})
 				client.sendIndex.Store(int32(len(startInv) + len(receivedItems)))
 			}
 		}
 	}
+	s.connections.mu.RUnlock()
+
+	// TODO: Make this into workers!
+	go func() {
+		for _, s := range sends {
+			wsjson.Write(ctx, s.conn, []any{s.msg})
+		}
+	}()
 }
 
 type ReceivedItemsKey struct {
@@ -1017,7 +1029,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 			return
 		}
 
-		if connState.authenticated {
+		if connState.authenticated && s.metrics != nil {
 			s.metrics.bytesReceived.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game).Add(float64(len(raw)))
 		}
 
@@ -1044,7 +1056,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 				s.lokiLogger.Log(connState.slotName, LogSourceClient, raw, MessageType(cmd))
 			}
 
-			if connState.authenticated {
+			if connState.authenticated && s.metrics != nil {
 				s.metrics.incomingPackets.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game, cmd).Inc()
 			}
 
@@ -1190,8 +1202,7 @@ func (s ApxRoom) handleLocationChecks(ctx context.Context, connState *connection
 		cmd := MessageTypeLocationChecks
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid LocationChecks arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
-
-	err := s.RegisterChecks(ctx, connState, TeamSlot{connState.registeredClient.Slot, connState.registeredClient.Team}, msg.Locations)
+	err := s.RegisterChecks(ctx, connState, TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}, msg.Locations)
 	return err
 }
 

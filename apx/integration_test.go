@@ -147,3 +147,53 @@ func TestClient_Connected_WithItems(t *testing.T) {
 	assert.Equal(t, int32(-2), recvItemsMsg.Items[0].Location)
 	assert.Equal(t, int16(0), recvItemsMsg.Items[0].Player)
 }
+
+func TestClient_LocationChecks(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	msgReader := newExpectedMessageReader(ctx, conn)
+	_ = msgReader.readExpectedMessage("RoomInfo", t)
+
+	connectMsg := ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}
+	err = wsjson.Write(ctx, conn, []any{connectMsg})
+	require.NoError(t, err)
+
+	_ = msgReader.readExpectedMessage("Connected", t)
+	_ = msgReader.readExpectedMessage("ReceivedItems", t)
+
+	// Check 3 missing locations
+	missingChecks := room.apx.state.Checks.GetMissing(TeamSlot{0, 1})
+	require.GreaterOrEqual(t, len(missingChecks), 3)
+	locations := missingChecks[:3]
+
+	for i, locID := range locations {
+		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{
+			Locations: []int{locID},
+		}})
+		require.NoError(t, err)
+
+		rawMsg := msgReader.readUntil("RoomUpdate", t)
+		var roomUpdate RoomUpdateMessage
+		err = json.Unmarshal(rawMsg, &roomUpdate)
+		require.NoError(t, err)
+		assert.Contains(t, roomUpdate.CheckedLocations, locID, "check %d: location should be in RoomUpdate", i)
+	}
+}

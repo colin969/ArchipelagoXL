@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/stretchr/testify/assert"
 )
 
 // Tests
@@ -806,4 +807,105 @@ func TestIPRateLimiter(t *testing.T) {
 	if !rl.Allow("5.6.7.8") {
 		t.Fatal("expected Allow to return true for different IP")
 	}
+}
+
+func makeTestLocations() map[TeamSlot]map[int]Location {
+	return map[TeamSlot]map[int]Location{
+		{0, 1}: {
+			100: {Item: 999, Player: 2, Flags: 0},
+			101: {Item: 1000, Player: 1, Flags: 0},
+			102: {Item: 1001, Player: 2, Flags: 0},
+		},
+		{0, 2}: {
+			200: {Item: 500, Player: 1, Flags: 0},
+		},
+	}
+}
+
+func TestChecks(t *testing.T) {
+	t.Run("InitiallyAllMissing", func(t *testing.T) {
+		ts := TeamSlot{0, 1}
+		checks := newChecksState(makeTestLocations())
+
+		assert.ElementsMatch(t, []int{100, 101, 102}, checks.GetMissing(ts))
+	})
+
+	t.Run("InitiallyNoneChecked", func(t *testing.T) {
+		ts := TeamSlot{0, 1}
+		checks := newChecksState(makeTestLocations())
+
+		assert.Empty(t, checks.GetChecked(ts))
+	})
+
+	t.Run("IsChecked_FalseInitially", func(t *testing.T) {
+		ts := TeamSlot{0, 1}
+		checks := newChecksState(makeTestLocations())
+
+		assert.False(t, checks.IsChecked(ts, 100))
+		assert.False(t, checks.IsChecked(ts, 101))
+	})
+
+	t.Run("MarkChecked", func(t *testing.T) {
+		ts := TeamSlot{0, 1}
+		checks := newChecksState(makeTestLocations())
+
+		checks.mu.Lock()
+		checks.checked[ts][100] = struct{}{}
+		checks.mu.Unlock()
+
+		assert.True(t, checks.IsChecked(ts, 100))
+		assert.False(t, checks.IsChecked(ts, 101))
+		assert.ElementsMatch(t, []int{100}, checks.GetChecked(ts))
+		assert.ElementsMatch(t, []int{101, 102}, checks.GetMissing(ts))
+	})
+
+	t.Run("HalfChecked_HalfMissing", func(t *testing.T) {
+		ts := TeamSlot{0, 1}
+		checks := newChecksState(makeTestLocations())
+
+		checks.mu.Lock()
+		checks.checked[ts][100] = struct{}{}
+		checks.checked[ts][101] = struct{}{}
+		checks.mu.Unlock()
+
+		assert.ElementsMatch(t, []int{100, 101}, checks.GetChecked(ts))
+		assert.ElementsMatch(t, []int{102}, checks.GetMissing(ts))
+	})
+
+	t.Run("SlotsAreIndependent", func(t *testing.T) {
+		ts1 := TeamSlot{0, 1}
+		ts2 := TeamSlot{0, 2}
+		checks := newChecksState(makeTestLocations())
+
+		checks.mu.Lock()
+		checks.checked[ts1][100] = struct{}{}
+		checks.mu.Unlock()
+
+		assert.False(t, checks.IsChecked(ts2, 200))
+		assert.Empty(t, checks.GetChecked(ts2))
+		assert.ElementsMatch(t, []int{200}, checks.GetMissing(ts2))
+	})
+
+	t.Run("UnknownSlot_ReturnsEmpty", func(t *testing.T) {
+		checks := newChecksState(makeTestLocations())
+		unknown := TeamSlot{0, 99}
+
+		assert.Empty(t, checks.GetChecked(unknown))
+		assert.Empty(t, checks.GetMissing(unknown))
+		assert.False(t, checks.IsChecked(unknown, 100))
+	})
+
+	t.Run("AllChecked_MissingEmpty", func(t *testing.T) {
+		ts := TeamSlot{0, 1}
+		checks := newChecksState(makeTestLocations())
+
+		checks.mu.Lock()
+		checks.checked[ts][100] = struct{}{}
+		checks.checked[ts][101] = struct{}{}
+		checks.checked[ts][102] = struct{}{}
+		checks.mu.Unlock()
+
+		assert.Empty(t, checks.GetMissing(ts))
+		assert.Len(t, checks.GetChecked(ts), 3)
+	})
 }

@@ -9,7 +9,6 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -79,6 +78,15 @@ func newExpectedMessageReader(ctx context.Context, conn *websocket.Conn) *Expect
 func (emr *ExpectedMessageReader) readExpectedMessage(expectedCmd string, t *testing.T) json.RawMessage {
 	t.Helper()
 
+	cmd, next := emr.readMessage(t)
+
+	require.Equal(t, expectedCmd, cmd)
+	return next
+}
+
+func (emr *ExpectedMessageReader) readMessage(t *testing.T) (string, json.RawMessage) {
+	t.Helper()
+
 	if len(emr.queue) == 0 {
 		var batch []json.RawMessage
 		err := wsjson.Read(emr.ctx, emr.conn, &batch)
@@ -91,6 +99,15 @@ func (emr *ExpectedMessageReader) readExpectedMessage(expectedCmd string, t *tes
 
 	cmd, err := getPacketCmd(next)
 	require.NoError(t, err)
-	assert.Equal(t, expectedCmd, cmd)
-	return next
+	return cmd, next
+}
+
+func (emr *ExpectedMessageReader) readUntil(expectedCmd string, t *testing.T) json.RawMessage {
+	t.Helper()
+	for {
+		cmd, next := emr.readMessage(t)
+		if cmd == expectedCmd {
+			return next
+		}
+	}
 }

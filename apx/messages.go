@@ -229,9 +229,17 @@ func (m ConnectedMessage) MarshalJSON() ([]byte, error) {
 }
 
 type RoomUpdateMessage struct {
-	Players          []NetworkPlayer
-	CheckedLocations []int `json:"checked_locations"`
-	HintPoints       *int  `json:"hint_points,omitempty"`
+	Players          []NetworkPlayer `json:"players,omitempty"`
+	CheckedLocations []int           `json:"checked_locations"`
+	HintPoints       *int            `json:"hint_points,omitempty"`
+}
+
+func (m RoomUpdateMessage) MarshalJSON() ([]byte, error) {
+	type Alias RoomUpdateMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeRoomUpdate, Alias: Alias(m)})
 }
 
 type SayMessage struct {
@@ -404,8 +412,15 @@ func (np NetworkVersion) MarshalJSON() ([]byte, error) {
 }
 
 type LocationChecksMessage struct {
-	Cmd       MessageType `json:"cmd"`
-	Locations []int       `json:"locations"`
+	Locations []int `json:"locations"`
+}
+
+func (m LocationChecksMessage) MarshalJSON() ([]byte, error) {
+	type Alias LocationChecksMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeLocationChecks, Alias: Alias(m)})
 }
 
 type ReceivedItemsMessage struct {
