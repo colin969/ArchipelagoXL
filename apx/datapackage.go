@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -98,8 +97,15 @@ type GameData struct {
 }
 
 type GetDataPackageMessage struct {
-	Cmd   MessageType `json:"cmd"`
-	Games []string    `json:"games"`
+	Games []string `json:"games"`
+}
+
+func (m GetDataPackageMessage) MarshalJSON() ([]byte, error) {
+	type Alias GetDataPackageMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeGetDataPackage, Alias: Alias(m)})
 }
 
 type EncodedDataPackageMessage struct {
@@ -312,7 +318,6 @@ func (ds *DataPackageStore) attachWrapper(game string, wrapper *cachedGameDataPa
 // TODO: This should really be optimized to not open a conn for each
 func (s ApxRoom) loadDataPackages(diskStorage *DiskDataPackageStore) error {
 	checksums := s.roomInfo.GetDataPackageChecksums()
-	log.Printf("loading %d datapackages", len(checksums))
 
 	for game, checksum := range checksums {
 		// Get a wrapper ref for this game + checksum combo

@@ -3,7 +3,6 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 )
 
@@ -101,8 +100,6 @@ func runMigrations(db *sql.DB) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("migration %d: commit: %w", m.version, err)
 		}
-
-		log.Printf("applied migration %d", m.version)
 	}
 
 	return nil

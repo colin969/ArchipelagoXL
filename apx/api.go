@@ -384,7 +384,6 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) saveDataPackagesToDisk(md *multidata.MultiData) {
-	log.Printf("checking %d dps", len(md.DataPackage))
 	for game, dp := range md.DataPackage {
 		if rm.diskDataPackages.Has(dp.Checksum) {
 			continue

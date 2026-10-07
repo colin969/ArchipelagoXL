@@ -50,6 +50,49 @@ func TestClient_RoomInfo(t *testing.T) {
 	assert.Greater(t, roomInfo.Time, float64(0))
 }
 
+func TestClient_DataPackages(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	conn.SetReadLimit(wsReadLimit)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	msgReader := newExpectedMessageReader(ctx, conn)
+
+	rawMsg := msgReader.readExpectedMessage("RoomInfo", t)
+
+	var roomInfo RoomInfoMessage
+	err = json.Unmarshal(rawMsg, &roomInfo)
+	require.NoError(t, err)
+
+	games := make([]string, len(roomInfo.DatapackageChecksums))
+	for gameName := range roomInfo.DatapackageChecksums {
+		games = append(games, gameName)
+	}
+	dpReqMsg := GetDataPackageMessage{
+		Games: games,
+	}
+	err = wsjson.Write(ctx, conn, []any{dpReqMsg})
+	require.NoError(t, err)
+
+	rawMsg = msgReader.readExpectedMessage("DataPackage", t)
+
+	var dpMsg DataPackageMessage
+	err = json.Unmarshal(rawMsg, &dpMsg)
+	require.NoError(t, err)
+
+	assert.Len(t, dpMsg.Data.Games, 2)
+}
+
 func TestClient_Connected_WithItems(t *testing.T) {
 	rm := newTestRoomManager(t)
 	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")

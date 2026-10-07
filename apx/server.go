@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"maps"
 	"net"
 	"net/http"
@@ -1110,8 +1109,6 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 			}
 		}
 	}
-
-	log.Printf("slotinfo size %d", len(s.state.SlotInfo))
 
 	so := s.state.ServerOptions
 	so.mu.RLock()
