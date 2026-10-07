@@ -1050,3 +1050,160 @@ func TestChecks(t *testing.T) {
 		assert.Len(t, checks.GetChecked(ts), 3)
 	})
 }
+
+func TestBroadcastPrintJson(t *testing.T) {
+	game := "Celeste"
+
+	makeRoom := func(t *testing.T) (*ApxRoom, func(slot int, tags []string) (<-chan []byte, *RegisteredClient)) {
+		t.Helper()
+		reg := newConnectionRegistry(nil, nil)
+		room := &ApxRoom{connections: reg}
+
+		newReceiver := func(slot int, tags []string) (<-chan []byte, *RegisteredClient) {
+			received := make(chan []byte, 4)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.CloseNow()
+				for {
+					_, raw, err := conn.Read(r.Context())
+					if err != nil {
+						return
+					}
+					received <- raw
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			t.Cleanup(cancel)
+
+			url := "ws" + strings.TrimPrefix(server.URL, "http")
+			conn, _, err := websocket.Dial(ctx, url, nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+
+			rc := &RegisteredClient{Slot: slot, game: &game, clientConn: conn, cancel: func() {}}
+			reg.Register(slot, rc, game, tags)
+			return received, rc
+		}
+
+		return room, newReceiver
+	}
+
+	t.Run("full client receives all messages", func(t *testing.T) {
+		room, newReceiver := makeRoom(t)
+		received, _ := newReceiver(1, []string{})
+
+		receiving := 2
+		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+			{Type: "Chat", Receiving: &receiving},
+		})
+
+		select {
+		case <-received:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("full client should have received message")
+		}
+	})
+
+	t.Run("NoText client receives nothing", func(t *testing.T) {
+		room, newReceiver := makeRoom(t)
+		received, _ := newReceiver(1, []string{"NoText"})
+
+		receiving := 1
+		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+			{Type: "Chat", Receiving: &receiving},
+		})
+
+		select {
+		case <-received:
+			t.Error("NoText client should not have received message")
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
+
+	t.Run("TextConcernsSelf client only receives messages concerning their slot", func(t *testing.T) {
+		room, newReceiver := makeRoom(t)
+		received, _ := newReceiver(1, []string{"TextConcernsSelf"})
+
+		slotOne := 1
+		slotTwo := 2
+		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+			{Type: "ItemSend", Receiving: &slotOne}, // relevant
+			{Type: "ItemSend", Receiving: &slotTwo}, // not relevant
+		})
+
+		select {
+		case raw := <-received:
+			// Should only contain the message for slot 1
+			if strings.Contains(string(raw), `"receiving":2`) {
+				t.Error("TextConcernsSelf client received message for another slot")
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Error("TextConcernsSelf client should have received relevant message")
+		}
+
+		// Ensure no second message arrives
+		select {
+		case <-received:
+			t.Error("TextConcernsSelf client should not have received second message")
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
+
+	t.Run("TextConcernsSelf client receives message when they are the item sender", func(t *testing.T) {
+		room, newReceiver := makeRoom(t)
+		received, _ := newReceiver(1, []string{"TextConcernsSelf"})
+
+		otherSlot := 2
+		item := NetworkItem{Item: 100, Location: 50, Player: 1} // Player 1 is the sender
+		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+			{Type: "ItemSend", Receiving: &otherSlot, Item: &item},
+		})
+
+		select {
+		case <-received:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("TextConcernsSelf client should have received message where they are the item sender")
+		}
+	})
+
+	t.Run("full and TextConcernsSelf clients both receive relevant messages", func(t *testing.T) {
+		room, newReceiver := makeRoom(t)
+		fullReceived, _ := newReceiver(1, []string{})
+		selfReceived, _ := newReceiver(2, []string{"TextConcernsSelf"})
+
+		slotTwo := 2
+		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+			{Type: "ItemSend", Receiving: &slotTwo},
+		})
+
+		select {
+		case <-fullReceived:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("full client should have received message")
+		}
+		select {
+		case <-selfReceived:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("TextConcernsSelf client should have received message concerning their slot")
+		}
+	})
+
+	t.Run("empty message list does nothing", func(t *testing.T) {
+		room, newReceiver := makeRoom(t)
+		received, _ := newReceiver(1, []string{})
+
+		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{})
+
+		select {
+		case <-received:
+			t.Error("no message should be sent for empty list")
+		case <-time.After(100 * time.Millisecond):
+		}
+	})
+}

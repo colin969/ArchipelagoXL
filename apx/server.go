@@ -1291,30 +1291,10 @@ func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessag
 	}
 
 	s.connections.mu.RLock()
-	var fullTargets []*RegisteredClient
-	var selfOnlyTargets []*RegisteredClient
-
-	selfOnly := make(map[*RegisteredClient]struct{}, len(s.connections.clientsByTag["TextConcernsSelf"]))
-	for _, c := range s.connections.clientsByTag["TextConcernsSelf"] {
-		selfOnly[c] = struct{}{}
-	}
-
-	for _, clients := range s.connections.clients {
-		for _, c := range clients {
-			if c.textConcernsSelf {
-				continue
-			}
-			tags := s.connections.tags[c]
-			if slices.Contains(tags, "NoText") {
-				continue
-			}
-			if _, ok := selfOnly[c]; ok {
-				selfOnlyTargets = append(selfOnlyTargets, c)
-			} else {
-				fullTargets = append(fullTargets, c)
-			}
-		}
-	}
+	fullTargets := make([]*RegisteredClient, len(s.connections.fullClients))
+	copy(fullTargets, s.connections.fullClients)
+	selfOnlyTargets := make([]*RegisteredClient, len(s.connections.concernsSelfClients))
+	copy(selfOnlyTargets, s.connections.concernsSelfClients)
 	s.connections.mu.RUnlock()
 
 	go func() {
