@@ -465,7 +465,11 @@ func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]s
 			sendIndex := int(client.sendIndex.Load())
 			if len(startInv)+len(receivedItems) > sendIndex {
 				firstNewItem := max(0, sendIndex-len(startInv))
-				items := append(startInv[sendIndex:], receivedItems[firstNewItem:]...)
+				var startInvSlice []NetworkItem
+				if sendIndex < len(startInv) {
+					startInvSlice = startInv[sendIndex:]
+				}
+				items := append(startInvSlice, receivedItems[firstNewItem:]...)
 				sends = append(sends, pendingSend{
 					conn: client.clientConn,
 					msg:  ReceivedItemsMessage{Index: sendIndex, Items: items},
