@@ -4,6 +4,7 @@ import (
 	"apx/multidata"
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"testing"
 
@@ -106,8 +107,19 @@ func (emr *ExpectedMessageReader) readUntil(expectedCmd string, t *testing.T) js
 	t.Helper()
 	for {
 		cmd, next := emr.readMessage(t)
+		log.Println(cmd)
 		if cmd == expectedCmd {
 			return next
 		}
 	}
+}
+
+func startConnDrainer(ctx context.Context, conn *websocket.Conn) {
+	go func() {
+		for {
+			if _, _, err := conn.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
 }

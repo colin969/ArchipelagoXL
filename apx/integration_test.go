@@ -197,3 +197,86 @@ func TestClient_LocationChecks(t *testing.T) {
 		assert.Contains(t, roomUpdate.CheckedLocations, locID, "check %d: location should be in RoomUpdate", i)
 	}
 }
+
+func TestClient_ReceivesItems(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// ConnectSlot 1 (receives items)
+	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn1.CloseNow()
+
+	reader1 := newExpectedMessageReader(ctx, conn1)
+	_ = reader1.readExpectedMessage("RoomInfo", t)
+
+	err = wsjson.Write(ctx, conn1, []any{ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader1.readExpectedMessage("Connected", t)
+	// Clear starting inv
+	_ = reader1.readExpectedMessage("ReceivedItems", t)
+
+	// Connect Slot 2 (send checks)
+	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn2.CloseNow()
+
+	reader2 := newExpectedMessageReader(ctx, conn2)
+	_ = reader2.readExpectedMessage("RoomInfo", t)
+
+	err = wsjson.Write(ctx, conn2, []any{ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player2",
+		UUID:          StringOrBigInt("5678"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader2.readExpectedMessage("Connected", t)
+
+	// We don't care about the rest for slot 2, just throw them away to stop clogging up
+	startConnDrainer(ctx, conn2)
+
+	// Find 3 locations in slot 2 that hold items for slot 1
+	missing2 := room.apx.state.Checks.GetMissing(TeamSlot{0, 2})
+	var targetLocs []int
+	for _, locID := range missing2 {
+		loc := room.apx.state.Locations[TeamSlot{0, 2}][locID]
+		if int(loc.Player) == 1 {
+			targetLocs = append(targetLocs, locID)
+			if len(targetLocs) == 3 {
+				break
+			}
+		}
+	}
+	require.Len(t, targetLocs, 3, "need at least 3 locations in slot 2 holding items for slot 1")
+
+	// Slot 2 sends locationchecks for all 3 items at once
+	err = wsjson.Write(ctx, conn2, []any{LocationChecksMessage{
+		Locations: targetLocs,
+	}})
+	require.NoError(t, err)
+
+	// Slot 1 should receive all 3 items at once
+	rawMsg := reader1.readUntil("ReceivedItems", t)
+	var recvItems ReceivedItemsMessage
+	err = json.Unmarshal(rawMsg, &recvItems)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, recvItems.Items)
+	assert.Len(t, recvItems.Items, 3, "slot 1 should have received at least 3 new items")
+}

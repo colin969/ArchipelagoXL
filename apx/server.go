@@ -1315,7 +1315,6 @@ func (s ApxRoom) SyncReceivedItems(ctx context.Context, client *RegisteredClient
 	items = append(items, recvItems...)
 
 	msg := ReceivedItemsMessage{
-		Cmd:   "ReceivedItems",
 		Index: 0,
 		Items: items,
 	}

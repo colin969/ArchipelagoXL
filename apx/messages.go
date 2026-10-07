@@ -424,9 +424,16 @@ func (m LocationChecksMessage) MarshalJSON() ([]byte, error) {
 }
 
 type ReceivedItemsMessage struct {
-	Cmd   MessageType   `json:"cmd"`
 	Index int           `json:"index"`
 	Items []NetworkItem `json:"items"`
+}
+
+func (m ReceivedItemsMessage) MarshalJSON() ([]byte, error) {
+	type Alias ReceivedItemsMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeReceivedItems, Alias: Alias(m)})
 }
 
 type PacketProblemType string

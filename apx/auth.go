@@ -157,6 +157,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	if msg.ItemsHandling == nil {
 		*msg.ItemsHandling = 7
 	}
+	client.itemsHandling.Store(int32(*msg.ItemsHandling))
 	err = s.SyncReceivedItems(ctx, &client, *msg.ItemsHandling)
 	if err != nil {
 		return err
