@@ -4,8 +4,8 @@ import (
 	"testing"
 )
 
-func TestLoadMultiData0_6_7(t *testing.T) {
-	md, err := LoadMultiData("../testdata/0_6_7.archipelago")
+func TestLoadMultiDataSmall(t *testing.T) {
+	md, err := LoadMultiData("../testdata/small.archipelago")
 	if err != nil {
 		t.Fatalf("failed to parse multidata: %v", err)
 	}

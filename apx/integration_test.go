@@ -19,37 +19,88 @@ import (
 
 // integration_test.go
 
-func TestClient_Connect_ReceivesRoomInfo(t *testing.T) {
+func TestClient_RoomInfo(t *testing.T) {
 	rm := newTestRoomManager(t)
-	room := startRoomFromFile(t, rm, "./testdata/0_6_7.archipelago")
-
-	srv := httptest.NewServer(room.normalHandler)
-	t.Cleanup(srv.Close)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
 	defer conn.CloseNow()
 
-	var msgs []json.RawMessage
-	err = wsjson.Read(ctx, conn, &msgs)
-	require.NoError(t, err)
-	require.Len(t, msgs, 1, "expected exactly one opening message")
+	msgReader := newExpectedMessageReader(ctx, conn)
 
-	cmd, err := getPacketCmd(msgs[0])
-	require.NoError(t, err)
-	assert.Equal(t, "RoomInfo", cmd)
+	rawMsg := msgReader.readExpectedMessage("RoomInfo", t)
 
 	var roomInfo RoomInfoMessage
-	err = json.Unmarshal(msgs[0], &roomInfo)
+	err = json.Unmarshal(rawMsg, &roomInfo)
 	require.NoError(t, err)
 
 	assert.Equal(t, room.apx.state.Seed, roomInfo.SeedName)
 	assert.Len(t, roomInfo.Games, 1)
+	assert.Contains(t, roomInfo.Tags, "AP")
 	assert.NotNil(t, roomInfo.Permissions)
 	assert.Len(t, roomInfo.DatapackageChecksums, 2)
 	assert.Greater(t, roomInfo.Time, float64(0))
+}
+
+func TestClient_Connected_WithItems(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	msgReader := newExpectedMessageReader(ctx, conn)
+
+	_ = msgReader.readExpectedMessage("RoomInfo", t)
+
+	connectMsg := ConnectMessage{
+		Game:           "Hollow Knight",
+		Name:           "Player",
+		UUID:           StringOrBigInt("1234"),
+		Version:        NetworkVersion{0, 7, 0},
+		ItemsHandling:  new(7),
+		ReducedTraffic: false,
+	}
+
+	err = wsjson.Write(ctx, conn, []any{connectMsg})
+	require.NoError(t, err)
+
+	rawMsg := msgReader.readExpectedMessage("Connected", t)
+
+	var connected ConnectedMessage
+	err = json.Unmarshal(rawMsg, &connected)
+	require.NoError(t, err)
+
+	assert.Equal(t, 10, connected.HintPoints)
+	assert.Len(t, connected.Players, 2)
+	assert.Len(t, connected.SlotInfo, 2)
+	assert.Equal(t, 1, connected.Slot)
+
+	rawMsg = msgReader.readExpectedMessage("ReceivedItems", t)
+
+	// Starting inventory
+	var recvItemsMsg ReceivedItemsMessage
+	err = json.Unmarshal(rawMsg, &recvItemsMsg)
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, recvItemsMsg.Index)
+	assert.Len(t, recvItemsMsg.Items, 7)
+	assert.Equal(t, int32(-2), recvItemsMsg.Items[0].Location)
+	assert.Equal(t, int16(0), recvItemsMsg.Items[0].Player)
 }

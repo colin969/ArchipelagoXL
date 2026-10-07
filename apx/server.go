@@ -4,7 +4,9 @@ import (
 	"apx/multidata"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"net"
@@ -1005,7 +1007,8 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 	for {
 		_, raw, err := c.Read(ctx)
 		if err != nil {
-			if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+			status := websocket.CloseStatus(err)
+			if status != websocket.StatusNormalClosure && !errors.Is(err, io.EOF) {
 				if connState.slotName != nil {
 					s.logf("client read inner [%s]: %v", *connState.slotName, err)
 				} else {
@@ -1119,13 +1122,11 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 			Major: IntOrString(s.state.Version.Major),
 			Minor: IntOrString(s.state.Version.Minor),
 			Build: IntOrString(s.state.Version.Build),
-			Class: "Version",
 		},
 		GeneratorVersion: NetworkVersion{
 			Major: IntOrString(s.state.Version.Major),
 			Minor: IntOrString(s.state.Version.Minor),
 			Build: IntOrString(s.state.Version.Build),
-			Class: "Version",
 		},
 		Tags:     s.state.Tags,
 		Password: s.perSlotPasswords || so.password != "",

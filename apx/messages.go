@@ -177,6 +177,14 @@ type ConnectMessage struct {
 	ReducedTraffic bool           `json:"reduced"`
 }
 
+func (m ConnectMessage) MarshalJSON() ([]byte, error) {
+	type Alias ConnectMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeConnect, Alias: Alias(m)})
+}
+
 const (
 	ItemsHandlingNone              int = 0b000
 	ItemsHandlingForeign           int = 0b001
@@ -379,10 +387,20 @@ func (ns *NetworkSlotArray) UnmarshalJSON(data []byte) error {
 }
 
 type NetworkVersion struct {
-	Class string      `json:"class"`
 	Major IntOrString `json:"major"`
 	Minor IntOrString `json:"minor"`
 	Build IntOrString `json:"build"`
+}
+
+func (np NetworkVersion) MarshalJSON() ([]byte, error) {
+	type Alias NetworkVersion
+	return json.Marshal(struct {
+		Alias
+		Class string `json:"class"`
+	}{
+		Alias: Alias(np),
+		Class: "Version",
+	})
 }
 
 type LocationChecksMessage struct {
