@@ -62,11 +62,11 @@ func TestBroadcastBounce(t *testing.T) {
 			conn, received := newTestWSClient(t)
 
 			rc := &RegisteredClient{
-				Slot:       tc.clientSlot,
-				game:       &tc.clientGame,
-				clientConn: conn,
-				cancel:     func() {},
-				reduced:    false,
+				Slot:             tc.clientSlot,
+				game:             &tc.clientGame,
+				clientConn:       conn,
+				cancel:           func() {},
+				textConcernsSelf: false,
 			}
 
 			bounceInfo := newBounceInfoStore()
@@ -745,6 +745,147 @@ func TestConnectionRegistry(t *testing.T) {
 				t.Error("expected c2 to remain")
 			}
 		})
+	})
+}
+
+func TestConnectionRegistryTextIndices(t *testing.T) {
+	game := "TestGame"
+
+	newClient := func(slot int) *RegisteredClient {
+		return &RegisteredClient{Slot: slot, game: &game}
+	}
+
+	t.Run("plain client lands in fullClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{})
+
+		assert.Contains(t, cr.fullClients, c)
+		assert.NotContains(t, cr.concernsSelfClients, c)
+	})
+
+	t.Run("NoText client absent from both indices", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{"NoText"})
+
+		assert.NotContains(t, cr.fullClients, c)
+		assert.NotContains(t, cr.concernsSelfClients, c)
+		assert.True(t, c.noText)
+	})
+
+	t.Run("TextConcernsSelf client lands in concernsSelfClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{"TextConcernsSelf"})
+
+		assert.Contains(t, cr.concernsSelfClients, c)
+		assert.NotContains(t, cr.fullClients, c)
+	})
+
+	t.Run("UpdateTags plain -> NoText removes from fullClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{})
+		assert.Contains(t, cr.fullClients, c)
+
+		cr.UpdateTags(c, []string{"NoText"})
+
+		assert.NotContains(t, cr.fullClients, c)
+		assert.NotContains(t, cr.concernsSelfClients, c)
+		assert.True(t, c.noText)
+	})
+
+	t.Run("UpdateTags NoText -> plain restores to fullClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{"NoText"})
+		assert.NotContains(t, cr.fullClients, c)
+
+		cr.UpdateTags(c, []string{})
+
+		assert.Contains(t, cr.fullClients, c)
+		assert.False(t, c.noText)
+	})
+
+	t.Run("UpdateTags plain -> TextConcernsSelf moves between indices", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{})
+		assert.Contains(t, cr.fullClients, c)
+
+		cr.UpdateTags(c, []string{"TextConcernsSelf"})
+
+		assert.NotContains(t, cr.fullClients, c)
+		assert.Contains(t, cr.concernsSelfClients, c)
+	})
+
+	t.Run("Unregister removes from fullClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{})
+		cr.Unregister(c)
+
+		assert.NotContains(t, cr.fullClients, c)
+	})
+
+	t.Run("Unregister removes from concernsSelfClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		cr.Register(1, c, game, []string{"TextConcernsSelf"})
+		cr.Unregister(c)
+
+		assert.NotContains(t, cr.concernsSelfClients, c)
+	})
+
+	t.Run("Kick removes from fullClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		c.cancel = func() {}
+		cr.Register(1, c, game, []string{})
+		cr.Kick(1)
+
+		assert.NotContains(t, cr.fullClients, c)
+	})
+
+	t.Run("multiple clients same slot, indices stay consistent", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c1 := newClient(1)
+		c2 := newClient(1)
+
+		cr.Register(1, c1, game, []string{})
+		cr.Register(1, c2, game, []string{"TextConcernsSelf"})
+
+		assert.Contains(t, cr.fullClients, c1)
+		assert.Contains(t, cr.concernsSelfClients, c2)
+
+		cr.Unregister(c1)
+
+		assert.NotContains(t, cr.fullClients, c1)
+		assert.Contains(t, cr.concernsSelfClients, c2)
+	})
+
+	t.Run("tagless forcedTextConcernsSelf client lands in concernsSelfClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		c.forcedTextConcernsSelf = true
+		cr.Register(1, c, game, []string{})
+
+		assert.True(t, c.textConcernsSelf)
+		assert.Contains(t, cr.concernsSelfClients, c)
+		assert.NotContains(t, cr.fullClients, c)
+	})
+
+	t.Run("NoText forcedTextConcernsSelf client absent from both indices", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		c := newClient(1)
+		c.forcedTextConcernsSelf = true
+		cr.Register(1, c, game, []string{"NoText"})
+
+		assert.True(t, c.textConcernsSelf)
+		assert.True(t, c.noText)
+		assert.NotContains(t, cr.fullClients, c)
+		assert.NotContains(t, cr.concernsSelfClients, c)
 	})
 }
 

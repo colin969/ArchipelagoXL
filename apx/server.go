@@ -416,6 +416,24 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 		}
 		s.state.ReceivedItems.mu.Unlock()
 
+		var printJsonMsgs []any
+		for _, item := range newItems {
+			printJsonMsgs = append(printJsonMsgs, formatSendItemMessage(item, int(item.Player)))
+		}
+
+		if len(printJsonMsgs) > 0 {
+			s.connections.mu.RLock()
+			var allClients []*RegisteredClient
+			for _, clients := range s.connections.clients {
+				allClients = append(allClients, clients...)
+			}
+			s.connections.mu.RUnlock()
+
+			go func() {
+				BroadcastJSON(ctx, allClients, printJsonMsgs)
+			}()
+		}
+
 		affectedSlots := make(map[TeamSlot]struct{})
 		for _, item := range newItems {
 			affectedSlots[TeamSlot{0, int(item.Player)}] = struct{}{}
@@ -439,6 +457,41 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 	}
 
 	return nil
+}
+
+func formatSendItemMessage(item NetworkItem, receivingPlayer int) PrintJsonMessage {
+	sender := int(item.Player)
+
+	// TODO: item flags
+	var parts []JsonMessagePart
+	if sender == receivingPlayer {
+		parts = []JsonMessagePart{
+			{Type: "player_id", Text: fmt.Sprintf("%d", sender)},
+			{Type: "text", Text: " found their "},
+			{Type: "item_id", Text: fmt.Sprintf("%d", item.Item), Player: sender},
+			{Type: "text", Text: " ("},
+			{Type: "location_id", Text: fmt.Sprintf("%d", item.Location), Player: sender},
+			{Type: "text", Text: ")"},
+		}
+	} else {
+		parts = []JsonMessagePart{
+			{Type: "player_id", Text: fmt.Sprintf("%d", sender)},
+			{Type: "text", Text: " sent "},
+			{Type: "item_id", Text: fmt.Sprintf("%d", item.Item), Player: receivingPlayer},
+			{Type: "text", Text: " to "},
+			{Type: "player_id", Text: fmt.Sprintf("%d", receivingPlayer)},
+			{Type: "text", Text: " ("},
+			{Type: "location_id", Text: fmt.Sprintf("%d", item.Location), Player: sender},
+			{Type: "text", Text: ")"},
+		}
+	}
+
+	return PrintJsonMessage{
+		Type:      "ItemSend",
+		Data:      parts,
+		Item:      &item,
+		Receiving: new(receivingPlayer),
+	}
 }
 
 func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]struct{}) {
@@ -555,17 +608,19 @@ func newIPRateLimiter() *IPRateLimiter {
 	}
 }
 
-// No strict lock, but this MUST be immutable to be safe
+// Fields are immutable, but individual fields within may have their own callable functions to handle a mutable state
 type RegisteredClient struct {
-	Team          int
-	Slot          int
-	slotName      *string
-	game          *string
-	cancel        context.CancelFunc
-	clientConn    *websocket.Conn
-	reduced       bool
-	sendIndex     atomic.Int32
-	itemsHandling atomic.Int32
+	Team                   int
+	Slot                   int
+	slotName               *string
+	game                   *string
+	cancel                 context.CancelFunc
+	clientConn             *websocket.Conn
+	textConcernsSelf       bool
+	forcedTextConcernsSelf bool
+	noText                 bool
+	sendIndex              atomic.Int32
+	itemsHandling          atomic.Int32
 }
 
 func (c *RegisteredClient) GetItemsHandling() int {
@@ -589,9 +644,11 @@ type connectionRegistry struct {
 	mu      sync.RWMutex
 	clients map[int][]*RegisteredClient
 	// Tags being covered here means registeredClient can stay immutable
-	tags          map[*RegisteredClient][]string
-	clientsByGame map[string][]*RegisteredClient
-	clientsByTag  map[string][]*RegisteredClient
+	tags                map[*RegisteredClient][]string
+	clientsByGame       map[string][]*RegisteredClient
+	clientsByTag        map[string][]*RegisteredClient
+	fullClients         []*RegisteredClient
+	concernsSelfClients []*RegisteredClient
 	// Just a copy of the static data so we can use it during register / unregister etc
 	lobbyRoomId *string
 	metrics     *metrics
@@ -616,6 +673,7 @@ func (cr *connectionRegistry) Register(slotId int, client *RegisteredClient, gam
 	for _, tag := range tags {
 		cr.clientsByTag[tag] = append(cr.clientsByTag[tag], client)
 	}
+	cr.applyTextIndices(client, cr.tags[client])
 
 	slotsConnected := len(cr.clients)
 
@@ -642,6 +700,28 @@ func (cr *connectionRegistry) UpdateTags(client *RegisteredClient, tags []string
 	for _, tag := range tags {
 		cr.clientsByTag[tag] = append(cr.clientsByTag[tag], client)
 	}
+	cr.applyTextIndices(client, cr.tags[client])
+}
+
+func (cr *connectionRegistry) applyTextIndices(client *RegisteredClient, tags []string) {
+	// Remove from both indices
+	cr.fullClients = removeClient(cr.fullClients, client)
+	cr.concernsSelfClients = removeClient(cr.concernsSelfClients, client)
+
+	// Set client flags
+	client.noText = slices.Contains(tags, "NoText")
+	if !client.forcedTextConcernsSelf {
+		client.textConcernsSelf = slices.Contains(tags, "TextConcernsSelf")
+	} else {
+		client.textConcernsSelf = true
+	}
+
+	// Add to relevant index
+	if client.textConcernsSelf && !client.noText {
+		cr.concernsSelfClients = append(cr.concernsSelfClients, client)
+	} else if !client.noText {
+		cr.fullClients = append(cr.fullClients, client)
+	}
 }
 
 func (cr *connectionRegistry) ConnectedSlotCount() int {
@@ -652,20 +732,12 @@ func (cr *connectionRegistry) ConnectedSlotCount() int {
 
 func (cr *connectionRegistry) Kick(slotId int) {
 	cr.mu.Lock()
-
-	// Disconnect all clients to this slot
 	for _, client := range cr.clients[slotId] {
 		client.cancel()
-		cr.clientsByGame[*client.game] = removeClient(cr.clientsByGame[*client.game], client)
-		for _, tag := range cr.tags[client] {
-			cr.clientsByTag[tag] = removeClient(cr.clientsByTag[tag], client)
-		}
-		delete(cr.tags, client)
+		cr.removeFromAllIndices(client)
 	}
 	delete(cr.clients, slotId)
-
 	slotsConnected := len(cr.clients)
-
 	cr.mu.Unlock()
 
 	if cr.metrics != nil && cr.lobbyRoomId != nil {
@@ -676,7 +748,6 @@ func (cr *connectionRegistry) Kick(slotId int) {
 func (cr *connectionRegistry) Unregister(client *RegisteredClient) {
 	cr.mu.Lock()
 
-	// Remove client from slot names arrays
 	clients := cr.clients[client.Slot]
 	i := slices.Index(clients, client)
 	if i < 0 {
@@ -687,7 +758,17 @@ func (cr *connectionRegistry) Unregister(client *RegisteredClient) {
 	if len(cr.clients[client.Slot]) == 0 {
 		delete(cr.clients, client.Slot)
 	}
+	cr.removeFromAllIndices(client)
 
+	slotsConnected := len(cr.clients)
+	cr.mu.Unlock()
+
+	if cr.metrics != nil && cr.lobbyRoomId != nil {
+		cr.metrics.connectedSlots.WithLabelValues(*cr.lobbyRoomId).Set(float64(slotsConnected))
+	}
+}
+
+func (cr *connectionRegistry) removeFromAllIndices(client *RegisteredClient) {
 	game := *client.game
 	cr.clientsByGame[game] = removeClient(cr.clientsByGame[game], client)
 	if len(cr.clientsByGame[game]) == 0 {
@@ -700,14 +781,8 @@ func (cr *connectionRegistry) Unregister(client *RegisteredClient) {
 		}
 	}
 	delete(cr.tags, client)
-
-	slotsConnected := len(cr.clients)
-
-	cr.mu.Unlock()
-
-	if cr.metrics != nil && cr.lobbyRoomId != nil {
-		cr.metrics.connectedSlots.WithLabelValues(*cr.lobbyRoomId).Set(float64(slotsConnected))
-	}
+	cr.fullClients = removeClient(cr.fullClients, client)
+	cr.concernsSelfClients = removeClient(cr.concernsSelfClients, client)
 }
 
 func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) error {
@@ -1208,6 +1283,73 @@ func (s ApxRoom) handleLocationChecks(ctx context.Context, connState *connection
 	}
 	err := s.RegisterChecks(ctx, connState, TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}, msg.Locations)
 	return err
+}
+
+func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+
+	s.connections.mu.RLock()
+	var fullTargets []*RegisteredClient
+	var selfOnlyTargets []*RegisteredClient
+
+	selfOnly := make(map[*RegisteredClient]struct{}, len(s.connections.clientsByTag["TextConcernsSelf"]))
+	for _, c := range s.connections.clientsByTag["TextConcernsSelf"] {
+		selfOnly[c] = struct{}{}
+	}
+
+	for _, clients := range s.connections.clients {
+		for _, c := range clients {
+			if c.textConcernsSelf {
+				continue
+			}
+			tags := s.connections.tags[c]
+			if slices.Contains(tags, "NoText") {
+				continue
+			}
+			if _, ok := selfOnly[c]; ok {
+				selfOnlyTargets = append(selfOnlyTargets, c)
+			} else {
+				fullTargets = append(fullTargets, c)
+			}
+		}
+	}
+	s.connections.mu.RUnlock()
+
+	go func() {
+		if len(fullTargets) > 0 {
+			BroadcastJSON(ctx, fullTargets, anySlice(msgs))
+		}
+		if len(selfOnlyTargets) > 0 {
+			slotMsgs := make(map[int][]any)
+			for _, msg := range msgs {
+				if msg.Receiving != nil {
+					slotMsgs[*msg.Receiving] = append(slotMsgs[*msg.Receiving], msg)
+				}
+				if msg.Item != nil && (msg.Receiving == nil || int(msg.Item.Player) != *msg.Receiving) {
+					slotMsgs[int(msg.Item.Player)] = append(slotMsgs[int(msg.Item.Player)], msg)
+				}
+			}
+			bySlot := make(map[int][]*RegisteredClient)
+			for _, c := range selfOnlyTargets {
+				bySlot[c.Slot] = append(bySlot[c.Slot], c)
+			}
+			for slot, clients := range bySlot {
+				if relevant, ok := slotMsgs[slot]; ok {
+					BroadcastJSON(ctx, clients, relevant)
+				}
+			}
+		}
+	}()
+}
+
+func anySlice(msgs []PrintJsonMessage) []any {
+	out := make([]any, len(msgs))
+	for i, m := range msgs {
+		out[i] = m
+	}
+	return out
 }
 
 func (dt *debugTap) HasListeners(slotId int) bool {

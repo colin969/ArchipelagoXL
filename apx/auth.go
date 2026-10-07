@@ -141,13 +141,14 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	}
 
 	client := RegisteredClient{
-		Team:       slotInfo.Team,
-		Slot:       slotInfo.Slot,
-		slotName:   &slotInfo.Name,
-		game:       &slotInfo.Game,
-		cancel:     connState.cancel,
-		clientConn: connState.clientConn,
-		reduced:    connState.reduced,
+		Team:                   slotInfo.Team,
+		Slot:                   slotInfo.Slot,
+		slotName:               &slotInfo.Name,
+		game:                   &slotInfo.Game,
+		cancel:                 connState.cancel,
+		clientConn:             connState.clientConn,
+		textConcernsSelf:       connState.reduced,
+		forcedTextConcernsSelf: connState.reduced,
 	}
 	s.connections.Register(slotInfo.Slot, &client, slotInfo.Game, msg.Tags)
 	connState.authenticated = true
