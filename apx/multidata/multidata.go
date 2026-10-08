@@ -305,8 +305,18 @@ func toIntSlice(v any) ([]int, error) {
 			out = append(out, n)
 		}
 		return out, nil
+	case *types.Set:
+		out := make([]int, 0, len(*s))
+		for e := range *s {
+			n, ok := toInt(e)
+			if !ok {
+				return nil, fmt.Errorf("expected int, got %T", e)
+			}
+			out = append(out, n)
+		}
+		return out, nil
 	}
-	return nil, fmt.Errorf("expected list/frozenset, got %T", v)
+	return nil, fmt.Errorf("expected list/frozenset/set, got %T", v)
 }
 
 func toVersion(v any) ([3]int, error) {
@@ -500,6 +510,28 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("precollected_hints: %w", err)
+	}
+
+	// spheres: list[dict[int -> list[int]]]
+	if v, ok := get("spheres"); ok {
+		list, ok := v.(*types.List)
+		if !ok {
+			return nil, fmt.Errorf("spheres: expected list, got %T", v)
+		}
+		md.Spheres = make([]map[int][]int, len(*list))
+		for i, e := range *list {
+			d, ok := e.(*types.Dict)
+			if !ok {
+				return nil, fmt.Errorf("spheres[%d]: expected dict, got %T", i, e)
+			}
+			sphere, err := toIntDict(d, func(v any) ([]int, error) {
+				return toIntSlice(v)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("spheres[%d]: %w", i, err)
+			}
+			md.Spheres[i] = sphere
+		}
 	}
 
 	// version

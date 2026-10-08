@@ -585,3 +585,157 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 	}
 	assert.True(t, foundStored, "found hint should be stored")
 }
+
+func TestClient_Cmd_Hint(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	reader := newExpectedMessageReader(ctx, conn, t)
+	_ = reader.readExpectedMessage("RoomInfo", t)
+
+	err = wsjson.Write(ctx, conn, []any{ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader.readExpectedMessage("Connected", t)
+	reader.discardFor(100 * time.Millisecond)
+
+	ts := TeamSlot{0, 1}
+	game := room.apx.state.SlotInfo[ts].Game
+
+	// --- Free hint test: cost=0, hint "Simply_Key", expect exactly 4 hints back ---
+	room.apx.state.ServerOptions.SetHintCost(0)
+
+	simpleKeyID, ok := room.apx.datapackages.ItemNameToID[game]["Simple_Key"]
+	require.True(t, ok, "Simple_Key must exist in datapackage")
+
+	expectedHints := 0
+	for _, locs := range room.apx.state.Locations {
+		for _, loc := range locs {
+			if loc.Item == int32(simpleKeyID) && loc.Player == 1 {
+				expectedHints++
+			}
+		}
+	}
+	require.Equal(t, 4, expectedHints, "test requires exactly 4 Simple_Key locations")
+
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!hint Simple_Key"}})
+	require.NoError(t, err)
+
+	readNextHint := func() PrintJsonMessage {
+		t.Helper()
+		for {
+			raw := reader.readUntil("PrintJSON", t)
+			var msg PrintJsonMessage
+			err = json.Unmarshal(raw, &msg)
+			require.NoError(t, err)
+			if msg.Type == "Hint" {
+				return msg
+			}
+		}
+	}
+
+	for range expectedHints {
+		msg := readNextHint()
+		assert.Equal(t, "Hint", msg.Type)
+	}
+
+	// --- Part 2: cost=1, earn points for 2 hints, hint Rancid_Egg twice ---
+	room.apx.state.ServerOptions.SetHintCost(1)
+
+	cost := room.apx.state.GetSlotHintCost(ts)
+	locationCheckPoints := room.apx.state.ServerOptions.locationCheckPoints
+	// Need points for 2 hints
+	checksNeeded := (cost*2 + locationCheckPoints - 1) / locationCheckPoints
+
+	missing := room.apx.state.Checks.GetMissing(ts)
+	require.GreaterOrEqual(t, len(missing), checksNeeded, "need enough locations to earn points for 2 hints")
+
+	toCheck := missing[:checksNeeded]
+	for _, locID := range toCheck {
+		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{Locations: []int{locID}}})
+		require.NoError(t, err)
+		_ = reader.readUntil("RoomUpdate", t)
+	}
+	reader.discardFor(100 * time.Millisecond)
+
+	points := room.apx.state.GetSlotRemainingPoints(ts)
+	require.GreaterOrEqual(t, points, cost*2, "should have enough points for 2 hints")
+
+	rancidEggID, ok := room.apx.datapackages.ItemNameToID[game]["Rancid_Egg"]
+	require.True(t, ok, "Rancid_Egg must exist in datapackage")
+
+	rancidEggLocations := 0
+	for _, locs := range room.apx.state.Locations {
+		for _, loc := range locs {
+			if loc.Item == int32(rancidEggID) {
+				rancidEggLocations++
+			}
+		}
+	}
+	require.GreaterOrEqual(t, rancidEggLocations, 2, "test requires at least 2 Rancid_Egg locations")
+
+	// First hint - expect exactly 1 new hint, points deducted
+	pointsBefore := room.apx.state.GetSlotRemainingPoints(ts)
+
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!hint Rancid_Egg"}})
+	require.NoError(t, err)
+
+	firstHint := readNextHint()
+	assert.Equal(t, "Hint", firstHint.Type)
+
+	pointsAfterFirst := room.apx.state.GetSlotRemainingPoints(ts)
+	assert.Equal(t, pointsBefore-cost, pointsAfterFirst, "first Rancid_Egg hint should deduct points")
+
+	storedAfterFirst := room.apx.state.Hints.GetSlotHints(ts)
+	rancidAfterFirst := 0
+	for _, h := range storedAfterFirst {
+		if h.Item == int32(rancidEggID) {
+			rancidAfterFirst++
+		}
+	}
+	assert.Equal(t, 1, rancidAfterFirst, "should have exactly 1 unfound Rancid_Egg hint stored after first call")
+
+	// Second hint — expect 2 hints back (existing re-broadcast), no additional points deducted
+	pointsBeforeSecond := room.apx.state.GetSlotRemainingPoints(ts)
+
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!hint Rancid_Egg"}})
+	require.NoError(t, err)
+
+	// First message is the existing hint re-broadcast, second is the new one
+	received := 0
+	for received < 2 {
+		msg := readNextHint()
+		assert.Equal(t, "Hint", msg.Type)
+		if msg.Found != nil && *msg.Found {
+			continue
+		}
+		received++
+	}
+	pointsAfterSecond := room.apx.state.GetSlotRemainingPoints(ts)
+	assert.Equal(t, pointsBeforeSecond-cost, pointsAfterSecond, "second Rancid_Egg hint should deduct points for the new one only")
+
+	storedAfterSecond := room.apx.state.Hints.GetSlotHints(ts)
+	rancidAfterSecond := 0
+	for _, h := range storedAfterSecond {
+		if h.Item == int32(rancidEggID) {
+			rancidAfterSecond++
+		}
+	}
+	assert.Equal(t, 2, rancidAfterSecond, "should have exactly 2 unfound Rancid_Egg hints stored after second call")
+}

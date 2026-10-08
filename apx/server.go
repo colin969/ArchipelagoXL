@@ -231,8 +231,11 @@ type NetworkItem struct {
 	Flags    int16
 }
 
-type Sphere map[int][]int
+type Sphere map[TeamSlot][]int
 type Spheres []Sphere
+
+type SphereLocGroup map[TeamSlot]map[int]*Location
+type SphereLocs []SphereLocGroup
 
 type ServerOptions struct {
 	mu                  sync.RWMutex
@@ -257,6 +260,12 @@ func (so *ServerOptions) GetHintCost() int {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
 	return so.hintCost
+}
+
+func (so *ServerOptions) SetHintCost(hintCost int) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.hintCost = hintCost
 }
 
 func (so *ServerOptions) PasswordCheck(password *string) bool {
@@ -566,73 +575,175 @@ func (ri *ReceivedItems) Get(key ReceivedItemsKey) []NetworkItem {
 }
 
 type HintsState struct {
-	mu        sync.RWMutex
-	hints     map[TeamSlot][]Hint
-	hintsUsed map[TeamSlot]int
+	mu         sync.RWMutex
+	hints      []Hint
+	byTeamSlot map[TeamSlot][]int
+	hintsUsed  map[TeamSlot]int
 }
 
 func newHintsState() HintsState {
 	return HintsState{
-		hints:     make(map[TeamSlot][]Hint),
-		hintsUsed: make(map[TeamSlot]int),
+		hints:      make([]Hint, 0),
+		byTeamSlot: make(map[TeamSlot][]int),
+		hintsUsed:  make(map[TeamSlot]int),
 	}
+}
+
+func (h *HintsState) rebuildIndices() {
+	h.byTeamSlot = make(map[TeamSlot][]int)
+	for i, hint := range h.hints {
+		h.indexHint(i, hint)
+	}
+}
+
+func (h *HintsState) indexHint(i int, hint Hint) {
+	finderTS := TeamSlot{Team: 0, Slot: int(hint.FindingPlayer)}
+	receiverTS := TeamSlot{Team: 0, Slot: int(hint.ReceivingPlayer)}
+	h.byTeamSlot[finderTS] = append(h.byTeamSlot[finderTS], i)
+	if receiverTS != finderTS {
+		h.byTeamSlot[receiverTS] = append(h.byTeamSlot[receiverTS], i)
+	}
+}
+
+func (h *HintsState) findIndex(findingPlayer int32, location int32) int {
+	ts := TeamSlot{Team: 0, Slot: int(findingPlayer)}
+	for _, i := range h.byTeamSlot[ts] {
+		if h.hints[i].FindingPlayer == findingPlayer && h.hints[i].Location == location {
+			return i
+		}
+	}
+	return -1
+}
+
+func (h *HintsState) HintExists(findingPlayer int32, location int32) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.findIndex(findingPlayer, location) >= 0
 }
 
 func (h *HintsState) GetSlotHints(ts TeamSlot) []Hint {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	out := make([]Hint, len(h.hints[ts]))
-	copy(out, h.hints[ts])
+	indices := h.byTeamSlot[ts]
+	out := make([]Hint, len(indices))
+	for j, i := range indices {
+		out[j] = h.hints[i]
+	}
 	return out
 }
 
-func (h *HintsState) AddSlotHint(ts TeamSlot, hint Hint) {
+func (h *HintsState) AddSlotHint(hint Hint) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, existing := range h.hints[ts] {
-		if existing.FindingPlayer == hint.FindingPlayer && existing.Location == hint.Location {
-			return
+	if h.findIndex(hint.FindingPlayer, hint.Location) >= 0 {
+		return false
+	}
+	i := len(h.hints)
+	h.hints = append(h.hints, hint)
+	h.indexHint(i, hint)
+	return true
+}
+
+func (h *HintsState) GetItemHints(ts TeamSlot, itemId int32) []Hint {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var hints []Hint
+	for _, i := range h.byTeamSlot[ts] {
+		if h.hints[i].Item == itemId {
+			hints = append(hints, h.hints[i])
 		}
 	}
-	h.hints[ts] = append(h.hints[ts], hint)
+	return hints
+}
+
+func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int32, sphereLocs *SphereLocs, cost, points int) []Hint {
+	// Collect already-hinted locations for this item
+	h.mu.RLock()
+	var hints []Hint
+	hintedLocs := make(map[int32]struct{})
+	for _, i := range h.byTeamSlot[ts] {
+		hint := h.hints[i]
+		if hint.ReceivingPlayer == int32(player) && hint.Item == itemId {
+			hints = append(hints, hint)
+			hintedLocs[hint.Location] = struct{}{}
+		}
+	}
+	h.mu.RUnlock()
+
+	if cost > 0 && points < cost {
+		return hints
+	}
+
+	// Find the earliest unhinted location in sphere order
+	for _, sphereLoc := range *sphereLocs {
+		for teamSlot, teamSlotLocs := range sphereLoc {
+			for locID, loc := range teamSlotLocs {
+				if loc.Player != player || loc.Item != itemId {
+					continue
+				}
+				if _, alreadyHinted := hintedLocs[int32(locID)]; alreadyHinted {
+					continue
+				}
+				hintStatus := HintStatusUnspecified
+				if loc != nil {
+					hintStatus = HintStatusFound
+				}
+				hint := Hint{
+					ReceivingPlayer: int32(loc.Player),
+					FindingPlayer:   int32(teamSlot.Slot),
+					Location:        int32(locID),
+					Item:            loc.Item,
+					ItemFlags:       loc.Flags,
+					Found:           loc.Checked,
+					Status:          hintStatus,
+				}
+				h.AddSlotHint(hint)
+				hints = append(hints, hint)
+				// If cost is 0, hint all copies?
+				if cost > 0 && !loc.Checked {
+					h.mu.Lock()
+					h.hintsUsed[ts]++
+					h.mu.Unlock()
+					return hints
+				}
+			}
+		}
+	}
+
+	return hints
 }
 
 // This shouldn't be able to be called for the same player concurrently, so we can probably trust some input
 // Cost is only taken if it's a new hint
-func (h *HintsState) AddPaidSlotHint(ctx context.Context, ts TeamSlot, hint Hint, client *RegisteredClient, receiverTS TeamSlot, cost, points int) (Hint, bool) {
+func (h *HintsState) AddPaidSlotHint(ctx context.Context, ts TeamSlot, hint Hint, client *RegisteredClient, cost, points int) (Hint, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	for _, existing := range h.hints[ts] {
-		if existing.FindingPlayer == hint.FindingPlayer && existing.Location == hint.Location {
-			return existing, true
-		}
+	if i := h.findIndex(hint.FindingPlayer, hint.Location); i >= 0 {
+		return h.hints[i], true
+	}
+
+	if !hint.Found && cost > 0 && points < cost {
+		SendChatMessageToClient(ctx, client.clientConn, client.Slot,
+			fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points))
+		return hint, false
 	}
 
 	if !hint.Found {
-		if cost > 0 && points < cost {
-			SendChatMessageToClient(ctx, client.clientConn, client.Slot, fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points))
-			return hint, false
-		}
 		h.hintsUsed[ts]++
 	}
 
-	h.hints[ts] = append(h.hints[ts], hint)
-	if receiverTS != ts {
-		h.hints[receiverTS] = append(h.hints[receiverTS], hint)
-	}
-
+	i := len(h.hints)
+	h.hints = append(h.hints, hint)
+	h.indexHint(i, hint)
 	return hint, true
 }
 
-func (h *HintsState) UpdateSlotHint(ts TeamSlot, hint Hint) {
+func (h *HintsState) UpdateSlotHint(hint Hint) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for i, existing := range h.hints[ts] {
-		if existing.FindingPlayer == hint.FindingPlayer && existing.Location == hint.Location {
-			h.hints[ts][i] = hint
-			return
-		}
+	if i := h.findIndex(hint.FindingPlayer, hint.Location); i >= 0 {
+		h.hints[i] = hint
 	}
 }
 
@@ -649,12 +760,13 @@ type ApState struct {
 	ServerOptions *ServerOptions
 	// Immutable
 	Locations          map[TeamSlot]map[int]Location
+	Spheres            Spheres
+	SphereLocs         SphereLocs
 	NameToSlot         map[string]*SlotInfo
 	SlotInfo           map[TeamSlot]SlotInfo
 	SlotData           map[TeamSlot]map[string]any
 	SlotMinVersions    map[TeamSlot]Version
 	SlotStartInventory map[TeamSlot][]NetworkItem
-	Spheres            Spheres
 	Version            Version
 	Tags               []string
 	Seed               string
@@ -1411,7 +1523,6 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 	}
 
 	locationTS := TeamSlot{Team: client.Team, Slot: locationPlayer}
-	clientTS := TeamSlot{Team: client.Team, Slot: client.Slot}
 
 	var newHints []Hint
 
@@ -1419,32 +1530,20 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 		loc, ok := s.state.Locations[locationTS][locID]
 		if !ok {
 			if locationPlayer != client.Slot {
-				// Off-world: fail if location doesn't exist
 				cmd := MessageTypeCreateHints
 				return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
 					"CreateHints: location does not exist for specified player", s.lokiLogger, connState.slotName)
 			}
-			// Own slot: silently skip unknown locations
 			continue
 		}
 
-		// Off-world: location must contain an item for the requesting slot
 		if locationPlayer != client.Slot && int(loc.Player) != client.Slot {
 			cmd := MessageTypeCreateHints
 			return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
 				"CreateHints: location does not contain your item", s.lokiLogger, connState.slotName)
 		}
 
-		// Skip if hint already exists
-		existing := s.state.Hints.GetSlotHints(clientTS)
-		alreadyExists := false
-		for _, h := range existing {
-			if h.FindingPlayer == int32(locationPlayer) && h.Location == int32(locID) {
-				alreadyExists = true
-				break
-			}
-		}
-		if alreadyExists {
+		if s.state.Hints.HintExists(int32(locationPlayer), int32(locID)) {
 			continue
 		}
 
@@ -1453,8 +1552,7 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 		if found {
 			hintStatus = HintStatusFound
 		}
-
-		hint := Hint{
+		newHints = append(newHints, Hint{
 			ReceivingPlayer: int32(loc.Player),
 			FindingPlayer:   int32(locationPlayer),
 			Location:        int32(locID),
@@ -1462,21 +1560,13 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 			ItemFlags:       loc.Flags,
 			Found:           found,
 			Status:          hintStatus,
-		}
-		newHints = append(newHints, hint)
+		})
 	}
 
-	// Store bidirectionally and notify
 	for _, hint := range newHints {
-		receiverTS := TeamSlot{Team: client.Team, Slot: int(hint.ReceivingPlayer)}
-		finderTS := TeamSlot{Team: client.Team, Slot: int(hint.FindingPlayer)}
-		s.state.Hints.AddSlotHint(receiverTS, hint)
-		if hint.ReceivingPlayer != hint.FindingPlayer {
-			s.state.Hints.AddSlotHint(finderTS, hint)
-		}
+		s.state.Hints.AddSlotHint(hint)
 	}
 
-	// Broadcast hint PrintJSON messages to concerned slots
 	if len(newHints) > 0 {
 		var msgs []PrintJsonMessage
 		for _, hint := range newHints {
@@ -1770,8 +1860,24 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 	}
 
 	spheres := make(Spheres, len(md.Spheres))
+	sphereLocs := make(SphereLocs, len(md.Spheres))
 	for i, s := range md.Spheres {
-		spheres[i] = Sphere(s)
+		sphere := make(Sphere, len(s))
+		group := make(SphereLocGroup, len(s))
+		for slot, locIDs := range s {
+			ts := TeamSlot{Team: 0, Slot: slot}
+			sphere[ts] = locIDs
+			slotLocs := locations[ts]
+			locs := make(map[int]*Location, 0)
+			for _, locID := range locIDs {
+				if loc, ok := slotLocs[locID]; ok {
+					locs[locID] = &loc
+				}
+			}
+			group[ts] = locs
+		}
+		spheres[i] = sphere
+		sphereLocs[i] = group
 	}
 
 	startInv := make(map[TeamSlot][]NetworkItem, len(md.PrecollectedItems))
@@ -1812,6 +1918,8 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 		ReceivedItems:      newReceivedItems(),
 		Hints:              newHintsState(),
 		Locations:          locations,
+		Spheres:            spheres,
+		SphereLocs:         sphereLocs,
 		NameToSlot:         nameToSlot,
 		SlotInfo:           slotInfoMap,
 		SlotData:           slotData,
@@ -1823,7 +1931,6 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 			Build: md.Version[2],
 		},
 		ServerOptions: parseEmbeddedServerOptions(md.ServerOptions),
-		Spheres:       spheres,
 		Tags:          md.Tags,
 		Seed:          md.SeedName,
 		RaceMode:      md.RaceMode,

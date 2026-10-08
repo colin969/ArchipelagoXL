@@ -1256,7 +1256,7 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 
 	result := make([]SphereResult, 0, len(room.apx.state.Spheres))
 	for _, sphere := range room.apx.state.Spheres {
-		locIDs, ok := sphere[slotId]
+		locIDs, ok := sphere[TeamSlot{0, slotId}]
 		if !ok {
 			continue
 		}
@@ -1313,7 +1313,7 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 
 		slotResult := make([]SphereResult, 0, len(room.apx.state.Spheres))
 		for _, sphere := range room.apx.state.Spheres {
-			locIDs, ok := sphere[slotInfo.Slot]
+			locIDs, ok := sphere[teamSlot]
 			if !ok {
 				continue
 			}
@@ -1369,12 +1369,12 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 	// Check if status of incomplete slots has changed
 	checkedLocs := room.checkedLocations.Get()
 	room.completeSphere1Mu.Lock()
-	for slotId, locIDs := range sphere1 {
-		if _, done := room.completeSphere1Slots[int(slotId)]; done {
+	for teamSlot, locIDs := range sphere1 {
+		if _, done := room.completeSphere1Slots[teamSlot.Slot]; done {
 			continue
 		}
-		if !isSphere1Incomplete(locIDs, checkedLocs[int(slotId)]) {
-			room.completeSphere1Slots[int(slotId)] = struct{}{}
+		if !isSphere1Incomplete(locIDs, checkedLocs[teamSlot.Slot]) {
+			room.completeSphere1Slots[teamSlot.Slot] = struct{}{}
 		}
 	}
 

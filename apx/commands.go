@@ -107,6 +107,13 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 			handler:     s.handleHintLocationCommand,
 		},
 	)
+	r.AddTopLevel(
+		chatCommand{
+			name:        "hint",
+			description: "Spend hint points for an item in your game",
+			handler:     s.handleHintItemCommand,
+		},
+	)
 
 	r.AddGroup(&chatCommandGroup{
 		prefix:      "apx",
@@ -187,10 +194,63 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	points := s.state.GetSlotRemainingPoints(teamSlot)
 
 	// Store bidirectionally
-	receiverTS := TeamSlot{Team: client.Team, Slot: int(loc.Player)}
-	hint, allowed := s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, client, receiverTS, cost, points)
+	hint, allowed := s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, client, cost, points)
 	if allowed {
 		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatHintMessage(hint)})
+	}
+	return nil
+}
+
+func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connectionState, args string) error {
+	client := connState.registeredClient
+	itemName := strings.TrimSpace(args)
+
+	if itemName == "" {
+		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
+			"Usage: !hint <item name>")
+		return nil
+	}
+
+	teamSlot := TeamSlot{Team: client.Team, Slot: client.Slot}
+	game := *client.game
+
+	itemID, err := s.datapackages.GetItemID(game, itemName)
+	if err != nil {
+		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
+			fmt.Sprintf("Unknown item: %q", itemName))
+		return nil
+	}
+
+	cost := s.state.GetSlotHintCost(teamSlot)
+	points := s.state.GetSlotRemainingPoints(teamSlot)
+	hints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), int32(*itemID), &s.state.SphereLocs, cost, points)
+
+	if len(hints) == 0 {
+		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
+			fmt.Sprintf("No locations found containing %q", itemName))
+		return nil
+	}
+
+	if len(hints) == 0 {
+		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
+			fmt.Sprintf("No locations found containing %q", itemName))
+		return nil
+	}
+
+	var msgs []PrintJsonMessage
+	for _, hint := range hints {
+		if s.state.Hints.HintExists(hint.FindingPlayer, hint.Location) {
+			msgs = append(msgs, formatHintMessage(hint))
+			continue
+		}
+		stored, allowed := s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, client, cost, points)
+		if allowed {
+			msgs = append(msgs, formatHintMessage(stored))
+		}
+	}
+
+	if len(msgs) > 0 {
+		s.broadcastPrintJson(ctx, msgs)
 	}
 	return nil
 }

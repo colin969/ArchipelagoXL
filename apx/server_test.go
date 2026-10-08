@@ -1215,7 +1215,7 @@ func TestHintsState(t *testing.T) {
 	t.Run("AddSlotHint", func(t *testing.T) {
 		t.Run("adds to empty slot", func(t *testing.T) {
 			h := newHintsState()
-			h.AddSlotHint(ts, hint1)
+			h.AddSlotHint(hint1)
 			if hints := h.GetSlotHints(ts); len(hints) != 1 || hints[0] != hint1 {
 				t.Errorf("expected [%+v], got %+v", hint1, hints)
 			}
@@ -1223,8 +1223,8 @@ func TestHintsState(t *testing.T) {
 
 		t.Run("ignores duplicate", func(t *testing.T) {
 			h := newHintsState()
-			h.AddSlotHint(ts, hint1)
-			h.AddSlotHint(ts, hint1)
+			h.AddSlotHint(hint1)
+			h.AddSlotHint(hint1)
 			if hints := h.GetSlotHints(ts); len(hints) != 1 {
 				t.Errorf("expected 1 hint, got %d", len(hints))
 			}
@@ -1232,32 +1232,35 @@ func TestHintsState(t *testing.T) {
 
 		t.Run("same location different finder is not duplicate", func(t *testing.T) {
 			h := newHintsState()
-			h.AddSlotHint(ts, hint1)
-			h.AddSlotHint(ts, Hint{FindingPlayer: 2, Location: 100})
+			h.AddSlotHint(hint1)
+			h.AddSlotHint(Hint{FindingPlayer: 2, Location: 100, ReceivingPlayer: 1})
+			// slot 1 sees hint1 (as finder) + second hint (as receiver)
 			if hints := h.GetSlotHints(ts); len(hints) != 2 {
-				t.Errorf("expected 2 hints, got %d", len(hints))
+				t.Errorf("expected 2 hints for slot 1, got %d", len(hints))
 			}
 		})
 
-		t.Run("different slots are independent", func(t *testing.T) {
+		t.Run("different finders produce independent hints", func(t *testing.T) {
 			h := newHintsState()
 			ts2 := TeamSlot{Team: 0, Slot: 2}
-			h.AddSlotHint(ts, hint1)
-			h.AddSlotHint(ts2, Hint{FindingPlayer: 1, Location: 200})
-			if len(h.GetSlotHints(ts)) != 1 || len(h.GetSlotHints(ts2)) != 1 {
-				t.Error("slots should not share hints")
-			}
+			ts3 := TeamSlot{Team: 0, Slot: 3}
+			h.AddSlotHint(hint1) // finder=1, receiver=2
+			h.AddSlotHint(Hint{FindingPlayer: 2, Location: 200, ReceivingPlayer: 3})
+
+			assert.Len(t, h.GetSlotHints(ts), 1)  // slot 1: finder of hint1
+			assert.Len(t, h.GetSlotHints(ts2), 2) // slot 2: receiver of hint1, finder of hint2
+			assert.Len(t, h.GetSlotHints(ts3), 1) // slot 3: receiver of hint2
 		})
 	})
 
 	t.Run("UpdateSlotHint", func(t *testing.T) {
 		t.Run("updates existing hint", func(t *testing.T) {
 			h := newHintsState()
-			h.AddSlotHint(ts, hint1)
+			h.AddSlotHint(hint1)
 			updated := hint1
 			updated.Found = true
 			updated.Status = HintStatusFound
-			h.UpdateSlotHint(ts, updated)
+			h.UpdateSlotHint(updated)
 			hints := h.GetSlotHints(ts)
 			if len(hints) != 1 || !hints[0].Found || hints[0].Status != HintStatusFound {
 				t.Errorf("hint not updated correctly: %+v", hints)
@@ -1266,7 +1269,7 @@ func TestHintsState(t *testing.T) {
 
 		t.Run("no-op when hint does not exist", func(t *testing.T) {
 			h := newHintsState()
-			h.UpdateSlotHint(ts, hint1)
+			h.UpdateSlotHint(hint1)
 			if hints := h.GetSlotHints(ts); len(hints) != 0 {
 				t.Errorf("expected 0 hints, got %d", len(hints))
 			}
@@ -1275,7 +1278,7 @@ func TestHintsState(t *testing.T) {
 
 	t.Run("GetSlotHints returns copy", func(t *testing.T) {
 		h := newHintsState()
-		h.AddSlotHint(ts, hint1)
+		h.AddSlotHint(hint1)
 		got := h.GetSlotHints(ts)
 		got[0].Found = true
 		if h.GetSlotHints(ts)[0].Found {
