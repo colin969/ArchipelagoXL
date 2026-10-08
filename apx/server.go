@@ -758,6 +758,7 @@ type ApState struct {
 	ReceivedItems ReceivedItems
 	Hints         HintsState
 	ServerOptions *ServerOptions
+	DataStorage   *DataStorage
 	// Immutable
 	Locations          map[TeamSlot]map[int]Location
 	Spheres            Spheres
@@ -1469,6 +1470,10 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleLocationChecks(ctx, connState, raw)
 		case MessageTypeCreateHints:
 			return s.handleCreateHints(ctx, connState, raw)
+		case MessageTypeGet:
+			return s.handleGet(ctx, connState, raw)
+		case MessageTypeSet:
+			return s.handleSet(ctx, connState, raw)
 		default:
 			// TODO: Handle message types
 
@@ -1639,6 +1644,77 @@ func hintStatusText(s HintStatus) string {
 	}
 }
 
+func (s *ApxRoom) handleGet(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg GetMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeGet
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			fmt.Sprintf("invalid Get arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	if msg.Keys == nil {
+		cmd := MessageTypeGet
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			"Get: missing keys field", s.lokiLogger, connState.slotName)
+	}
+
+	keys := make(map[string]any, len(msg.Keys))
+	for _, key := range msg.Keys {
+		val, _ := s.state.DataStorage.Get(key)
+		keys[key] = val
+	}
+
+	return wsjson.Write(ctx, connState.clientConn, []any{RetrievedMessage{
+		Keys: keys,
+	}})
+}
+
+func (s *ApxRoom) handleSet(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg SetMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeSet
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			fmt.Sprintf("invalid Set arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	if msg.Key == "" {
+		cmd := MessageTypeSet
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			"Set: missing key field", s.lokiLogger, connState.slotName)
+	}
+
+	if strings.HasPrefix(msg.Key, "_read_") {
+		cmd := MessageTypeSet
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			fmt.Sprintf("Set: key %q is read-only", msg.Key), s.lokiLogger, connState.slotName)
+	}
+
+	client := connState.registeredClient
+	owner := TeamSlot{Team: client.Team, Slot: client.Slot}
+
+	original, result, err := s.state.DataStorage.Set(owner, msg.Key, msg.Default, msg.Operations)
+	if err != nil {
+		cmd := MessageTypeSet
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			fmt.Sprintf("Set: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	// TODO: SetNotify
+
+	reply := SetReplyMessage{
+		Key:           msg.Key,
+		Value:         result,
+		OriginalValue: &original,
+		Slot:          client.Slot,
+	}
+
+	if msg.WantReply {
+		wsjson.Write(ctx, connState.clientConn, []any{reply})
+	}
+
+	return nil
+}
+
 func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessage) {
 	if len(msgs) == 0 {
 		return
@@ -1802,7 +1878,7 @@ func (s ApxRoom) SyncReceivedItems(ctx context.Context, client *RegisteredClient
 	return wsjson.Write(ctx, client.clientConn, []any{msg})
 }
 
-func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
+func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 	slotData := make(map[TeamSlot]map[string]any, len(md.SlotData))
 	for slot, data := range md.SlotData {
 		slotData[TeamSlot{Team: 0, Slot: slot}] = data
@@ -1913,10 +1989,11 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 		}
 	}
 
-	return ApState{
+	apState := ApState{
 		Checks:             newChecksState(locations),
 		ReceivedItems:      newReceivedItems(),
 		Hints:              newHintsState(),
+		DataStorage:        newDataStorage(),
 		Locations:          locations,
 		Spheres:            spheres,
 		SphereLocs:         sphereLocs,
@@ -1938,7 +2015,42 @@ func convertMultiDataToState(md *multidata.MultiData) (ApState, error) {
 			players: playersNetwork,
 		},
 		SlotInfoNetwork: slotInfoNetwork,
-	}, nil
+	}
+	populateReadData(&apState)
+	return &apState, nil
+}
+
+func populateReadData(state *ApState) {
+	ds := state.DataStorage
+
+	// race_mode — static scalar from multidata
+	raceMode := int64(state.RaceMode)
+	ds.RegisterReadKey("race_mode", func() StorageValue {
+		return raceMode
+	})
+
+	// Per-slot keys — all team 0 at load time
+	for ts, slotData := range state.SlotData {
+		ts := ts         // capture
+		data := slotData // capture
+		slot := ts.Slot
+
+		// slot_data_{slot} — static, captured at load
+		ds.RegisterReadKey(fmt.Sprintf("slot_data_%d", slot), func() StorageValue {
+			return data
+		})
+
+		// hints_{team}_{slot} — dynamic, reads live hint state
+		ds.RegisterReadKey(fmt.Sprintf("hints_%d_%d", ts.Team, slot), func() StorageValue {
+			return state.Hints.GetSlotHints(ts)
+		})
+
+		// client_status_{team}_{slot} — not tracked in ApState yet, return 0 (CLIENT_UNKNOWN)
+		// TODO: wire up to client_game_state equivalent when implemented
+		ds.RegisterReadKey(fmt.Sprintf("client_status_%d_%d", ts.Team, slot), func() StorageValue {
+			return int64(0)
+		})
+	}
 }
 
 func defaultServerOptions() ServerOptions {
@@ -2000,7 +2112,6 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 			opts.compatibility = n
 		}
 	}
-	opts.hintCost = 0
 	return &opts
 }
 

@@ -464,6 +464,44 @@ func (m UpdateHintMessage) MarshalJSON() ([]byte, error) {
 	}{Cmd: MessageTypeUpdateHint, Alias: Alias(m)})
 }
 
+type GetMessage struct {
+	Keys []string `json:"keys"`
+}
+
+type SetMessage struct {
+	Key        string                 `json:"key"`
+	Default    any                    `json:"default"`
+	WantReply  bool                   `json:"want_reply"`
+	Operations []DataStorageOperation `json:"operations"`
+}
+
+type SetReplyMessage struct {
+	Key           string `json:"key"`
+	Value         any    `json:"value"`
+	OriginalValue any    `json:"original_value,omitempty"`
+	Slot          int    `json:"slot"`
+}
+
+func (m SetReplyMessage) MarshalJSON() ([]byte, error) {
+	type Alias SetReplyMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeSetReply, Alias: Alias(m)})
+}
+
+type RetrievedMessage struct {
+	Keys map[string]any `json:"keys"`
+}
+
+func (m RetrievedMessage) MarshalJSON() ([]byte, error) {
+	type Alias RetrievedMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeRetrieved, Alias: Alias(m)})
+}
+
 type PacketProblemType string
 
 const (
