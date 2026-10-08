@@ -870,6 +870,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 			}
 		},
 	}
+	apx.chatCommandRouter = newCommandRouter(apx)
 	apx.buildRoomInfoFromState()
 
 	if err := apx.loadDataPackages(rm.diskDataPackages); err != nil {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"testing"
 	"time"
@@ -130,7 +129,6 @@ func (emr *ExpectedMessageReader) readUntil(expectedCmd string, t *testing.T) js
 	t.Helper()
 	for {
 		cmd, msg := emr.readMessage(t)
-		log.Println(cmd)
 		if cmd == expectedCmd {
 			return msg
 		}

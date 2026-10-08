@@ -190,24 +190,25 @@ func (ris *RoomInfoStore) HasPassword() bool {
 }
 
 type ApxRoom struct {
-	perSlotPasswords bool
-	lastActivity     *atomic.Int64
-	logf             func(f string, v ...any)
-	config           *Config
-	roomInfo         *RoomInfoStore
-	altConnectNames  *ConnectNames
-	passwords        *passwordStore
-	fullFeed         *fullFeedStore
-	bounceInfo       *bounceInfoStore
-	connections      *connectionRegistry
-	datapackages     *DataPackageStore
-	metrics          *metrics
-	lobbyRoomId      string
-	debugTap         *debugTap
-	lokiLogger       *LokiLogger
-	logDeath         func(slotId int)
-	ipLimiter        *IPRateLimiter
-	state            *ApState
+	perSlotPasswords  bool
+	lastActivity      *atomic.Int64
+	logf              func(f string, v ...any)
+	config            *Config
+	roomInfo          *RoomInfoStore
+	altConnectNames   *ConnectNames
+	passwords         *passwordStore
+	fullFeed          *fullFeedStore
+	bounceInfo        *bounceInfoStore
+	connections       *connectionRegistry
+	datapackages      *DataPackageStore
+	metrics           *metrics
+	lobbyRoomId       string
+	debugTap          *debugTap
+	lokiLogger        *LokiLogger
+	logDeath          func(slotId int)
+	ipLimiter         *IPRateLimiter
+	chatCommandRouter *chatCommandRouter
+	state             *ApState
 }
 
 type Location struct {
@@ -594,6 +595,34 @@ func (h *HintsState) AddSlotHint(ts TeamSlot, hint Hint) {
 		}
 	}
 	h.hints[ts] = append(h.hints[ts], hint)
+}
+
+// This shouldn't be able to be called for the same player concurrently, so we can probably trust some input
+// Cost is only taken if it's a new hint
+func (h *HintsState) AddPaidSlotHint(ctx context.Context, ts TeamSlot, hint Hint, client *RegisteredClient, receiverTS TeamSlot, cost, points int) (Hint, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for _, existing := range h.hints[ts] {
+		if existing.FindingPlayer == hint.FindingPlayer && existing.Location == hint.Location {
+			return existing, true
+		}
+	}
+
+	if !hint.Found {
+		if cost > 0 && points < cost {
+			SendChatMessageToClient(ctx, client.clientConn, client.Slot, fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points))
+			return hint, false
+		}
+		h.hintsUsed[ts]++
+	}
+
+	h.hints[ts] = append(h.hints[ts], hint)
+	if receiverTS != ts {
+		h.hints[receiverTS] = append(h.hints[receiverTS], hint)
+	}
+
+	return hint, true
 }
 
 func (h *HintsState) UpdateSlotHint(ts TeamSlot, hint Hint) {

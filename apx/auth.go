@@ -186,7 +186,7 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 	}
 	text := packet.Text
 
-	trimmed := strings.ToLower(strings.TrimSpace(text))
+	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "!countdown") {
 		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, "You're not allowed to do this")
 		return nil
@@ -195,7 +195,7 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, "You're not allowed to do this")
 		return nil
 	}
-	if handled, err := s.apxCommandGroup().Handle(ctx, connState, trimmed); handled {
+	if handled, err := s.chatCommandRouter.Handle(ctx, connState, trimmed); handled {
 		return err
 	}
 

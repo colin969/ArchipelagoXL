@@ -63,6 +63,8 @@ type cachedDataPackage struct {
 	encoded          json.RawMessage
 	itemIDToName     map[int]string
 	locationIDToName map[int]string
+	itemNameToID     map[string]int
+	locationNameToID map[string]int
 	// Number of cachedGameDataPackage wrappers holding this as a reference
 	refCount int
 }
@@ -91,8 +93,8 @@ func newGlobalDataPackageCache() *GlobalDataPackageCache {
 }
 
 type GameData struct {
-	ItemNameToID     map[string]int `json:"item_name_to_id"`
-	LocationNameToID map[string]int `json:"location_name_to_id"`
+	ItemNameToID     map[string]int `json:"ItemNameToID"`
+	LocationNameToID map[string]int `json:"LocationNameToID"`
 	Checksum         string         `json:"checksum"`
 }
 
@@ -136,6 +138,8 @@ type DataPackageStore struct {
 	encodedGameNameKeys          map[string][]byte          // pre-encoded JSON keys for game names
 	ItemIDToName                 map[string]map[int]string  // game -> id -> name
 	LocationIDToName             map[string]map[int]string  // game -> id -> name
+	ItemNameToID                 map[string]map[string]int
+	LocationNameToID             map[string]map[string]int
 	gameKeys                     []string
 }
 
@@ -148,8 +152,34 @@ func newDataPackageStore(fullGameResponseOptimization bool, globalCache *GlobalD
 		encodedGameNameKeys:          make(map[string][]byte),
 		ItemIDToName:                 make(map[string]map[int]string),
 		LocationIDToName:             make(map[string]map[int]string),
+		ItemNameToID:                 make(map[string]map[string]int),
+		LocationNameToID:             make(map[string]map[string]int),
 		gameKeys:                     make([]string, 0),
 	}
+}
+
+func (ds *DataPackageStore) GetLocationID(game, name string) (int, error) {
+	nameToID, ok := ds.LocationNameToID[game]
+	if !ok {
+		return 0, fmt.Errorf("datapackage not found for game %q", game)
+	}
+	id, ok := nameToID[name]
+	if !ok {
+		return 0, fmt.Errorf("location %q not found in game %q", name, game)
+	}
+	return id, nil
+}
+
+func (ds *DataPackageStore) GetItemID(game, name string) (*int, error) {
+	nameToID, ok := ds.ItemNameToID[game]
+	if !ok {
+		return nil, fmt.Errorf("datapackage not found for game %q", game)
+	}
+	id, ok := nameToID[name]
+	if !ok {
+		return nil, fmt.Errorf("item %q not found in game %q", name, game)
+	}
+	return &id, nil
 }
 
 func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *DiskDataPackageStore) (*cachedGameDataPackage, error) {
@@ -188,6 +218,8 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *Di
 			encoded:          raw,
 			itemIDToName:     itemIDToName,
 			locationIDToName: locationIDToName,
+			itemNameToID:     gd.ItemNameToID,
+			locationNameToID: gd.LocationNameToID,
 		}
 		c.byChecksum[checksum] = datapackage
 	}
@@ -212,7 +244,7 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *Di
 	return wrapper, nil
 }
 
-func (c *GlobalDataPackageCache) GetOrAddWithData(checksum, game string, encoded json.RawMessage, itemIDToName, locationIDToName map[int]string) *cachedGameDataPackage {
+func (c *GlobalDataPackageCache) GetOrAddWithData(checksum, game string, encoded json.RawMessage, itemIDToName, locationIDToName map[int]string, itemNameToID, locationNameToID map[string]int) *cachedGameDataPackage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -229,6 +261,8 @@ func (c *GlobalDataPackageCache) GetOrAddWithData(checksum, game string, encoded
 			encoded:          encoded,
 			itemIDToName:     itemIDToName,
 			locationIDToName: locationIDToName,
+			itemNameToID:     itemNameToID,
+			locationNameToID: locationNameToID,
 		}
 		c.byChecksum[checksum] = datapackage
 	}
@@ -295,7 +329,7 @@ func (ds *DataPackageStore) AddDataPackage(game string, gd GameData) error {
 	for name, id := range gd.LocationNameToID {
 		locationIDToName[id] = name
 	}
-	wrapper := ds.globalCache.GetOrAddWithData(gd.Checksum, game, encodedData, itemIDToName, locationIDToName)
+	wrapper := ds.globalCache.GetOrAddWithData(gd.Checksum, game, encodedData, itemIDToName, locationIDToName, gd.ItemNameToID, gd.LocationNameToID)
 	ds.attachWrapper(game, wrapper)
 	return nil
 }
@@ -310,6 +344,8 @@ func (ds *DataPackageStore) attachWrapper(game string, wrapper *cachedGameDataPa
 	ds.encodedGameNameKeys[game] = wrapper.encodedGameName
 	ds.ItemIDToName[game] = wrapper.datapackage.itemIDToName
 	ds.LocationIDToName[game] = wrapper.datapackage.locationIDToName
+	ds.ItemNameToID[game] = wrapper.datapackage.itemNameToID
+	ds.LocationNameToID[game] = wrapper.datapackage.locationNameToID
 	ds.gameKeys = append(ds.gameKeys, wrapper.checksum+":"+game)
 	ds.singleResponses[game] = wrapper.singleResponse
 }

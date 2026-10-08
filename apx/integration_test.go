@@ -458,3 +458,130 @@ func TestClient_CreateHints_OwnLocation(t *testing.T) {
 	}
 	assert.True(t, found, "hint should be stored in state for slot 1")
 }
+
+func TestClient_Cmd_HintLocation(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	reader := newExpectedMessageReader(ctx, conn, t)
+	_ = reader.readExpectedMessage("RoomInfo", t)
+
+	err = wsjson.Write(ctx, conn, []any{ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader.readExpectedMessage("Connected", t)
+	reader.discardFor(100 * time.Millisecond)
+
+	ts := TeamSlot{0, 1}
+	game := room.apx.state.SlotInfo[ts].Game
+	missing := room.apx.state.Checks.GetMissing(ts)
+
+	cost := room.apx.state.GetSlotHintCost(ts)
+	locationCheckPoints := room.apx.state.ServerOptions.locationCheckPoints
+	checksNeeded := (cost + locationCheckPoints - 1) / locationCheckPoints
+
+	toCheck := missing[:checksNeeded]
+	unfoundLocName, ok := room.apx.datapackages.LocationIDToName[game][toCheck[0]]
+	require.True(t, ok)
+
+	// Hint with 0 points fails
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!hint_location " + unfoundLocName}})
+	require.NoError(t, err)
+
+	raw := reader.readUntil("PrintJSON", t)
+	assert.Contains(t, string(raw), "A hint costs")
+
+	// Check enough to earn points to hint
+	for _, checkLocID := range toCheck {
+		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{Locations: []int{checkLocID}}})
+		require.NoError(t, err)
+		_ = reader.readUntil("RoomUpdate", t)
+	}
+	reader.discardFor(100 * time.Millisecond)
+
+	pointsBeforeUnfound := room.apx.state.GetSlotRemainingPoints(ts)
+
+	// Hint missing loc, spends points
+	missing = room.apx.state.Checks.GetMissing(ts)
+	unfoundLocName, ok = room.apx.datapackages.LocationIDToName[game][missing[0]]
+	unfoundLocId := missing[0]
+	require.True(t, ok)
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!hint_location " + unfoundLocName}})
+	require.NoError(t, err)
+
+	raw = reader.readUntil("PrintJSON", t)
+	var unfoundMsg PrintJsonMessage
+	err = json.Unmarshal(raw, &unfoundMsg)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Hint", unfoundMsg.Type)
+	require.NotNil(t, unfoundMsg.Item)
+	assert.Equal(t, int32(unfoundLocId), unfoundMsg.Item.Location)
+	require.NotNil(t, unfoundMsg.Found)
+	assert.False(t, *unfoundMsg.Found)
+
+	pointsAfterUnfound := room.apx.state.GetSlotRemainingPoints(ts)
+	assert.Equal(t, pointsBeforeUnfound-cost, pointsAfterUnfound, "unfound hint should deduct points")
+
+	// Verify stored
+	hints := room.apx.state.Hints.GetSlotHints(ts)
+	unfoundStored := false
+	for _, h := range hints {
+		if int(h.Location) == unfoundLocId {
+			unfoundStored = true
+			break
+		}
+	}
+	assert.True(t, unfoundStored, "unfound hint should be stored")
+
+	// --- Check the found location, then hint it — should not cost points ---
+	found := room.apx.state.Checks.GetChecked(ts)
+	foundLocName, ok := room.apx.datapackages.LocationIDToName[game][found[0]]
+	foundLocID := found[0]
+
+	pointsBeforeFound := room.apx.state.GetSlotRemainingPoints(ts)
+
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!hint_location " + foundLocName}})
+	require.NoError(t, err)
+
+	raw = reader.readUntil("PrintJSON", t)
+	var foundMsg PrintJsonMessage
+	err = json.Unmarshal(raw, &foundMsg)
+	require.NoError(t, err)
+
+	assert.Equal(t, "Hint", foundMsg.Type)
+	require.NotNil(t, foundMsg.Item)
+	assert.Equal(t, int32(foundLocID), foundMsg.Item.Location)
+	require.NotNil(t, foundMsg.Found)
+	assert.True(t, *foundMsg.Found)
+
+	pointsAfterFound := room.apx.state.GetSlotRemainingPoints(ts)
+	assert.Equal(t, pointsBeforeFound, pointsAfterFound, "found hint should not deduct points")
+
+	// Verify stored
+	hints = room.apx.state.Hints.GetSlotHints(ts)
+	foundStored := false
+	for _, h := range hints {
+		if int(h.Location) == foundLocID {
+			foundStored = true
+			break
+		}
+	}
+	assert.True(t, foundStored, "found hint should be stored")
+}
