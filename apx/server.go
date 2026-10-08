@@ -685,7 +685,7 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int32, sp
 					continue
 				}
 				hintStatus := HintStatusUnspecified
-				if loc != nil {
+				if loc != nil && loc.Checked {
 					hintStatus = HintStatusFound
 				}
 				hint := Hint{
@@ -1610,7 +1610,7 @@ func formatHintMessage(hint Hint) PrintJsonMessage {
 	parts = append(parts, JsonMessagePart{
 		Type:       "hint_status",
 		Text:       hintStatusText(hint.Status),
-		HintStatus: hint.Status,
+		HintStatus: &hint.Status,
 	})
 
 	return PrintJsonMessage{
@@ -2000,6 +2000,7 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 			opts.compatibility = n
 		}
 	}
+	opts.hintCost = 0
 	return &opts
 }
 

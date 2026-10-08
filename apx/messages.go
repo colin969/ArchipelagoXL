@@ -285,12 +285,12 @@ const (
 )
 
 type JsonMessagePart struct {
-	Type       string     `json:"type,omitempty"`
-	Text       string     `json:"text,omitempty"`
-	Color      string     `json:"color,omitempty"`
-	Flags      int        `json:"flags,omitempty"`
-	Player     int        `json:"player,omitempty"`
-	HintStatus HintStatus `json:"hint_status,omitempty"`
+	Type       string      `json:"type,omitempty"`
+	Text       string      `json:"text,omitempty"`
+	Color      string      `json:"color,omitempty"`
+	Flags      int         `json:"flags,omitempty"`
+	Player     int         `json:"player,omitempty"`
+	HintStatus *HintStatus `json:"hint_status,omitempty"`
 }
 
 type BounceMessage struct {
