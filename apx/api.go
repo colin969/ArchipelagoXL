@@ -28,7 +28,7 @@ import (
 type TrackerSpheres []TrackerSphereLocations
 
 // { slot_id : [loc_id, loc_id, loc_id] }
-type TrackerSphereLocations map[int][]int
+type TrackerSphereLocations map[int][]int64
 
 type SphereResult struct {
 	Locations []LocationEntry `json:"locations"`
@@ -104,22 +104,22 @@ func (r *RoomRegistry) Remove(roomId string) {
 
 type CheckedLocations struct {
 	checkedLocationsMu sync.RWMutex
-	checkedLocations   map[int]map[int]bool
+	checkedLocations   map[int]map[int64]bool
 }
 
-func (cl *CheckedLocations) Get() map[int]map[int]bool {
+func (cl *CheckedLocations) Get() map[int]map[int64]bool {
 	cl.checkedLocationsMu.RLock()
 	defer cl.checkedLocationsMu.RUnlock()
 	return cl.checkedLocations
 }
 
-func (cl *CheckedLocations) GetSlot(slotId int) map[int]bool {
+func (cl *CheckedLocations) GetSlot(slotId int) map[int64]bool {
 	cl.checkedLocationsMu.RLock()
 	defer cl.checkedLocationsMu.RUnlock()
 	return cl.checkedLocations[slotId]
 }
 
-func (cl *CheckedLocations) Set(newCl map[int]map[int]bool) {
+func (cl *CheckedLocations) Set(newCl map[int]map[int64]bool) {
 	cl.checkedLocationsMu.Lock()
 	defer cl.checkedLocationsMu.Unlock()
 	cl.checkedLocations = newCl
@@ -127,7 +127,7 @@ func (cl *CheckedLocations) Set(newCl map[int]map[int]bool) {
 
 func newCheckedLocations() CheckedLocations {
 	return CheckedLocations{
-		checkedLocations: make(map[int]map[int]bool),
+		checkedLocations: make(map[int]map[int64]bool),
 	}
 }
 
@@ -175,7 +175,7 @@ type Deathlink struct {
 }
 
 type LocationEntry struct {
-	ID      int
+	ID      int64
 	Name    string
 	Checked bool
 }
@@ -1523,7 +1523,7 @@ func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *htt
 	json.NewEncoder(w).Encode(altNames)
 }
 
-func isSphere1Incomplete(locIDs []int, checkedLocations map[int]bool) bool {
+func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
 	for _, locID := range locIDs {
 		if !checkedLocations[locID] {
 			return true
@@ -1534,7 +1534,7 @@ func isSphere1Incomplete(locIDs []int, checkedLocations map[int]bool) bool {
 
 // Slot IDs are keys, so JSON turns them to strings, we want the numbers
 func (s *TrackerSphereLocations) UnmarshalJSON(data []byte) error {
-	var raw map[string][]int
+	var raw map[string][]int64
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
@@ -1594,7 +1594,7 @@ func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
 	typeName := vars["typeName"]
 	log.Printf("[handleItemNames] requested game=%q type=%q", gameName, typeName)
 
-	var names map[int]string
+	var names map[int64]string
 	switch typeName {
 	case "item":
 		names, ok = room.apx.datapackages.ItemIDToName[gameName]

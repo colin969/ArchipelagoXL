@@ -214,7 +214,7 @@ type ApxRoom struct {
 }
 
 type Location struct {
-	Item    int32
+	Item    int64
 	Player  int16
 	Flags   int16
 	Checked bool
@@ -227,16 +227,16 @@ type Version struct {
 }
 
 type NetworkItem struct {
-	Item     int32
-	Location int32
+	Item     int64
+	Location int64
 	Player   int16
 	Flags    int16
 }
 
-type Sphere map[TeamSlot][]int
+type Sphere map[TeamSlot][]int64
 type Spheres []Sphere
 
-type SphereLocGroup map[TeamSlot]map[int]*Location
+type SphereLocGroup map[TeamSlot]map[int64]*Location
 type SphereLocs []SphereLocGroup
 
 type ServerOptions struct {
@@ -290,8 +290,8 @@ type TeamSlot struct {
 type Hint struct {
 	ReceivingPlayer int32
 	FindingPlayer   int32
-	Location        int32
-	Item            int32
+	Location        int64
+	Item            int64
 	ItemFlags       int16
 	Status          HintStatus
 	Found           bool
@@ -345,40 +345,40 @@ func (np *NetworkPlayers) Get() []NetworkPlayer {
 
 type Checks struct {
 	mu        sync.RWMutex
-	locations map[TeamSlot]map[int]Location // ref to immutable
-	checked   map[TeamSlot]map[int]struct{}
+	locations map[TeamSlot]map[int64]Location // ref to immutable
+	checked   map[TeamSlot]map[int64]struct{}
 }
 
-func newChecksState(locations map[TeamSlot]map[int]Location) Checks {
-	checked := make(map[TeamSlot]map[int]struct{}, len(locations))
+func newChecksState(locations map[TeamSlot]map[int64]Location) Checks {
+	checked := make(map[TeamSlot]map[int64]struct{}, len(locations))
 	for ts := range locations {
-		checked[ts] = make(map[int]struct{})
+		checked[ts] = make(map[int64]struct{})
 	}
 	return Checks{locations: locations, checked: checked}
 }
 
-func (ls *Checks) IsChecked(ts TeamSlot, locID int) bool {
+func (ls *Checks) IsChecked(ts TeamSlot, locID int64) bool {
 	ls.mu.RLock()
 	defer ls.mu.RUnlock()
 	_, ok := ls.checked[ts][locID]
 	return ok
 }
 
-func (ls *Checks) GetChecked(ts TeamSlot) []int {
+func (ls *Checks) GetChecked(ts TeamSlot) []int64 {
 	ls.mu.RLock()
 	defer ls.mu.RUnlock()
-	ids := make([]int, 0, len(ls.checked[ts]))
+	ids := make([]int64, 0, len(ls.checked[ts]))
 	for id := range ls.checked[ts] {
 		ids = append(ids, id)
 	}
 	return ids
 }
 
-func (ls *Checks) GetMissing(ts TeamSlot) []int {
+func (ls *Checks) GetMissing(ts TeamSlot) []int64 {
 	ls.mu.RLock()
 	defer ls.mu.RUnlock()
 	checked := ls.checked[ts]
-	missing := make([]int, 0, len(ls.locations[ts])-len(checked))
+	missing := make([]int64, 0, len(ls.locations[ts])-len(checked))
 	for id := range ls.locations[ts] {
 		if _, ok := checked[id]; !ok {
 			missing = append(missing, id)
@@ -399,8 +399,28 @@ func (s *ApxRoom) submitOrdered(fn func()) {
 	s.bcOrderedCh <- fn
 }
 
-func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState, teamSlot TeamSlot, locations []int) error {
-	newChecks := make(map[int]struct{})
+func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[TeamSlot]struct{}) {
+	for ts := range affectedSlots {
+		key := fmt.Sprintf("hints_%d_%d", ts.Team, ts.Slot)
+		val, _ := s.state.DataStorage.Get("_read_" + key)
+		clients := s.state.DataStorage.GetNotifyClients(key)
+		if len(clients) == 0 {
+			continue
+		}
+		reply := SetReplyMessage{
+			Key:   "_read_" + key,
+			Value: val,
+		}
+		s.submitOrdered(func() {
+			for _, c := range clients {
+				wsjson.Write(ctx, c.clientConn, []any{reply})
+			}
+		})
+	}
+}
+
+func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState, teamSlot TeamSlot, locations []int64) error {
+	newChecks := make(map[int64]struct{})
 
 	// Mark new locations as found, and collect the items found
 	s.state.Checks.mu.Lock()
@@ -421,7 +441,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 		newChecks[locID] = struct{}{}
 		newItems = append(newItems, NetworkItem{
 			Item:     loc.Item,
-			Location: int32(locID),
+			Location: locID,
 			Player:   loc.Player,
 			Flags:    loc.Flags,
 		})
@@ -441,6 +461,17 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 			}
 		}
 		s.state.ReceivedItems.mu.Unlock()
+
+		affectedHintSlots := make(map[TeamSlot]struct{})
+		for _, item := range newItems {
+			if hint, changed := s.state.Hints.UpdateStatusIfExists(int32(teamSlot.Slot), item.Location, HintStatusFound, true); changed {
+				affectedHintSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
+				affectedHintSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
+			}
+		}
+		if len(affectedHintSlots) > 0 {
+			s.notifyHintsChanged(ctx, affectedHintSlots)
+		}
 
 		var printJsonMsgs []any
 		for _, item := range newItems {
@@ -472,7 +503,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 
 	// Send room update to sender
 	if len(newChecks) > 0 {
-		checkedList := make([]int, 0, len(newChecks))
+		checkedList := make([]int64, 0, len(newChecks))
 		for locID := range newChecks {
 			checkedList = append(checkedList, locID)
 		}
@@ -618,7 +649,7 @@ func (h *HintsState) indexHint(i int, hint Hint) {
 	}
 }
 
-func (h *HintsState) findIndex(findingPlayer int32, location int32) int {
+func (h *HintsState) findIndex(findingPlayer int32, location int64) int {
 	ts := TeamSlot{Team: 0, Slot: int(findingPlayer)}
 	for _, i := range h.byTeamSlot[ts] {
 		if h.hints[i].FindingPlayer == findingPlayer && h.hints[i].Location == location {
@@ -628,7 +659,7 @@ func (h *HintsState) findIndex(findingPlayer int32, location int32) int {
 	return -1
 }
 
-func (h *HintsState) HintExists(findingPlayer int32, location int32) bool {
+func (h *HintsState) HintExists(findingPlayer int32, location int64) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.findIndex(findingPlayer, location) >= 0
@@ -657,7 +688,22 @@ func (h *HintsState) AddSlotHint(hint Hint) bool {
 	return true
 }
 
-func (h *HintsState) GetItemHints(ts TeamSlot, itemId int32) []Hint {
+func (h *HintsState) UpdateStatusIfExists(findingPlayer int32, location int64, status HintStatus, found bool) (Hint, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	i := h.findIndex(findingPlayer, location)
+	if i < 0 {
+		return Hint{}, false
+	}
+	if h.hints[i].Status == status && h.hints[i].Found == found {
+		return h.hints[i], false // no change
+	}
+	h.hints[i].Status = status
+	h.hints[i].Found = found
+	return h.hints[i], true
+}
+
+func (h *HintsState) GetItemHints(ts TeamSlot, itemId int64) []Hint {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	var hints []Hint
@@ -669,11 +715,11 @@ func (h *HintsState) GetItemHints(ts TeamSlot, itemId int32) []Hint {
 	return hints
 }
 
-func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int32, sphereLocs *SphereLocs, cost, points int) []Hint {
+func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sphereLocs *SphereLocs, cost, points int) []Hint {
 	// Collect already-hinted locations for this item
 	h.mu.RLock()
 	var hints []Hint
-	hintedLocs := make(map[int32]struct{})
+	hintedLocs := make(map[int64]struct{})
 	for _, i := range h.byTeamSlot[ts] {
 		hint := h.hints[i]
 		if hint.ReceivingPlayer == int32(player) && hint.Item == itemId {
@@ -694,7 +740,7 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int32, sp
 				if loc.Player != player || loc.Item != itemId {
 					continue
 				}
-				if _, alreadyHinted := hintedLocs[int32(locID)]; alreadyHinted {
+				if _, alreadyHinted := hintedLocs[locID]; alreadyHinted {
 					continue
 				}
 				hintStatus := HintStatusUnspecified
@@ -704,7 +750,7 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int32, sp
 				hint := Hint{
 					ReceivingPlayer: int32(loc.Player),
 					FindingPlayer:   int32(teamSlot.Slot),
-					Location:        int32(locID),
+					Location:        locID,
 					Item:            loc.Item,
 					ItemFlags:       loc.Flags,
 					Found:           loc.Checked,
@@ -773,7 +819,7 @@ type ApState struct {
 	ServerOptions *ServerOptions
 	DataStorage   *DataStorage
 	// Immutable
-	Locations          map[TeamSlot]map[int]Location
+	Locations          map[TeamSlot]map[int64]Location
 	Spheres            Spheres
 	SphereLocs         SphereLocs
 	NameToSlot         map[string]*SlotInfo
@@ -1565,7 +1611,7 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 				"CreateHints: location does not contain your item", s.lokiLogger, connState.slotName)
 		}
 
-		if s.state.Hints.HintExists(int32(locationPlayer), int32(locID)) {
+		if s.state.Hints.HintExists(int32(locationPlayer), locID) {
 			continue
 		}
 
@@ -1577,7 +1623,7 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 		newHints = append(newHints, Hint{
 			ReceivingPlayer: int32(loc.Player),
 			FindingPlayer:   int32(locationPlayer),
-			Location:        int32(locID),
+			Location:        locID,
 			Item:            loc.Item,
 			ItemFlags:       loc.Flags,
 			Found:           found,
@@ -1906,12 +1952,12 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 		}
 	}
 
-	locations := make(map[TeamSlot]map[int]Location, len(md.Locations))
+	locations := make(map[TeamSlot]map[int64]Location, len(md.Locations))
 	for slot, locs := range md.Locations {
-		inner := make(map[int]Location, len(locs))
+		inner := make(map[int64]Location, len(locs))
 		for locID, t := range locs {
 			inner[locID] = Location{
-				Item:    int32(t[0]),
+				Item:    int64(t[0]),
 				Player:  int16(t[1]),
 				Flags:   int16(t[2]),
 				Checked: false,
@@ -1952,7 +1998,7 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 			ts := TeamSlot{Team: 0, Slot: slot}
 			sphere[ts] = locIDs
 			slotLocs := locations[ts]
-			locs := make(map[int]*Location, 0)
+			locs := make(map[int64]*Location, 0)
 			for _, locID := range locIDs {
 				if loc, ok := slotLocs[locID]; ok {
 					locs[locID] = &loc
@@ -1969,7 +2015,7 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 		items := make([]NetworkItem, len(itemIDs))
 		for i, id := range itemIDs {
 			items[i] = NetworkItem{
-				Item:     int32(id),
+				Item:     id,
 				Location: -2, // sentinel: start inventory location
 				Player:   0,
 			}

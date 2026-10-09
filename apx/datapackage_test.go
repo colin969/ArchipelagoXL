@@ -39,8 +39,8 @@ func TestDatapackage(t *testing.T) {
 
 		gd := GameData{
 			Checksum:         "abc",
-			ItemNameToID:     map[string]int{"Sword": 1},
-			LocationNameToID: map[string]int{"Chest": 100},
+			ItemNameToID:     map[string]int64{"Sword": 1},
+			LocationNameToID: map[string]int64{"Chest": 100},
 		}
 		writeToDisk(t, disk, "abc", gd)
 
@@ -198,8 +198,8 @@ func TestDatapackage(t *testing.T) {
 
 		gd := GameData{
 			Checksum:         "abc",
-			ItemNameToID:     map[string]int{"Sword": 1},
-			LocationNameToID: map[string]int{"Chest": 100},
+			ItemNameToID:     map[string]int64{"Sword": 1},
+			LocationNameToID: map[string]int64{"Chest": 100},
 		}
 
 		if err := ds.AddDataPackage("TestGame", gd); err != nil {
@@ -251,8 +251,8 @@ func TestDatapackage(t *testing.T) {
 
 		gd := GameData{
 			Checksum:         "abc",
-			ItemNameToID:     map[string]int{"Sword": 1},
-			LocationNameToID: map[string]int{"Chest": 100},
+			ItemNameToID:     map[string]int64{"Sword": 1},
+			LocationNameToID: map[string]int64{"Chest": 100},
 		}
 
 		ds1 := newDataPackageStore(true, cache)

@@ -60,6 +60,18 @@ func toInt(v any) (int, bool) {
 	return 0, false
 }
 
+func toInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	}
+	return 0, false
+}
+
 // pickle class handlers
 
 type SlotTypeClass struct{}
@@ -211,16 +223,16 @@ type MultiData struct {
 	SlotData          map[int]map[string]any
 	SlotInfo          map[int]NetworkSlot
 	ConnectNames      map[string][2]int
-	Locations         map[int]map[int][3]int
+	Locations         map[int]map[int64][3]int64
 	ServerOptions     map[string]any
 	ErHintData        map[int]map[int]string
-	PrecollectedItems map[int][]int
+	PrecollectedItems map[int][]int64
 	PrecollectedHints map[int][]Hint // set -> slice
 	Version           [3]int
 	Tags              []string
 	MinimumVersions   MinimumVersions
 	SeedName          string
-	Spheres           []map[int][]int // set -> slice
+	Spheres           []map[int][]int64 // set -> slice
 	DataPackage       map[string]GamesPackage
 	RaceMode          int
 }
@@ -255,6 +267,22 @@ func toIntDict[V any](d *types.Dict, valFn func(any) (V, error)) (map[int]V, err
 	out := make(map[int]V, len(*d))
 	for _, kv := range *d {
 		k, ok := toInt(kv.Key)
+		if !ok {
+			return nil, fmt.Errorf("expected int key, got %T", kv.Key)
+		}
+		v, err := valFn(kv.Value)
+		if err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+func toInt64Dict[V any](d *types.Dict, valFn func(any) (V, error)) (map[int64]V, error) {
+	out := make(map[int64]V, len(*d))
+	for _, kv := range *d {
+		k, ok := toInt64(kv.Key)
 		if !ok {
 			return nil, fmt.Errorf("expected int key, got %T", kv.Key)
 		}
@@ -309,6 +337,42 @@ func toIntSlice(v any) ([]int, error) {
 		out := make([]int, 0, len(*s))
 		for e := range *s {
 			n, ok := toInt(e)
+			if !ok {
+				return nil, fmt.Errorf("expected int, got %T", e)
+			}
+			out = append(out, n)
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("expected list/frozenset/set, got %T", v)
+}
+
+func toInt64Slice(v any) ([]int64, error) {
+	switch s := v.(type) {
+	case *types.List:
+		out := make([]int64, len(*s))
+		for i, e := range *s {
+			n, ok := toInt64(e)
+			if !ok {
+				return nil, fmt.Errorf("expected int, got %T", e)
+			}
+			out[i] = n
+		}
+		return out, nil
+	case *types.FrozenSet:
+		out := make([]int64, 0, len(*s))
+		for _, e := range *s {
+			n, ok := toInt64(e)
+			if !ok {
+				return nil, fmt.Errorf("expected int, got %T", e)
+			}
+			out = append(out, n)
+		}
+		return out, nil
+	case *types.Set:
+		out := make([]int64, 0, len(*s))
+		for e := range *s {
+			n, ok := toInt64(e)
 			if !ok {
 				return nil, fmt.Errorf("expected int, got %T", e)
 			}
@@ -394,21 +458,21 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locations: %w", err)
 	}
-	md.Locations, err = toIntDict(raw, func(v any) (map[int][3]int, error) {
+	md.Locations, err = toIntDict(raw, func(v any) (map[int64][3]int64, error) {
 		inner, ok := v.(*types.Dict)
 		if !ok {
 			return nil, fmt.Errorf("expected dict, got %T", v)
 		}
-		return toIntDict(inner, func(v any) ([3]int, error) {
+		return toInt64Dict(inner, func(v any) ([3]int64, error) {
 			t, ok := v.(*types.Tuple)
 			if !ok || len(*t) != 3 {
-				return [3]int{}, fmt.Errorf("expected 3-tuple, got %T", v)
+				return [3]int64{}, fmt.Errorf("expected 3-tuple, got %T", v)
 			}
-			var out [3]int
+			var out [3]int64
 			for i, e := range *t {
-				n, ok := toInt(e)
+				n, ok := toInt64(e)
 				if !ok {
-					return [3]int{}, fmt.Errorf("tuple element must be int, got %T", e)
+					return [3]int64{}, fmt.Errorf("tuple element must be int, got %T", e)
 				}
 				out[i] = n
 			}
@@ -481,8 +545,8 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 	if err != nil {
 		return nil, fmt.Errorf("precollected_items: %w", err)
 	}
-	md.PrecollectedItems, err = toIntDict(raw, func(v any) ([]int, error) {
-		return toIntSlice(v)
+	md.PrecollectedItems, err = toIntDict(raw, func(v any) ([]int64, error) {
+		return toInt64Slice(v)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("precollected_items: %w", err)
@@ -518,14 +582,14 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 		if !ok {
 			return nil, fmt.Errorf("spheres: expected list, got %T", v)
 		}
-		md.Spheres = make([]map[int][]int, len(*list))
+		md.Spheres = make([]map[int][]int64, len(*list))
 		for i, e := range *list {
 			d, ok := e.(*types.Dict)
 			if !ok {
 				return nil, fmt.Errorf("spheres[%d]: expected dict, got %T", i, e)
 			}
-			sphere, err := toIntDict(d, func(v any) ([]int, error) {
-				return toIntSlice(v)
+			sphere, err := toIntDict(d, func(v any) ([]int64, error) {
+				return toInt64Slice(v)
 			})
 			if err != nil {
 				return nil, fmt.Errorf("spheres[%d]: %w", i, err)

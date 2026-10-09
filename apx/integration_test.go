@@ -144,7 +144,7 @@ func TestClient_Connected_WithItems(t *testing.T) {
 
 	assert.Equal(t, 0, recvItemsMsg.Index)
 	assert.Len(t, recvItemsMsg.Items, 7)
-	assert.Equal(t, int32(-2), recvItemsMsg.Items[0].Location)
+	assert.Equal(t, int64(-2), recvItemsMsg.Items[0].Location)
 	assert.Equal(t, int16(0), recvItemsMsg.Items[0].Player)
 }
 
@@ -186,7 +186,7 @@ func TestClient_LocationChecks(t *testing.T) {
 
 	for i, locID := range locations {
 		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{
-			Locations: []int{locID},
+			Locations: []int64{locID},
 		}})
 		require.NoError(t, err)
 
@@ -253,7 +253,7 @@ func TestClient_ReceivesItems(t *testing.T) {
 
 	// Find 3 locations in slot 2 that hold items for slot 1
 	missing2 := room.apx.state.Checks.GetMissing(TeamSlot{0, 2})
-	var targetLocs []int
+	var targetLocs []int64
 	for _, locID := range missing2 {
 		loc := room.apx.state.Locations[TeamSlot{0, 2}][locID]
 		if int(loc.Player) == 1 {
@@ -427,9 +427,10 @@ func TestClient_CreateHints_OwnLocation(t *testing.T) {
 
 	reader.discardFor(100 * time.Millisecond)
 
+	// TODO: Fix
 	err = wsjson.Write(ctx, conn, []any{map[string]any{
 		"cmd":       "CreateHints",
-		"locations": []int{locID},
+		"locations": []int64{locID},
 	}})
 	require.NoError(t, err)
 
@@ -442,7 +443,7 @@ func TestClient_CreateHints_OwnLocation(t *testing.T) {
 
 	assert.Equal(t, "Hint", msg.Type)
 	require.NotNil(t, msg.Item)
-	assert.Equal(t, int32(locID), msg.Item.Location)
+	assert.Equal(t, int64(locID), msg.Item.Location)
 	require.NotNil(t, msg.Found)
 	assert.False(t, *msg.Found)
 
@@ -451,7 +452,7 @@ func TestClient_CreateHints_OwnLocation(t *testing.T) {
 	require.NotEmpty(t, hints)
 	found := false
 	for _, h := range hints {
-		if int(h.Location) == locID {
+		if h.Location == locID {
 			found = true
 			break
 		}
@@ -509,7 +510,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 
 	// Check enough to earn points to hint
 	for _, checkLocID := range toCheck {
-		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{Locations: []int{checkLocID}}})
+		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{Locations: []int64{checkLocID}}})
 		require.NoError(t, err)
 		_ = reader.readUntil("RoomUpdate", t)
 	}
@@ -532,7 +533,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 
 	assert.Equal(t, "Hint", unfoundMsg.Type)
 	require.NotNil(t, unfoundMsg.Item)
-	assert.Equal(t, int32(unfoundLocId), unfoundMsg.Item.Location)
+	assert.Equal(t, int64(unfoundLocId), unfoundMsg.Item.Location)
 	require.NotNil(t, unfoundMsg.Found)
 	assert.False(t, *unfoundMsg.Found)
 
@@ -543,7 +544,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 	hints := room.apx.state.Hints.GetSlotHints(ts)
 	unfoundStored := false
 	for _, h := range hints {
-		if int(h.Location) == unfoundLocId {
+		if h.Location == unfoundLocId {
 			unfoundStored = true
 			break
 		}
@@ -567,7 +568,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 
 	assert.Equal(t, "Hint", foundMsg.Type)
 	require.NotNil(t, foundMsg.Item)
-	assert.Equal(t, int32(foundLocID), foundMsg.Item.Location)
+	assert.Equal(t, int64(foundLocID), foundMsg.Item.Location)
 	require.NotNil(t, foundMsg.Found)
 	assert.True(t, *foundMsg.Found)
 
@@ -578,7 +579,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 	hints = room.apx.state.Hints.GetSlotHints(ts)
 	foundStored := false
 	for _, h := range hints {
-		if int(h.Location) == foundLocID {
+		if h.Location == foundLocID {
 			foundStored = true
 			break
 		}
@@ -627,7 +628,7 @@ func TestClient_Cmd_Hint(t *testing.T) {
 	expectedHints := 0
 	for _, locs := range room.apx.state.Locations {
 		for _, loc := range locs {
-			if loc.Item == int32(simpleKeyID) && loc.Player == 1 {
+			if loc.Item == simpleKeyID && loc.Player == 1 {
 				expectedHints++
 			}
 		}
@@ -668,7 +669,7 @@ func TestClient_Cmd_Hint(t *testing.T) {
 
 	toCheck := missing[:checksNeeded]
 	for _, locID := range toCheck {
-		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{Locations: []int{locID}}})
+		err = wsjson.Write(ctx, conn, []any{LocationChecksMessage{Locations: []int64{locID}}})
 		require.NoError(t, err)
 		_ = reader.readUntil("RoomUpdate", t)
 	}
@@ -683,7 +684,7 @@ func TestClient_Cmd_Hint(t *testing.T) {
 	rancidEggLocations := 0
 	for _, locs := range room.apx.state.Locations {
 		for _, loc := range locs {
-			if loc.Item == int32(rancidEggID) {
+			if loc.Item == rancidEggID {
 				rancidEggLocations++
 			}
 		}
@@ -705,7 +706,7 @@ func TestClient_Cmd_Hint(t *testing.T) {
 	storedAfterFirst := room.apx.state.Hints.GetSlotHints(ts)
 	rancidAfterFirst := 0
 	for _, h := range storedAfterFirst {
-		if h.Item == int32(rancidEggID) {
+		if h.Item == rancidEggID {
 			rancidAfterFirst++
 		}
 	}
@@ -733,7 +734,7 @@ func TestClient_Cmd_Hint(t *testing.T) {
 	storedAfterSecond := room.apx.state.Hints.GetSlotHints(ts)
 	rancidAfterSecond := 0
 	for _, h := range storedAfterSecond {
-		if h.Item == int32(rancidEggID) {
+		if h.Item == rancidEggID {
 			rancidAfterSecond++
 		}
 	}

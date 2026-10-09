@@ -61,10 +61,10 @@ func (d *DiskDataPackageStore) Read(checksum string) ([]byte, error) {
 
 type cachedDataPackage struct {
 	encoded          json.RawMessage
-	itemIDToName     map[int]string
-	locationIDToName map[int]string
-	itemNameToID     map[string]int
-	locationNameToID map[string]int
+	itemIDToName     map[int64]string
+	locationIDToName map[int64]string
+	itemNameToID     map[string]int64
+	locationNameToID map[string]int64
 	// Number of cachedGameDataPackage wrappers holding this as a reference
 	refCount int
 }
@@ -93,9 +93,9 @@ func newGlobalDataPackageCache() *GlobalDataPackageCache {
 }
 
 type GameData struct {
-	ItemNameToID     map[string]int `json:"ItemNameToID"`
-	LocationNameToID map[string]int `json:"LocationNameToID"`
-	Checksum         string         `json:"checksum"`
+	ItemNameToID     map[string]int64 `json:"ItemNameToID"`
+	LocationNameToID map[string]int64 `json:"LocationNameToID"`
+	Checksum         string           `json:"checksum"`
 }
 
 type GetDataPackageMessage struct {
@@ -132,14 +132,14 @@ type EncodedDataPackageObject struct {
 type DataPackageStore struct {
 	fullGameResponseOptimization bool // Whether to duplicate allocations for full-game responses as a cpu optimization
 	globalCache                  *GlobalDataPackageCache
-	packages                     map[string]json.RawMessage // Raw encoded datapackages keyed by game name
-	singleResponses              map[string]json.RawMessage // Pre-built response for single-game requests
-	fullGameResponse             json.RawMessage            // Response for all games at once to avoid allocations
-	encodedGameNameKeys          map[string][]byte          // pre-encoded JSON keys for game names
-	ItemIDToName                 map[string]map[int]string  // game -> id -> name
-	LocationIDToName             map[string]map[int]string  // game -> id -> name
-	ItemNameToID                 map[string]map[string]int
-	LocationNameToID             map[string]map[string]int
+	packages                     map[string]json.RawMessage  // Raw encoded datapackages keyed by game name
+	singleResponses              map[string]json.RawMessage  // Pre-built response for single-game requests
+	fullGameResponse             json.RawMessage             // Response for all games at once to avoid allocations
+	encodedGameNameKeys          map[string][]byte           // pre-encoded JSON keys for game names
+	ItemIDToName                 map[string]map[int64]string // game -> id -> name
+	LocationIDToName             map[string]map[int64]string // game -> id -> name
+	ItemNameToID                 map[string]map[string]int64
+	LocationNameToID             map[string]map[string]int64
 	gameKeys                     []string
 }
 
@@ -150,15 +150,15 @@ func newDataPackageStore(fullGameResponseOptimization bool, globalCache *GlobalD
 		packages:                     make(map[string]json.RawMessage),
 		singleResponses:              make(map[string]json.RawMessage),
 		encodedGameNameKeys:          make(map[string][]byte),
-		ItemIDToName:                 make(map[string]map[int]string),
-		LocationIDToName:             make(map[string]map[int]string),
-		ItemNameToID:                 make(map[string]map[string]int),
-		LocationNameToID:             make(map[string]map[string]int),
+		ItemIDToName:                 make(map[string]map[int64]string),
+		LocationIDToName:             make(map[string]map[int64]string),
+		ItemNameToID:                 make(map[string]map[string]int64),
+		LocationNameToID:             make(map[string]map[string]int64),
 		gameKeys:                     make([]string, 0),
 	}
 }
 
-func (ds *DataPackageStore) GetLocationID(game, name string) (int, error) {
+func (ds *DataPackageStore) GetLocationID(game, name string) (int64, error) {
 	nameToID, ok := ds.LocationNameToID[game]
 	if !ok {
 		return 0, fmt.Errorf("datapackage not found for game %q", game)
@@ -170,7 +170,7 @@ func (ds *DataPackageStore) GetLocationID(game, name string) (int, error) {
 	return id, nil
 }
 
-func (ds *DataPackageStore) GetItemID(game, name string) (*int, error) {
+func (ds *DataPackageStore) GetItemID(game, name string) (*int64, error) {
 	nameToID, ok := ds.ItemNameToID[game]
 	if !ok {
 		return nil, fmt.Errorf("datapackage not found for game %q", game)
@@ -206,11 +206,11 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *Di
 		if err := json.Unmarshal(raw, &gd); err != nil {
 			return nil, fmt.Errorf("unmarshaling datapackage %q: %w", checksum, err)
 		}
-		itemIDToName := make(map[int]string, len(gd.ItemNameToID))
+		itemIDToName := make(map[int64]string, len(gd.ItemNameToID))
 		for name, id := range gd.ItemNameToID {
 			itemIDToName[id] = name
 		}
-		locationIDToName := make(map[int]string, len(gd.LocationNameToID))
+		locationIDToName := make(map[int64]string, len(gd.LocationNameToID))
 		for name, id := range gd.LocationNameToID {
 			locationIDToName[id] = name
 		}
@@ -244,7 +244,7 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *Di
 	return wrapper, nil
 }
 
-func (c *GlobalDataPackageCache) GetOrAddWithData(checksum, game string, encoded json.RawMessage, itemIDToName, locationIDToName map[int]string, itemNameToID, locationNameToID map[string]int) *cachedGameDataPackage {
+func (c *GlobalDataPackageCache) GetOrAddWithData(checksum, game string, encoded json.RawMessage, itemIDToName, locationIDToName map[int64]string, itemNameToID, locationNameToID map[string]int64) *cachedGameDataPackage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -321,11 +321,11 @@ func (ds *DataPackageStore) AddDataPackage(game string, gd GameData) error {
 	if err != nil {
 		return err
 	}
-	itemIDToName := make(map[int]string, len(gd.ItemNameToID))
+	itemIDToName := make(map[int64]string, len(gd.ItemNameToID))
 	for name, id := range gd.ItemNameToID {
 		itemIDToName[id] = name
 	}
-	locationIDToName := make(map[int]string, len(gd.LocationNameToID))
+	locationIDToName := make(map[int64]string, len(gd.LocationNameToID))
 	for name, id := range gd.LocationNameToID {
 		locationIDToName[id] = name
 	}

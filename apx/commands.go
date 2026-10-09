@@ -165,7 +165,7 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	// Skip if hint already exists — no cost
 	existing := s.state.Hints.GetSlotHints(teamSlot)
 	for _, h := range existing {
-		if int(h.FindingPlayer) == client.Slot && int(h.Location) == locID {
+		if int(h.FindingPlayer) == client.Slot && h.Location == locID {
 			hint := formatHintMessage(h)
 			s.broadcastPrintJson(ctx, []PrintJsonMessage{hint})
 			return nil
@@ -183,7 +183,7 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	hint := Hint{
 		ReceivingPlayer: int32(loc.Player),
 		FindingPlayer:   int32(client.Slot),
-		Location:        int32(locID),
+		Location:        locID,
 		Item:            loc.Item,
 		ItemFlags:       loc.Flags,
 		Found:           found,
@@ -223,7 +223,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	cost := s.state.GetSlotHintCost(teamSlot)
 	points := s.state.GetSlotRemainingPoints(teamSlot)
-	hints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), int32(*itemID), &s.state.SphereLocs, cost, points)
+	hints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), *itemID, &s.state.SphereLocs, cost, points)
 
 	if len(hints) == 0 {
 		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,

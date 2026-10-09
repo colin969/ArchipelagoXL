@@ -950,8 +950,8 @@ func TestIPRateLimiter(t *testing.T) {
 	}
 }
 
-func makeTestLocations() map[TeamSlot]map[int]Location {
-	return map[TeamSlot]map[int]Location{
+func makeTestLocations() map[TeamSlot]map[int64]Location {
+	return map[TeamSlot]map[int64]Location{
 		{0, 1}: {
 			100: {Item: 999, Player: 2, Flags: 0},
 			101: {Item: 1000, Player: 1, Flags: 0},
@@ -968,7 +968,7 @@ func TestChecks(t *testing.T) {
 		ts := TeamSlot{0, 1}
 		checks := newChecksState(makeTestLocations())
 
-		assert.ElementsMatch(t, []int{100, 101, 102}, checks.GetMissing(ts))
+		assert.ElementsMatch(t, []int64{100, 101, 102}, checks.GetMissing(ts))
 	})
 
 	t.Run("InitiallyNoneChecked", func(t *testing.T) {
@@ -996,8 +996,8 @@ func TestChecks(t *testing.T) {
 
 		assert.True(t, checks.IsChecked(ts, 100))
 		assert.False(t, checks.IsChecked(ts, 101))
-		assert.ElementsMatch(t, []int{100}, checks.GetChecked(ts))
-		assert.ElementsMatch(t, []int{101, 102}, checks.GetMissing(ts))
+		assert.ElementsMatch(t, []int64{100}, checks.GetChecked(ts))
+		assert.ElementsMatch(t, []int64{101, 102}, checks.GetMissing(ts))
 	})
 
 	t.Run("HalfChecked_HalfMissing", func(t *testing.T) {
@@ -1009,8 +1009,8 @@ func TestChecks(t *testing.T) {
 		checks.checked[ts][101] = struct{}{}
 		checks.mu.Unlock()
 
-		assert.ElementsMatch(t, []int{100, 101}, checks.GetChecked(ts))
-		assert.ElementsMatch(t, []int{102}, checks.GetMissing(ts))
+		assert.ElementsMatch(t, []int64{100, 101}, checks.GetChecked(ts))
+		assert.ElementsMatch(t, []int64{102}, checks.GetMissing(ts))
 	})
 
 	t.Run("SlotsAreIndependent", func(t *testing.T) {
@@ -1024,7 +1024,7 @@ func TestChecks(t *testing.T) {
 
 		assert.False(t, checks.IsChecked(ts2, 200))
 		assert.Empty(t, checks.GetChecked(ts2))
-		assert.ElementsMatch(t, []int{200}, checks.GetMissing(ts2))
+		assert.ElementsMatch(t, []int64{200}, checks.GetMissing(ts2))
 	})
 
 	t.Run("UnknownSlot_ReturnsEmpty", func(t *testing.T) {
