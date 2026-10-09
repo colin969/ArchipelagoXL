@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"math"
 	"math/bits"
+	"slices"
 	"strings"
 	"sync"
+
+	"github.com/coder/websocket/wsjson"
 )
 
 const (
@@ -18,11 +22,11 @@ const (
 )
 
 type DataStorage struct {
-	mu       sync.RWMutex
-	data     map[string]*StorageEntry
-	keyCount map[TeamSlot]int
-	readData map[string]func() StorageValue // for _read_ keys
-
+	mu              sync.RWMutex
+	data            map[string]*StorageEntry
+	keyCount        map[TeamSlot]int
+	readData        map[string]func() StorageValue // for _read_ keys
+	notifiedClients map[string][]*RegisteredClient
 }
 
 func newDataStorage() *DataStorage {
@@ -50,6 +54,48 @@ func (ds *DataStorage) RegisterReadKey(key string, fn func() StorageValue) {
 	ds.readData[key] = fn
 }
 
+func (ds *DataStorage) NotifyClient(key string, client *RegisteredClient) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if slices.Contains(ds.notifiedClients[key], client) {
+		return // already subscribed
+	}
+	client.notifyKeys = append(client.notifyKeys, key)
+	ds.notifiedClients[key] = append(ds.notifiedClients[key], client)
+}
+
+// No way for a client to unnotify except for disconnecting, so we can ignore the client list for now. I'm sure it'll screw us later.
+func (ds *DataStorage) UnnotifyClient(key string, client *RegisteredClient) {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	clients := ds.notifiedClients[key]
+	for i, c := range clients {
+		if c == client {
+			ds.notifiedClients[key] = append(clients[:i], clients[i+1:]...)
+			if len(ds.notifiedClients[key]) == 0 {
+				delete(ds.notifiedClients, key)
+			}
+			return
+		}
+	}
+}
+
+func (ds *DataStorage) GetNotifyClients(key string) []*RegisteredClient {
+	ds.mu.RLock()
+	defer ds.mu.RUnlock()
+	clients := ds.notifiedClients[key]
+	if len(clients) == 0 {
+		return nil
+	}
+	clientsCopy := make([]*RegisteredClient, len(clients))
+	copy(clientsCopy, clients)
+	return clientsCopy
+}
+
+func (ds *DataStorage) OnHintsChanged(teamSlot TeamSlot) {
+
+}
+
 func (ds *DataStorage) Get(key string) (StorageValue, bool) {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
@@ -70,23 +116,24 @@ func (ds *DataStorage) Get(key string) (StorageValue, bool) {
 	return entry.value, true
 }
 
-func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, ops []DataStorageOperation) (original StorageValue, result StorageValue, err error) {
+func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, ops []DataStorageOperation, senderSlot int, replyClient *RegisteredClient, submitOrdered func(func())) (original StorageValue, result StorageValue, err error) {
 	if strings.HasPrefix(key, "_read_") {
 		return nil, nil, fmt.Errorf("key %q is read-only", key)
 	}
 
 	ds.mu.Lock()
-	defer ds.mu.Unlock()
 
 	entry, exists := ds.data[key]
 	if !exists {
 		if ds.keyCount[owner] >= maxKeysPerSlot {
+			ds.mu.Unlock()
 			return nil, nil, fmt.Errorf("slot key quota exceeded")
 		}
 		if defaultVal == nil {
 			defaultVal = int64(0)
 		}
 		if ds.slotSize(owner)+storageSize(defaultVal) > maxSlotSize {
+			ds.mu.Unlock()
 			return nil, nil, fmt.Errorf("slot storage size quota exceeded")
 		}
 		entry = &StorageEntry{
@@ -99,6 +146,7 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 		if _, alreadyWriter := entry.slotWriters[owner]; !alreadyWriter {
 			// Slot is newly touching this key — charge them for its current size
 			if ds.slotSize(owner)+storageSize(entry.value) > maxSlotSize {
+				ds.mu.Unlock()
 				return nil, nil, fmt.Errorf("slot storage size quota exceeded")
 			}
 			entry.slotWriters[owner] = struct{}{}
@@ -111,10 +159,41 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 	for _, op := range ops {
 		value, err = applyOp(value, op.Operation, op.Value)
 		if err != nil {
+			ds.mu.Unlock()
 			return nil, nil, fmt.Errorf("operation %q failed: %w", op.Operation, err)
 		}
 	}
 	entry.value = value
+
+	if submitOrdered != nil {
+		// Get list of clients that want to be notified on change
+		// Add sender if wantReply is true
+		var notify []*RegisteredClient
+		if clients := ds.notifiedClients[key]; len(clients) > 0 {
+			notify = make([]*RegisteredClient, len(clients))
+			copy(notify, clients)
+		}
+		if replyClient != nil && !slices.Contains(notify, replyClient) {
+			notify = append(notify, replyClient)
+		}
+		if len(notify) > 0 {
+			submitOrdered(func() {
+				reply := SetReplyMessage{
+					Key:           key,
+					OriginalValue: original,
+					Value:         value,
+					Slot:          senderSlot,
+				}
+
+				for _, c := range notify {
+					wsjson.Write(context.Background(), c.clientConn, []any{reply})
+				}
+			})
+		}
+	}
+
+	ds.mu.Unlock()
+
 	return original, value, nil
 }
 

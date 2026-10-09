@@ -208,6 +208,8 @@ type ApxRoom struct {
 	logDeath          func(slotId int)
 	ipLimiter         *IPRateLimiter
 	chatCommandRouter *chatCommandRouter
+	bcUnorderedCh     chan func()
+	bcOrderedCh       chan func()
 	state             *ApState
 }
 
@@ -385,6 +387,18 @@ func (ls *Checks) GetMissing(ts TeamSlot) []int {
 	return missing
 }
 
+func (s *ApxRoom) submitBroadcast(fn func()) {
+	select {
+	case s.bcUnorderedCh <- fn:
+	default:
+		go fn()
+	}
+}
+
+func (s *ApxRoom) submitOrdered(fn func()) {
+	s.bcOrderedCh <- fn
+}
+
 func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState, teamSlot TeamSlot, locations []int) error {
 	newChecks := make(map[int]struct{})
 
@@ -441,9 +455,9 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 			}
 			s.connections.mu.RUnlock()
 
-			go func() {
+			s.submitBroadcast(func() {
 				BroadcastJSON(ctx, allClients, printJsonMsgs)
-			}()
+			})
 		}
 
 		affectedSlots := make(map[TeamSlot]struct{})
@@ -545,12 +559,11 @@ func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]s
 	}
 	s.connections.mu.RUnlock()
 
-	// TODO: Make this into workers!
-	go func() {
+	s.submitOrdered(func() {
 		for _, s := range sends {
 			wsjson.Write(ctx, s.conn, []any{s.msg})
 		}
-	}()
+	})
 }
 
 type ReceivedItemsKey struct {
@@ -830,6 +843,7 @@ type RegisteredClient struct {
 	textConcernsSelf       bool
 	forcedTextConcernsSelf bool
 	noText                 bool
+	notifyKeys             []string
 	sendIndex              atomic.Int32
 	itemsHandling          atomic.Int32
 }
@@ -1301,6 +1315,9 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 
 	defer func() {
 		if connState.registeredClient != nil {
+			for _, key := range connState.registeredClient.notifyKeys {
+				s.state.DataStorage.UnnotifyClient(key, connState.registeredClient)
+			}
 			s.connections.Unregister(connState.registeredClient)
 		}
 	}()
@@ -1692,24 +1709,15 @@ func (s *ApxRoom) handleSet(ctx context.Context, connState *connectionState, raw
 	client := connState.registeredClient
 	owner := TeamSlot{Team: client.Team, Slot: client.Slot}
 
-	original, result, err := s.state.DataStorage.Set(owner, msg.Key, msg.Default, msg.Operations)
+	var replyClient *RegisteredClient
+	if msg.WantReply {
+		replyClient = client
+	}
+	_, _, err := s.state.DataStorage.Set(owner, msg.Key, msg.Default, msg.Operations, client.Slot, replyClient, s.submitOrdered)
 	if err != nil {
 		cmd := MessageTypeSet
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
 			fmt.Sprintf("Set: %v", err), s.lokiLogger, connState.slotName)
-	}
-
-	// TODO: SetNotify
-
-	reply := SetReplyMessage{
-		Key:           msg.Key,
-		Value:         result,
-		OriginalValue: &original,
-		Slot:          client.Slot,
-	}
-
-	if msg.WantReply {
-		wsjson.Write(ctx, connState.clientConn, []any{reply})
 	}
 
 	return nil
@@ -1727,7 +1735,7 @@ func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessag
 	copy(selfOnlyTargets, s.connections.concernsSelfClients)
 	s.connections.mu.RUnlock()
 
-	go func() {
+	s.submitBroadcast(func() {
 		if len(fullTargets) > 0 {
 			BroadcastJSON(ctx, fullTargets, anySlice(msgs))
 		}
@@ -1751,7 +1759,7 @@ func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessag
 				}
 			}
 		}
-	}()
+	})
 }
 
 func anySlice(msgs []PrintJsonMessage) []any {
@@ -2123,4 +2131,43 @@ func toInt(v any) (int, bool) {
 		return int(n), true
 	}
 	return 0, false
+}
+
+func startUnorderedWorkers(ctx context.Context, slotCount int) chan func() {
+	workerCount := min(max(2, slotCount/8), 64)
+	ch := make(chan func(), 256)
+	for range workerCount {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case fn, ok := <-ch:
+					if !ok {
+						return
+					}
+					fn()
+				}
+			}
+		}()
+	}
+	return ch
+}
+
+func startOrderedWorker(ctx context.Context) chan func() {
+	ch := make(chan func(), 256)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case fn, ok := <-ch:
+				if !ok {
+					return
+				}
+				fn()
+			}
+		}
+	}()
+	return ch
 }

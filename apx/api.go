@@ -845,6 +845,9 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 	}
 
 	roomInfoStore := newRoomInfoStore(dpChecksums)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// Create APX room
 	apx := &ApxRoom{
 		lastActivity:     &lastActivity,
@@ -871,13 +874,13 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 		},
 	}
 	apx.chatCommandRouter = newCommandRouter(apx)
+	apx.bcUnorderedCh = startUnorderedWorkers(ctx, len(apState.SlotInfo))
+	apx.bcOrderedCh = startOrderedWorker(ctx)
 	apx.buildRoomInfoFromState()
 
 	if err := apx.loadDataPackages(rm.diskDataPackages); err != nil {
 		log.Fatalf("loading datapackages: %v", err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 
 	checkedLocs := newCheckedLocations()
 	room := &HostedRoom{

@@ -12,9 +12,10 @@ import (
 
 func newTestStorage() *DataStorage {
 	return &DataStorage{
-		data:     make(map[string]*StorageEntry),
-		keyCount: make(map[TeamSlot]int),
-		readData: make(map[string]func() StorageValue), // add this
+		data:            make(map[string]*StorageEntry),
+		keyCount:        make(map[TeamSlot]int),
+		readData:        make(map[string]func() StorageValue),
+		notifiedClients: make(map[string][]*RegisteredClient),
 	}
 }
 
@@ -71,13 +72,13 @@ func TestDataStorage(t *testing.T) {
 
 		t.Run("Set_ReadKeyPrefix_Rejected", func(t *testing.T) {
 			ds := newDataStorage()
-			_, _, err := ds.Set(testSlot, "_read_race_mode", int64(0), nil)
+			_, _, err := ds.Set(testSlot, "_read_race_mode", int64(0), nil, 0, nil, nil)
 			assert.ErrorContains(t, err, "read-only")
 		})
 
 		t.Run("Set_ReadKeyPrefix_DoesNotCreateEntry", func(t *testing.T) {
 			ds := newDataStorage()
-			ds.Set(testSlot, "_read_anything", int64(0), nil) //nolint: errcheck
+			ds.Set(testSlot, "_read_anything", int64(0), nil, 0, nil, nil) //nolint: errcheck
 			ds.mu.RLock()
 			_, exists := ds.data["_read_anything"]
 			ds.mu.RUnlock()
@@ -86,7 +87,7 @@ func TestDataStorage(t *testing.T) {
 
 		t.Run("Set_ReadKeyPrefix_DoesNotIncrementKeyCount", func(t *testing.T) {
 			ds := newDataStorage()
-			ds.Set(testSlot, "_read_anything", int64(0), nil) //nolint: errcheck
+			ds.Set(testSlot, "_read_anything", int64(0), nil, 0, nil, nil) //nolint: errcheck
 			ds.mu.RLock()
 			count := ds.keyCount[testSlot]
 			ds.mu.RUnlock()
@@ -97,24 +98,24 @@ func TestDataStorage(t *testing.T) {
 	t.Run("Set", func(t *testing.T) {
 		t.Run("NewKey_DefaultsToZero", func(t *testing.T) {
 			ds := newTestStorage()
-			_, result, err := ds.Set(testSlot, "key", nil, nil)
+			_, result, err := ds.Set(testSlot, "key", nil, nil, 0, nil, nil)
 			require.NoError(t, err)
 			assert.Equal(t, int64(0), result)
 		})
 
 		t.Run("NewKey_UsesProvidedDefault", func(t *testing.T) {
 			ds := newTestStorage()
-			_, result, err := ds.Set(testSlot, "key", int64(42), nil)
+			_, result, err := ds.Set(testSlot, "key", int64(42), nil, 0, nil, nil)
 			require.NoError(t, err)
 			assert.Equal(t, int64(42), result)
 		})
 
 		t.Run("ReturnsOriginalBeforeOps", func(t *testing.T) {
 			ds := newTestStorage()
-			ds.Set(testSlot, "key", int64(10), nil)
+			ds.Set(testSlot, "key", int64(10), nil, 0, nil, nil)
 			original, result, err := ds.Set(testSlot, "key", nil, []DataStorageOperation{
 				{Operation: "add", Value: int64(5)},
-			})
+			}, 0, nil, nil)
 			require.NoError(t, err)
 			assert.Equal(t, int64(10), original)
 			assert.Equal(t, int64(15), result)
@@ -123,10 +124,10 @@ func TestDataStorage(t *testing.T) {
 		t.Run("QuotaExceeded", func(t *testing.T) {
 			ds := newTestStorage()
 			for i := range maxKeysPerSlot {
-				_, _, err := ds.Set(testSlot, fmt.Sprintf("key%d", i), int64(0), nil)
+				_, _, err := ds.Set(testSlot, fmt.Sprintf("key%d", i), int64(0), nil, 0, nil, nil)
 				require.NoError(t, err)
 			}
-			_, _, err := ds.Set(testSlot, "overflow", int64(0), nil)
+			_, _, err := ds.Set(testSlot, "overflow", int64(0), nil, 0, nil, nil)
 			assert.ErrorContains(t, err, "quota exceeded")
 		})
 
@@ -134,18 +135,18 @@ func TestDataStorage(t *testing.T) {
 			ds := newTestStorage()
 			slot2 := TeamSlot{Team: 0, Slot: 2}
 			for i := range maxKeysPerSlot {
-				_, _, err := ds.Set(testSlot, fmt.Sprintf("key%d", i), int64(0), nil)
+				_, _, err := ds.Set(testSlot, fmt.Sprintf("key%d", i), int64(0), nil, 0, nil, nil)
 				require.NoError(t, err)
 			}
-			_, _, err := ds.Set(slot2, "slot2key", int64(0), nil)
+			_, _, err := ds.Set(slot2, "slot2key", int64(0), nil, 0, nil, nil)
 			assert.NoError(t, err)
 		})
 
 		t.Run("SlotWritersTracked", func(t *testing.T) {
 			ds := newTestStorage()
 			slot2 := TeamSlot{Team: 0, Slot: 2}
-			ds.Set(testSlot, "key", int64(0), nil)
-			ds.Set(slot2, "key", nil, nil)
+			ds.Set(testSlot, "key", int64(0), nil, 0, nil, nil)
+			ds.Set(slot2, "key", nil, nil, 0, nil, nil)
 
 			ds.mu.RLock()
 			entry := ds.data["key"]
@@ -161,17 +162,17 @@ func TestDataStorage(t *testing.T) {
 				{Operation: "add", Value: int64(10)},
 				{Operation: "mul", Value: int64(3)},
 				{Operation: "add", Value: int64(2)},
-			})
+			}, 0, nil, nil)
 			require.NoError(t, err)
 			assert.Equal(t, int64(32), result) // (0+10)*3+2
 		})
 
 		t.Run("FailedOpDoesNotMutateEntry", func(t *testing.T) {
 			ds := newTestStorage()
-			ds.Set(testSlot, "key", int64(5), nil)
+			ds.Set(testSlot, "key", int64(5), nil, 0, nil, nil)
 			_, _, err := ds.Set(testSlot, "key", nil, []DataStorageOperation{
 				{Operation: "add", Value: "wrong type"},
-			})
+			}, 0, nil, nil)
 			assert.Error(t, err)
 			val, _ := ds.Get("key")
 			assert.Equal(t, int64(5), val)
@@ -183,11 +184,11 @@ func TestDataStorage(t *testing.T) {
 			ds := newTestStorage()
 			// Fill up to just under the limit with a large string value
 			bigVal := strings.Repeat("x", maxSlotSize-10)
-			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil)
+			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
 			require.NoError(t, err)
 
 			// Next key should be denied — key name + value would exceed limit
-			_, _, err = ds.Set(testSlot, "overflow", "hello", nil)
+			_, _, err = ds.Set(testSlot, "overflow", "hello", nil, 0, nil, nil)
 			assert.ErrorContains(t, err, "storage size quota exceeded")
 		})
 
@@ -197,15 +198,15 @@ func TestDataStorage(t *testing.T) {
 
 			// slot2 fills up their own quota
 			bigVal := strings.Repeat("x", maxSlotSize-10)
-			_, _, err := ds.Set(slot2, "slot2key", bigVal, nil)
+			_, _, err := ds.Set(slot2, "slot2key", bigVal, nil, 0, nil, nil)
 			require.NoError(t, err)
 
 			// testSlot creates a large key
-			_, _, err = ds.Set(testSlot, "sharedkey", strings.Repeat("y", 100), nil)
+			_, _, err = ds.Set(testSlot, "sharedkey", strings.Repeat("y", 100), nil, 0, nil, nil)
 			require.NoError(t, err)
 
 			// slot2 tries to touch testSlot's key — would push them over limit
-			_, _, err = ds.Set(slot2, "sharedkey", nil, nil)
+			_, _, err = ds.Set(slot2, "sharedkey", nil, nil, 0, nil, nil)
 			assert.ErrorContains(t, err, "storage size quota exceeded")
 		})
 
@@ -214,11 +215,11 @@ func TestDataStorage(t *testing.T) {
 			slot2 := TeamSlot{Team: 0, Slot: 2}
 
 			bigVal := strings.Repeat("x", maxSlotSize-10)
-			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil)
+			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
 			require.NoError(t, err)
 
 			// slot2 should be unaffected by testSlot's usage
-			_, _, err = ds.Set(slot2, "slot2key", "small", nil)
+			_, _, err = ds.Set(slot2, "slot2key", "small", nil, 0, nil, nil)
 			assert.NoError(t, err)
 		})
 
@@ -226,10 +227,10 @@ func TestDataStorage(t *testing.T) {
 			ds := newTestStorage()
 			// value is tiny but key name pushes it over
 			bigKey := strings.Repeat("k", maxSlotSize-3)
-			_, _, err := ds.Set(testSlot, bigKey, int64(0), nil)
+			_, _, err := ds.Set(testSlot, bigKey, int64(0), nil, 0, nil, nil)
 			require.NoError(t, err)
 
-			_, _, err = ds.Set(testSlot, "overflow", int64(0), nil)
+			_, _, err = ds.Set(testSlot, "overflow", int64(0), nil, 0, nil, nil)
 			assert.ErrorContains(t, err, "storage size quota exceeded")
 		})
 	})
@@ -243,7 +244,7 @@ func TestDataStorage(t *testing.T) {
 
 		t.Run("ExistingKey", func(t *testing.T) {
 			ds := newTestStorage()
-			ds.Set(testSlot, "key", int64(99), nil)
+			ds.Set(testSlot, "key", int64(99), nil, 0, nil, nil)
 			val, ok := ds.Get("key")
 			assert.True(t, ok)
 			assert.Equal(t, int64(99), val)
@@ -253,20 +254,20 @@ func TestDataStorage(t *testing.T) {
 	t.Run("Ops", func(t *testing.T) {
 		t.Run("replace", func(t *testing.T) {
 			ds := newTestStorage()
-			ds.Set(testSlot, "key", int64(1), nil)
+			ds.Set(testSlot, "key", int64(1), nil, 0, nil, nil)
 			_, result, err := ds.Set(testSlot, "key", nil, []DataStorageOperation{
 				{Operation: "replace", Value: int64(99)},
-			})
+			}, 0, nil, nil)
 			require.NoError(t, err)
 			assert.Equal(t, int64(99), result)
 		})
 
 		t.Run("default_KeyExists", func(t *testing.T) {
 			ds := newTestStorage()
-			ds.Set(testSlot, "key", int64(5), nil)
+			ds.Set(testSlot, "key", int64(5), nil, 0, nil, nil)
 			_, result, err := ds.Set(testSlot, "key", nil, []DataStorageOperation{
 				{Operation: "default", Value: int64(99)},
-			})
+			}, 0, nil, nil)
 			require.NoError(t, err)
 			assert.Equal(t, int64(5), result)
 		})
@@ -654,6 +655,91 @@ func TestDataStorage(t *testing.T) {
 		t.Run("Nested", func(t *testing.T) {
 			// key "x" (1) + list of 2 int64s (16) = 17
 			assert.Equal(t, 17, storageSize(map[string]any{"x": []any{int64(1), int64(2)}}))
+		})
+	})
+
+	t.Run("SetNotify", func(t *testing.T) {
+		t.Run("NotifiesSubscribedClient", func(t *testing.T) {
+			ds := newTestStorage()
+			var received []SetReplyMessage
+			client := &RegisteredClient{Slot: 1}
+
+			ds.NotifyClient("key", client)
+
+			var ordered []func()
+			submitOrdered := func(fn func()) { ordered = append(ordered, fn) }
+
+			ds.Set(testSlot, "key", int64(0), nil, 1, nil, submitOrdered)
+			ds.Set(testSlot, "key", nil, []DataStorageOperation{
+				{Operation: "add", Value: int64(5)},
+			}, 1, nil, submitOrdered)
+
+			assert.Len(t, ordered, 2, "expected 2 ordered jobs enqueued")
+			_ = received // actual send tested via integration
+		})
+
+		t.Run("DoesNotNotifyUnsubscribedClient", func(t *testing.T) {
+			ds := newTestStorage()
+			var ordered []func()
+			submitOrdered := func(fn func()) { ordered = append(ordered, fn) }
+
+			ds.Set(testSlot, "key", int64(0), nil, 1, nil, submitOrdered)
+			assert.Empty(t, ordered)
+		})
+
+		t.Run("ReplyClientAddedIfNotSubscribed", func(t *testing.T) {
+			ds := newTestStorage()
+			client := &RegisteredClient{Slot: 1}
+			var ordered []func()
+			submitOrdered := func(fn func()) { ordered = append(ordered, fn) }
+
+			ds.Set(testSlot, "key", int64(0), nil, 1, client, submitOrdered)
+			assert.Len(t, ordered, 1, "wantReply client should trigger ordered job")
+		})
+
+		t.Run("ReplyClientNotDuplicatedIfAlreadySubscribed", func(t *testing.T) {
+			ds := newTestStorage()
+			client := &RegisteredClient{Slot: 1}
+			ds.NotifyClient("key", client)
+
+			seen := make(map[*RegisteredClient]int)
+			submitOrdered := func(fn func()) {
+				// We can't easily inspect the closure's notify list directly,
+				// so just verify only one job is enqueued
+			}
+			var ordered []func()
+			submit := func(fn func()) { ordered = append(ordered, fn); submitOrdered(fn) }
+
+			ds.Set(testSlot, "key", int64(0), nil, 1, client, submit)
+			assert.Len(t, ordered, 1)
+			_ = seen
+		})
+
+		t.Run("UnnotifyRemovesClient", func(t *testing.T) {
+			ds := newTestStorage()
+			client := &RegisteredClient{Slot: 1}
+			ds.NotifyClient("key", client)
+			ds.UnnotifyClient("key", client)
+
+			var ordered []func()
+			submitOrdered := func(fn func()) { ordered = append(ordered, fn) }
+
+			ds.Set(testSlot, "key", int64(0), nil, 1, nil, submitOrdered)
+			assert.Empty(t, ordered)
+		})
+
+		t.Run("MultipleSubscribersAllNotified", func(t *testing.T) {
+			ds := newTestStorage()
+			c1 := &RegisteredClient{Slot: 1}
+			c2 := &RegisteredClient{Slot: 2}
+			ds.NotifyClient("key", c1)
+			ds.NotifyClient("key", c2)
+
+			var ordered []func()
+			submitOrdered := func(fn func()) { ordered = append(ordered, fn) }
+
+			ds.Set(testSlot, "key", int64(0), nil, 1, nil, submitOrdered)
+			assert.Len(t, ordered, 1, "single job should cover all subscribers")
 		})
 	})
 }
