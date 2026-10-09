@@ -46,9 +46,6 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 		return connState.clientConn.Close(websocket.StatusNormalClosure, "SlotSwitch")
 	}
 
-	// Don't allow to change from reduced to full feed or vice versa
-	msg.ReducedTraffic = connState.reduced
-
 	// TODO: Implement Connect for authed clients
 
 	// Update tags on existing registration in case they changed
@@ -109,7 +106,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	}
 
 	// Restrict full feed client access
-	if !connState.reduced && !s.isFullFeedAllowed(slotInfo.Slot) {
+	if !connState.fromReducedPort && !s.isFullFeedAllowed(slotInfo.Slot) {
 		return s.sendConnectionRefused(ctx, connState, "FullFeedDenial", msg.Name)
 	}
 
@@ -127,15 +124,15 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		Slot:             slotInfo.Slot,
 		MissingLocations: s.state.Checks.GetMissing(teamSlot),
 		CheckedLocations: s.state.Checks.GetChecked(teamSlot),
-		Players:          s.state.PlayersNetwork.Get(),
-		SlotInfo:         s.state.SlotInfoNetwork,
+		Players:          s.state.PlayersNetwork.GetJson(),
+		SlotInfo:         s.state.SlotInfoNetworkJson,
 		HintPoints:       s.state.ServerOptions.GetHintCost(),
 	}
 	if msg.SlotData != nil && *msg.SlotData != false {
 		connectedMsg.SlotData = s.state.SlotData[teamSlot]
 	}
 
-	err := wsjson.Write(ctx, connState.clientConn, []any{connectedMsg})
+	err := wsjson.Write(ctx, connState.clientConn, connectedMsg)
 	if err != nil {
 		return err
 	}
@@ -147,8 +144,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		game:                   &slotInfo.Game,
 		cancel:                 connState.cancel,
 		clientConn:             connState.clientConn,
-		textConcernsSelf:       connState.reduced,
-		forcedTextConcernsSelf: connState.reduced,
+		forcedTextConcernsSelf: connState.fromReducedPort,
 		notifyKeys:             make([]string, 0),
 	}
 	s.connections.Register(slotInfo.Slot, &client, slotInfo.Game, msg.Tags)
@@ -157,7 +153,8 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 
 	// Send items (if they asked)
 	if msg.ItemsHandling == nil {
-		*msg.ItemsHandling = 7
+		itemsHandling := 7
+		msg.ItemsHandling = &itemsHandling
 	}
 	client.itemsHandling.Store(int32(*msg.ItemsHandling))
 	err = s.SyncReceivedItems(ctx, &client, *msg.ItemsHandling)
@@ -202,6 +199,7 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 
 	slot := connState.registeredClient.Slot
 	team := connState.registeredClient.Team
+	text = fmt.Sprintf("%s: %s", *connState.slotName, text)
 	s.broadcastPrintJson(ctx, []PrintJsonMessage{{
 		Type:    "Chat",
 		Data:    []JsonMessagePart{{Type: "text", Text: text}},
@@ -222,135 +220,9 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 
 	s.connections.UpdateTags(connState.registeredClient, msg.Tags)
 
-	// TODO: Implement Connect Update
+	// TODO: Implement Connect Update properly
 
 	return nil
-}
-
-func (s ApxRoom) connectAP(ctx context.Context, connState *connectionState, reduced bool, connectMsg ConnectMessage, apPort int) (*websocket.Conn, int, *string, *string, error) {
-	// Fix password when talking to ap server (only needed when using per-slot passwords)
-	if s.config.LobbyEnabled {
-		if s.roomInfo.HasPassword() {
-			connectMsg.Password = &s.config.APPassword
-		} else {
-			connectMsg.Password = nil
-		}
-	}
-
-	apConn, _, err := websocket.Dial(ctx, fmt.Sprintf("ws://%s:%d", s.config.APHost, apPort), nil)
-	if err != nil {
-		return nil, 0, nil, nil, fmt.Errorf("dialing AP server: %w", err)
-	}
-
-	apConn.SetReadLimit(wsReadLimit)
-
-	// Wait for RoomInfo from AP server (just so we know it's ready to accept the Connect message)
-	var roomInfo []map[string]any
-	if err := wsjson.Read(ctx, apConn, &roomInfo); err != nil {
-		apConn.CloseNow()
-		return nil, 0, nil, nil, fmt.Errorf("reading RoomInfo from AP: %w", err)
-	}
-
-	// Send connect message
-	connectMsg.ReducedTraffic = reduced
-	if err := wsjson.Write(ctx, apConn, []any{connectMsg}); err != nil {
-		apConn.CloseNow()
-		return nil, 0, nil, nil, fmt.Errorf("forwarding Connect to AP: %w", err)
-	}
-
-	// Preserves key order. Thanks AHIT.
-	// Read Connected (or ConnectionRefused) response from AP
-	var response []json.RawMessage
-	if err := wsjson.Read(ctx, apConn, &response); err != nil {
-		apConn.CloseNow()
-		return nil, 0, nil, nil, fmt.Errorf("reading Connected from AP: %w", err)
-	}
-
-	// Forward the Connected message to the client
-	if s.lokiLogger != nil {
-		for _, raw := range response {
-			s.lokiLogger.Log(&connectMsg.Name, LogSourceServer, raw, "Connected")
-		}
-	}
-	if err := wsjson.Write(ctx, connState.clientConn, response); err != nil {
-		apConn.CloseNow()
-		return nil, 0, nil, nil, fmt.Errorf("forwarding Connected to client: %w", err)
-	}
-
-	slotId := 0
-	game := ""
-	slotName := ""
-	for _, raw := range response {
-		var msg struct {
-			Cmd      string `json:"cmd"`
-			Slot     int    `json:"slot"`
-			SlotInfo map[string]struct {
-				Game string `json:"game"`
-				Name string `json:"name"`
-			} `json:"slot_info"`
-		}
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			continue
-		}
-		if msg.Cmd == "ConnectionRefused" {
-			apConn.CloseNow()
-			return nil, 0, nil, nil, nil
-		}
-		if msg.Cmd != "Connected" {
-			continue
-		}
-		slotId = msg.Slot
-		if slotData, ok := msg.SlotInfo[fmt.Sprintf("%d", slotId)]; ok {
-			game = slotData.Game
-			slotName = slotData.Name
-		}
-	}
-
-	// Proxy AP -> client
-
-	// Avoid any processing on these packets where possible
-
-	lobbyRoomId := s.lobbyRoomId
-
-	go func() {
-		defer apConn.CloseNow()
-		defer connState.cancel()
-
-		proxyMessageType := MessageType("")
-		for {
-			msgType, data, err := apConn.Read(ctx)
-			if err != nil {
-				if !isNormalClose(err) && ctx.Err() == nil {
-					s.logf("AP read error: %v", err)
-				}
-				return
-			}
-
-			if s.lokiLogger != nil {
-				var msgs []json.RawMessage
-				if err := json.Unmarshal(data, &msgs); err == nil {
-					for _, msg := range msgs {
-						s.lokiLogger.Log(connState.slotName, LogSourceServer, msg, proxyMessageType)
-					}
-				} else {
-					s.logf("failed to unmarshal server message: %v", err)
-				}
-			}
-
-			if s.metrics != nil {
-				s.metrics.bytesSent.WithLabelValues(lobbyRoomId, slotName, game).Add(float64(len(data)))
-			}
-
-			if err := connState.clientConn.Write(ctx, msgType, data); err != nil {
-				if ctx.Err() == nil {
-					s.logf("client write error: %v", err)
-				}
-				return
-			}
-		}
-	}()
-
-	return apConn, slotId, &slotName, &game, nil
 }
 
 func (s ApxRoom) validatePassword(slotKey int, provided *string) bool {

@@ -153,7 +153,7 @@ func run() error {
 	startStatsPrinter(ctx, &stats, len(slots))
 
 	// Try and ramp up clients slowly over 3 minutes
-	connLimiter := rate.NewLimiter(rate.Limit(cfg.Concurrency/120), 1)
+	connLimiter := rate.NewLimiter(rate.Limit(cfg.Concurrency/30), 1)
 	sem := make(chan struct{}, cfg.Concurrency)
 	var wg sync.WaitGroup
 

@@ -315,9 +315,22 @@ type SlotInfo struct {
 	GroupMembers []int
 }
 
+type cachedSlotInfo struct {
+	raw json.RawMessage // pre-encoded map[int]NetworkSlot
+}
+
 type NetworkPlayers struct {
 	mu      sync.RWMutex
 	players []NetworkPlayer
+	rawJson json.RawMessage
+}
+
+func (np *NetworkPlayers) invalidateCache() {
+	raw, err := json.Marshal(np.players)
+	if err != nil {
+		return
+	}
+	np.rawJson = raw
 }
 
 func (np *NetworkPlayers) SetAlias(slotId int, alias string) {
@@ -330,6 +343,7 @@ func (np *NetworkPlayers) SetAlias(slotId int, alias string) {
 			} else {
 				np.players[i].Alias = alias
 			}
+			np.invalidateCache()
 			return
 		}
 	}
@@ -341,6 +355,12 @@ func (np *NetworkPlayers) Get() []NetworkPlayer {
 	out := make([]NetworkPlayer, len(np.players))
 	copy(out, np.players)
 	return out
+}
+
+func (np *NetworkPlayers) GetJson() json.RawMessage {
+	np.mu.RLock()
+	defer np.mu.RUnlock()
+	return np.rawJson
 }
 
 type Checks struct {
@@ -473,21 +493,14 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 			s.notifyHintsChanged(ctx, affectedHintSlots)
 		}
 
-		var printJsonMsgs []any
+		var printJsonMsgs []PrintJsonMessage
 		for _, item := range newItems {
-			printJsonMsgs = append(printJsonMsgs, formatSendItemMessage(item, int(item.Player)))
+			printJsonMsgs = append(printJsonMsgs, formatSendItemMessage(item, connState.registeredClient.Slot, int(item.Player)))
 		}
 
 		if len(printJsonMsgs) > 0 {
-			s.connections.mu.RLock()
-			var allClients []*RegisteredClient
-			for _, clients := range s.connections.clients {
-				allClients = append(allClients, clients...)
-			}
-			s.connections.mu.RUnlock()
-
 			s.submitBroadcast(func() {
-				BroadcastJSON(ctx, allClients, printJsonMsgs)
+				s.broadcastPrintJson(ctx, printJsonMsgs)
 			})
 		}
 
@@ -516,29 +529,27 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 	return nil
 }
 
-func formatSendItemMessage(item NetworkItem, receivingPlayer int) PrintJsonMessage {
-	sender := int(item.Player)
-
+func formatSendItemMessage(item NetworkItem, findingPlayer int, receivingPlayer int) PrintJsonMessage {
 	// TODO: item flags
 	var parts []JsonMessagePart
-	if sender == receivingPlayer {
+	if findingPlayer == receivingPlayer {
 		parts = []JsonMessagePart{
-			{Type: "player_id", Text: fmt.Sprintf("%d", sender)},
+			{Type: "player_id", Text: fmt.Sprintf("%d", findingPlayer)},
 			{Type: "text", Text: " found their "},
-			{Type: "item_id", Text: fmt.Sprintf("%d", item.Item), Player: sender},
+			{Type: "item_id", Text: fmt.Sprintf("%d", item.Item), Player: findingPlayer},
 			{Type: "text", Text: " ("},
-			{Type: "location_id", Text: fmt.Sprintf("%d", item.Location), Player: sender},
+			{Type: "location_id", Text: fmt.Sprintf("%d", item.Location), Player: findingPlayer},
 			{Type: "text", Text: ")"},
 		}
 	} else {
 		parts = []JsonMessagePart{
-			{Type: "player_id", Text: fmt.Sprintf("%d", sender)},
+			{Type: "player_id", Text: fmt.Sprintf("%d", findingPlayer)},
 			{Type: "text", Text: " sent "},
 			{Type: "item_id", Text: fmt.Sprintf("%d", item.Item), Player: receivingPlayer},
 			{Type: "text", Text: " to "},
 			{Type: "player_id", Text: fmt.Sprintf("%d", receivingPlayer)},
 			{Type: "text", Text: " ("},
-			{Type: "location_id", Text: fmt.Sprintf("%d", item.Location), Player: sender},
+			{Type: "location_id", Text: fmt.Sprintf("%d", item.Location), Player: findingPlayer},
 			{Type: "text", Text: ")"},
 		}
 	}
@@ -832,8 +843,9 @@ type ApState struct {
 	Seed               string
 	RaceMode           int
 	// Immutable for v3 Network Sending
-	PlayersNetwork  NetworkPlayers
-	SlotInfoNetwork map[int]NetworkSlot
+	PlayersNetwork      NetworkPlayers
+	SlotInfoNetwork     map[int]NetworkSlot
+	SlotInfoNetworkJson json.RawMessage
 }
 
 func (s *ApState) GetSlotHintCost(teamSlot TeamSlot) int {
@@ -919,7 +931,7 @@ type connectionRegistry struct {
 	clientsByGame       map[string][]*RegisteredClient
 	clientsByTag        map[string][]*RegisteredClient
 	fullClients         []*RegisteredClient
-	concernsSelfClients []*RegisteredClient
+	concernsSelfClients map[int][]*RegisteredClient
 	// Just a copy of the static data so we can use it during register / unregister etc
 	lobbyRoomId *string
 	metrics     *metrics
@@ -927,12 +939,13 @@ type connectionRegistry struct {
 
 func newConnectionRegistry(lobbyRoomId *string, metrics *metrics) *connectionRegistry {
 	return &connectionRegistry{
-		clients:       make(map[int][]*RegisteredClient),
-		tags:          make(map[*RegisteredClient][]string),
-		clientsByGame: make(map[string][]*RegisteredClient),
-		clientsByTag:  make(map[string][]*RegisteredClient),
-		lobbyRoomId:   lobbyRoomId,
-		metrics:       metrics,
+		clients:             make(map[int][]*RegisteredClient),
+		tags:                make(map[*RegisteredClient][]string),
+		clientsByGame:       make(map[string][]*RegisteredClient),
+		clientsByTag:        make(map[string][]*RegisteredClient),
+		concernsSelfClients: make(map[int][]*RegisteredClient),
+		lobbyRoomId:         lobbyRoomId,
+		metrics:             metrics,
 	}
 }
 
@@ -975,11 +988,14 @@ func (cr *connectionRegistry) UpdateTags(client *RegisteredClient, tags []string
 }
 
 func (cr *connectionRegistry) applyTextIndices(client *RegisteredClient, tags []string) {
-	// Remove from both indices
 	cr.fullClients = removeClient(cr.fullClients, client)
-	cr.concernsSelfClients = removeClient(cr.concernsSelfClients, client)
+	// Remove from old slot bucket
+	slot := client.Slot
+	cr.concernsSelfClients[slot] = removeClient(cr.concernsSelfClients[slot], client)
+	if len(cr.concernsSelfClients[slot]) == 0 {
+		delete(cr.concernsSelfClients, slot)
+	}
 
-	// Set client flags
 	client.noText = slices.Contains(tags, "NoText")
 	if !client.forcedTextConcernsSelf {
 		client.textConcernsSelf = slices.Contains(tags, "TextConcernsSelf")
@@ -987,9 +1003,8 @@ func (cr *connectionRegistry) applyTextIndices(client *RegisteredClient, tags []
 		client.textConcernsSelf = true
 	}
 
-	// Add to relevant index
 	if client.textConcernsSelf && !client.noText {
-		cr.concernsSelfClients = append(cr.concernsSelfClients, client)
+		cr.concernsSelfClients[slot] = append(cr.concernsSelfClients[slot], client)
 	} else if !client.noText {
 		cr.fullClients = append(cr.fullClients, client)
 	}
@@ -1053,7 +1068,12 @@ func (cr *connectionRegistry) removeFromAllIndices(client *RegisteredClient) {
 	}
 	delete(cr.tags, client)
 	cr.fullClients = removeClient(cr.fullClients, client)
-	cr.concernsSelfClients = removeClient(cr.concernsSelfClients, client)
+
+	slot := client.Slot
+	cr.concernsSelfClients[slot] = removeClient(cr.concernsSelfClients[slot], client)
+	if len(cr.concernsSelfClients[slot]) == 0 {
+		delete(cr.concernsSelfClients, slot)
+	}
 }
 
 func (cr *connectionRegistry) BroadcastBounceFromSlot(ctx context.Context, msg BounceMessage, bounceInfo *bounceInfoStore, senderSlot int, slotName *string, gameName *string, metrics *metrics) error {
@@ -1262,12 +1282,12 @@ type connectionState struct {
 	slotName                *string
 	cancel                  context.CancelFunc
 	clientConn              *websocket.Conn
-	reduced                 bool
 	pendingDatapackGames    []string
 	registeredClient        *RegisteredClient
 	authFailCount           int
 	prevDatapackageGamesReq string
 	remoteAddr              string
+	fromReducedPort         bool
 	// Retry storm may happen before auth, we can read this after connect for metrics
 	isRetryStormClient bool
 	largeDpRequested   int // Max that were requested at once before auth
@@ -1350,10 +1370,10 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		authenticated:        false,
 		cancel:               cancel,
 		clientConn:           c,
-		reduced:              reduced,
 		pendingDatapackGames: []string{},
 		authFailCount:        0,
 		remoteAddr:           r.RemoteAddr,
+		fromReducedPort:      reduced,
 	}
 
 	// Start keepalive ping pong
@@ -1777,33 +1797,45 @@ func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessag
 	s.connections.mu.RLock()
 	fullTargets := make([]*RegisteredClient, len(s.connections.fullClients))
 	copy(fullTargets, s.connections.fullClients)
-	selfOnlyTargets := make([]*RegisteredClient, len(s.connections.concernsSelfClients))
-	copy(selfOnlyTargets, s.connections.concernsSelfClients)
+	type slotSend struct {
+		clients []*RegisteredClient
+		msgs    []any
+	}
+	slotSends := make(map[int]*slotSend)
+	for _, msg := range msgs {
+		slots := [2]int{-1, -1}
+		if msg.Receiving != nil {
+			slots[0] = *msg.Receiving
+		}
+		if msg.Item != nil && (msg.Receiving == nil || int(msg.Item.Player) != *msg.Receiving) {
+			slots[1] = int(msg.Item.Player)
+		}
+		for _, slot := range slots {
+			if slot < 0 {
+				continue
+			}
+			clients, ok := s.connections.concernsSelfClients[slot]
+			if !ok {
+				continue
+			}
+			ss := slotSends[slot]
+			if ss == nil {
+				c := make([]*RegisteredClient, len(clients))
+				copy(c, clients)
+				ss = &slotSend{clients: c}
+				slotSends[slot] = ss
+			}
+			ss.msgs = append(ss.msgs, msg)
+		}
+	}
 	s.connections.mu.RUnlock()
 
 	s.submitBroadcast(func() {
 		if len(fullTargets) > 0 {
 			BroadcastJSON(ctx, fullTargets, anySlice(msgs))
 		}
-		if len(selfOnlyTargets) > 0 {
-			slotMsgs := make(map[int][]any)
-			for _, msg := range msgs {
-				if msg.Receiving != nil {
-					slotMsgs[*msg.Receiving] = append(slotMsgs[*msg.Receiving], msg)
-				}
-				if msg.Item != nil && (msg.Receiving == nil || int(msg.Item.Player) != *msg.Receiving) {
-					slotMsgs[int(msg.Item.Player)] = append(slotMsgs[int(msg.Item.Player)], msg)
-				}
-			}
-			bySlot := make(map[int][]*RegisteredClient)
-			for _, c := range selfOnlyTargets {
-				bySlot[c.Slot] = append(bySlot[c.Slot], c)
-			}
-			for slot, clients := range bySlot {
-				if relevant, ok := slotMsgs[slot]; ok {
-					BroadcastJSON(ctx, clients, relevant)
-				}
-			}
+		for _, ss := range slotSends {
+			BroadcastJSON(ctx, ss.clients, ss.msgs)
 		}
 	})
 }
@@ -1933,9 +1965,16 @@ func (s ApxRoom) SyncReceivedItems(ctx context.Context, client *RegisteredClient
 }
 
 func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
+	tags := make([]string, len(md.Tags))
+	copy(tags, md.Tags)
+
 	slotData := make(map[TeamSlot]map[string]any, len(md.SlotData))
 	for slot, data := range md.SlotData {
-		slotData[TeamSlot{Team: 0, Slot: slot}] = data
+		dataCopy := make(map[string]any, len(data))
+		for k, v := range data {
+			dataCopy[k] = v
+		}
+		slotData[TeamSlot{Team: 0, Slot: slot}] = dataCopy
 	}
 
 	slotGames := make(map[TeamSlot]string, len(md.SlotInfo))
@@ -1996,7 +2035,9 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 		group := make(SphereLocGroup, len(s))
 		for slot, locIDs := range s {
 			ts := TeamSlot{Team: 0, Slot: slot}
-			sphere[ts] = locIDs
+			locIDsCopy := make([]int64, len(locIDs))
+			copy(locIDsCopy, locIDs)
+			sphere[ts] = locIDsCopy
 			slotLocs := locations[ts]
 			locs := make(map[int64]*Location, 0)
 			for _, locID := range locIDs {
@@ -2043,6 +2084,16 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 		}
 	}
 
+	slotInfoNetworkJson, err := json.Marshal(slotInfoNetwork)
+	if err != nil {
+		return nil, err
+	}
+
+	networkPlayersJson, err := json.Marshal(playersNetwork)
+	if err != nil {
+		return nil, err
+	}
+
 	apState := ApState{
 		Checks:             newChecksState(locations),
 		ReceivedItems:      newReceivedItems(),
@@ -2062,13 +2113,15 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 			Build: md.Version[2],
 		},
 		ServerOptions: parseEmbeddedServerOptions(md.ServerOptions),
-		Tags:          md.Tags,
+		Tags:          tags,
 		Seed:          md.SeedName,
 		RaceMode:      md.RaceMode,
 		PlayersNetwork: NetworkPlayers{
 			players: playersNetwork,
+			rawJson: networkPlayersJson,
 		},
-		SlotInfoNetwork: slotInfoNetwork,
+		SlotInfoNetwork:     slotInfoNetwork,
+		SlotInfoNetworkJson: slotInfoNetworkJson,
 	}
 	populateReadData(&apState)
 	return &apState, nil
@@ -2180,7 +2233,7 @@ func toInt(v any) (int, bool) {
 }
 
 func startUnorderedWorkers(ctx context.Context, slotCount int) chan func() {
-	workerCount := min(max(2, slotCount/8), 64)
+	workerCount := min(max(2, slotCount/64), 16)
 	ch := make(chan func(), 256)
 	for range workerCount {
 		go func() {

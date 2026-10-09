@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1292,4 +1293,65 @@ func TestHintsState(t *testing.T) {
 			t.Errorf("expected 0, got %d", used)
 		}
 	})
+}
+
+func BenchmarkBroadcastPrintJson(b *testing.B) {
+	const (
+		slotCount          = 2500
+		selfClientsPerSlot = 4
+		msgsPerBroadcast   = 5
+	)
+
+	ctx := context.Background()
+
+	// Build a minimal ApxRoom with fake connections
+	room := &ApxRoom{
+		connections:   newConnectionRegistry(nil, nil),
+		bcUnorderedCh: make(chan func(), 256),
+	}
+
+	// Drain the broadcast channel in background
+	go func() {
+		for fn := range room.bcUnorderedCh {
+			fn()
+		}
+	}()
+
+	// Register fake self-only clients across slots
+	for slot := 1; slot <= slotCount; slot++ {
+		for range selfClientsPerSlot {
+			slotName := fmt.Sprintf("slot%d", slot)
+			game := "TestGame"
+			client := &RegisteredClient{
+				Slot:                   slot,
+				slotName:               &slotName,
+				game:                   &game,
+				forcedTextConcernsSelf: true,
+				clientConn:             nil, // writes will be no-ops
+			}
+			room.connections.Register(slot, client, game, []string{"TextConcernsSelf"})
+		}
+	}
+
+	// Build representative msgs — 5 messages each targeting 2 different slots
+	makeMsgs := func() []PrintJsonMessage {
+		msgs := make([]PrintJsonMessage, msgsPerBroadcast)
+		for i := range msgs {
+			receiving := (i % slotCount) + 1
+			findingPlayer := int16((i+1)%slotCount + 1)
+			item := NetworkItem{Item: int64(i + 1), Location: int64(i + 100), Player: findingPlayer}
+			msgs[i] = PrintJsonMessage{
+				Type:      "ItemSend",
+				Receiving: &receiving,
+				Item:      &item,
+			}
+		}
+		return msgs
+	}
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		room.broadcastPrintJson(ctx, makeMsgs())
+	}
 }

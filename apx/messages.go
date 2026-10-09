@@ -166,15 +166,14 @@ func (f *IntOrString) UnmarshalJSON(data []byte) error {
 }
 
 type ConnectMessage struct {
-	Password       *string        `json:"password"`
-	Game           string         `json:"game"`
-	Name           string         `json:"name"`
-	UUID           StringOrBigInt `json:"uuid"`
-	Version        NetworkVersion `json:"version"`
-	ItemsHandling  *int           `json:"items_handling"`
-	Tags           []string       `json:"tags"`
-	SlotData       *bool          `json:"slot_data"`
-	ReducedTraffic bool           `json:"reduced"`
+	Password      *string        `json:"password"`
+	Game          string         `json:"game"`
+	Name          string         `json:"name"`
+	UUID          StringOrBigInt `json:"uuid"`
+	Version       NetworkVersion `json:"version"`
+	ItemsHandling *int           `json:"items_handling"`
+	Tags          []string       `json:"tags"`
+	SlotData      *bool          `json:"slot_data"`
 }
 
 func (m ConnectMessage) MarshalJSON() ([]byte, error) {
@@ -210,22 +209,48 @@ type ConnectUpdateMessage struct {
 }
 
 type ConnectedMessage struct {
-	Team             int                 `json:"team"`
-	Slot             int                 `json:"slot"`
-	Players          []NetworkPlayer     `json:"players"`
-	MissingLocations []int64             `json:"missing_locations"`
-	CheckedLocations []int64             `json:"checked_locations"`
-	SlotData         map[string]any      `json:"slot_data,omitempty"`
-	SlotInfo         map[int]NetworkSlot `json:"slot_info"`
-	HintPoints       int                 `json:"hint_points"`
+	Team             int             `json:"team"`
+	Slot             int             `json:"slot"`
+	Players          json.RawMessage `json:"players"`
+	MissingLocations []int64         `json:"missing_locations"`
+	CheckedLocations []int64         `json:"checked_locations"`
+	SlotData         map[string]any  `json:"slot_data,omitempty"`
+	SlotInfo         json.RawMessage `json:"slot_info"`
+	HintPoints       int             `json:"hint_points"`
 }
 
+// Special case, must not be wrapped in []any
 func (m ConnectedMessage) MarshalJSON() ([]byte, error) {
-	type Alias ConnectedMessage
-	return json.Marshal(struct {
-		Cmd MessageType `json:"cmd"`
-		Alias
-	}{Cmd: MessageTypeConnected, Alias: Alias(m)})
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+
+	buf.WriteString(`[{"cmd":"Connected","team":`)
+	buf.WriteString(strconv.Itoa(m.Team))
+	buf.WriteString(`,"slot":`)
+	buf.WriteString(strconv.Itoa(m.Slot))
+	buf.WriteString(`,"players":`)
+	buf.Write(m.Players)
+	buf.WriteString(`,"missing_locations":`)
+	missingJSON, _ := json.Marshal(m.MissingLocations)
+	buf.Write(missingJSON)
+	buf.WriteString(`,"checked_locations":`)
+	checkedJSON, _ := json.Marshal(m.CheckedLocations)
+	buf.Write(checkedJSON)
+	if m.SlotData != nil {
+		buf.WriteString(`,"slot_data":`)
+		slotDataJSON, _ := json.Marshal(m.SlotData)
+		buf.Write(slotDataJSON)
+	}
+	buf.WriteString(`,"slot_info":`)
+	buf.Write(m.SlotInfo)
+	buf.WriteString(`,"hint_points":`)
+	buf.WriteString(strconv.Itoa(m.HintPoints))
+	buf.WriteString(`}]`)
+
+	out := make([]byte, buf.Len())
+	copy(out, buf.Bytes())
+	return out, nil
 }
 
 type RoomUpdateMessage struct {
@@ -554,6 +579,9 @@ func BroadcastJSON(ctx context.Context, clients []*RegisteredClient, v any) (int
 	n := len(data)
 
 	for _, c := range clients {
+		if c.clientConn == nil {
+			continue
+		}
 		_ = c.clientConn.Write(ctx, websocket.MessageText, data)
 	}
 

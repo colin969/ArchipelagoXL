@@ -132,10 +132,11 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 		if defaultVal == nil {
 			defaultVal = int64(0)
 		}
-		if ds.slotSize(owner)+storageSize(defaultVal) > maxSlotSize {
-			ds.mu.Unlock()
-			return nil, nil, fmt.Errorf("slot storage size quota exceeded")
-		}
+		// TODO: Make less expensive with a proper map!
+		// if ds.slotSize(owner)+storageSize(defaultVal) > maxSlotSize {
+		// 	ds.mu.Unlock()
+		// 	return nil, nil, fmt.Errorf("slot storage size quota exceeded")
+		// }
 		entry = &StorageEntry{
 			slotWriters: map[TeamSlot]struct{}{owner: {}},
 			value:       defaultVal,
@@ -145,10 +146,10 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 	} else {
 		if _, alreadyWriter := entry.slotWriters[owner]; !alreadyWriter {
 			// Slot is newly touching this key — charge them for its current size
-			if ds.slotSize(owner)+storageSize(entry.value) > maxSlotSize {
-				ds.mu.Unlock()
-				return nil, nil, fmt.Errorf("slot storage size quota exceeded")
-			}
+			// if ds.slotSize(owner)+storageSize(entry.value) > maxSlotSize {
+			// 	ds.mu.Unlock()
+			// 	return nil, nil, fmt.Errorf("slot storage size quota exceeded")
+			// }
 			entry.slotWriters[owner] = struct{}{}
 		}
 	}
