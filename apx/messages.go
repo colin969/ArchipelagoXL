@@ -500,6 +500,10 @@ type SetMessage struct {
 	Operations []DataStorageOperation `json:"operations"`
 }
 
+type SetNotifyMessage struct {
+	Keys []string `json:"keys"`
+}
+
 type SetReplyMessage struct {
 	Key           string `json:"key"`
 	Value         any    `json:"value"`

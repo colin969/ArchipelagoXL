@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net"
 	"net/http"
@@ -288,14 +289,14 @@ type TeamSlot struct {
 }
 
 type Hint struct {
-	ReceivingPlayer int32
-	FindingPlayer   int32
-	Location        int64
-	Item            int64
-	ItemFlags       int16
-	Status          HintStatus
-	Found           bool
-	Entrance        string
+	ReceivingPlayer int32      `json:"receiving_player"`
+	FindingPlayer   int32      `json:"finding_player"`
+	Location        int64      `json:"location"`
+	Item            int64      `json:"item"`
+	ItemFlags       int16      `json:"item_flags"`
+	Status          HintStatus `json:"status"`
+	Found           bool       `json:"found"`
+	Entrance        string     `json:"entrance"`
 }
 
 type SlotType int
@@ -421,16 +422,19 @@ func (s *ApxRoom) submitOrdered(fn func()) {
 
 func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[TeamSlot]struct{}) {
 	for ts := range affectedSlots {
-		key := fmt.Sprintf("hints_%d_%d", ts.Team, ts.Slot)
-		val, _ := s.state.DataStorage.Get("_read_" + key)
+		key := fmt.Sprintf("_read_hints_%d_%d", ts.Team, ts.Slot)
+		val, _ := s.state.DataStorage.Get(key)
+		log.Printf("hints changed: %v", val)
 		clients := s.state.DataStorage.GetNotifyClients(key)
 		if len(clients) == 0 {
 			continue
 		}
 		reply := SetReplyMessage{
-			Key:   "_read_" + key,
+			Key:   key,
 			Value: val,
 		}
+		testOut, _ := json.Marshal(reply)
+		log.Printf("hints changed: %s", testOut)
 		s.submitOrdered(func() {
 			for _, c := range clients {
 				wsjson.Write(ctx, c.clientConn, []any{reply})
@@ -571,7 +575,7 @@ func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]s
 
 	s.connections.mu.RLock()
 	for teamSlot := range affectedSlots {
-		for _, client := range s.connections.clients[teamSlot.Slot] {
+		for _, client := range s.connections.GetSlotClients(teamSlot) {
 			clientItemsHandling := int(client.itemsHandling.Load())
 			if clientItemsHandling == ItemsHandlingNone {
 				continue
@@ -726,10 +730,8 @@ func (h *HintsState) GetItemHints(ts TeamSlot, itemId int64) []Hint {
 	return hints
 }
 
-func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sphereLocs *SphereLocs, cost, points int) []Hint {
-	// Collect already-hinted locations for this item
+func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sphereLocs *SphereLocs, cost, points int) (hints []Hint, newHints []Hint) {
 	h.mu.RLock()
-	var hints []Hint
 	hintedLocs := make(map[int64]struct{})
 	for _, i := range h.byTeamSlot[ts] {
 		hint := h.hints[i]
@@ -741,10 +743,9 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sp
 	h.mu.RUnlock()
 
 	if cost > 0 && points < cost {
-		return hints
+		return hints, nil
 	}
 
-	// Find the earliest unhinted location in sphere order
 	for _, sphereLoc := range *sphereLocs {
 		for teamSlot, teamSlotLocs := range sphereLoc {
 			for locID, loc := range teamSlotLocs {
@@ -755,7 +756,7 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sp
 					continue
 				}
 				hintStatus := HintStatusUnspecified
-				if loc != nil && loc.Checked {
+				if loc.Checked {
 					hintStatus = HintStatusFound
 				}
 				hint := Hint{
@@ -769,18 +770,18 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sp
 				}
 				h.AddSlotHint(hint)
 				hints = append(hints, hint)
-				// If cost is 0, hint all copies?
+				newHints = append(newHints, hint)
 				if cost > 0 && !loc.Checked {
 					h.mu.Lock()
 					h.hintsUsed[ts]++
 					h.mu.Unlock()
-					return hints
+					return hints, newHints
 				}
 			}
 		}
 	}
 
-	return hints
+	return hints, newHints
 }
 
 // This shouldn't be able to be called for the same player concurrently, so we can probably trust some input
@@ -1008,6 +1009,18 @@ func (cr *connectionRegistry) applyTextIndices(client *RegisteredClient, tags []
 	} else if !client.noText {
 		cr.fullClients = append(cr.fullClients, client)
 	}
+}
+
+func (cr *connectionRegistry) GetSlotClients(teamSlot TeamSlot) []*RegisteredClient {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+	src := cr.clients[teamSlot.Slot]
+	if len(src) == 0 {
+		return nil
+	}
+	clients := make([]*RegisteredClient, len(src))
+	copy(clients, src)
+	return clients
 }
 
 func (cr *connectionRegistry) ConnectedSlotCount() int {
@@ -1381,9 +1394,11 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 
 	defer func() {
 		if connState.registeredClient != nil {
+			s.connections.mu.RLock()
 			for _, key := range connState.registeredClient.notifyKeys {
 				s.state.DataStorage.UnnotifyClient(key, connState.registeredClient)
 			}
+			s.connections.mu.RUnlock()
 			s.connections.Unregister(connState.registeredClient)
 		}
 	}()
@@ -1526,6 +1541,7 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 }
 
 func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw json.RawMessage) error {
+	log.Printf("incoming: %v", raw)
 	// Shovel logs to any debug listeners
 	if connState.authenticated && s.debugTap != nil && s.debugTap.HasListeners(connState.registeredClient.Slot) {
 		if raw, err := json.Marshal(raw); err == nil {
@@ -1557,6 +1573,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleGet(ctx, connState, raw)
 		case MessageTypeSet:
 			return s.handleSet(ctx, connState, raw)
+		case MessageTypeSetNotify:
+			return s.handleSetNotify(ctx, connState, raw)
 		default:
 			// TODO: Handle message types
 
@@ -1784,6 +1802,26 @@ func (s *ApxRoom) handleSet(ctx context.Context, connState *connectionState, raw
 		cmd := MessageTypeSet
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
 			fmt.Sprintf("Set: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	return nil
+}
+
+func (s *ApxRoom) handleSetNotify(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg SetNotifyMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeSetNotify
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			fmt.Sprintf("invalid SetNotify arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	for _, key := range msg.Keys {
+		newKey := s.state.DataStorage.NotifyClient(key, connState.registeredClient)
+		if newKey {
+			s.connections.mu.Lock()
+			connState.registeredClient.notifyKeys = append(connState.registeredClient.notifyKeys, key)
+			s.connections.mu.Unlock()
+		}
 	}
 
 	return nil
@@ -2184,6 +2222,7 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 			opts.hintCost = n
 		}
 	}
+	opts.hintCost = 0
 	if v, ok := raw["location_check_points"]; ok {
 		if n, ok := toInt(v); ok {
 			opts.locationCheckPoints = n

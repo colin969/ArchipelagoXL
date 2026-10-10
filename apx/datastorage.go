@@ -31,9 +31,10 @@ type DataStorage struct {
 
 func newDataStorage() *DataStorage {
 	return &DataStorage{
-		data:     make(map[string]*StorageEntry),
-		keyCount: make(map[TeamSlot]int),
-		readData: make(map[string]func() StorageValue),
+		data:            make(map[string]*StorageEntry),
+		keyCount:        make(map[TeamSlot]int),
+		readData:        make(map[string]func() StorageValue),
+		notifiedClients: make(map[string][]*RegisteredClient),
 	}
 }
 
@@ -54,14 +55,14 @@ func (ds *DataStorage) RegisterReadKey(key string, fn func() StorageValue) {
 	ds.readData[key] = fn
 }
 
-func (ds *DataStorage) NotifyClient(key string, client *RegisteredClient) {
+func (ds *DataStorage) NotifyClient(key string, client *RegisteredClient) bool {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 	if slices.Contains(ds.notifiedClients[key], client) {
-		return // already subscribed
+		return false // already subscribed
 	}
-	client.notifyKeys = append(client.notifyKeys, key)
 	ds.notifiedClients[key] = append(ds.notifiedClients[key], client)
+	return true
 }
 
 // No way for a client to unnotify except for disconnecting, so we can ignore the client list for now. I'm sure it'll screw us later.

@@ -223,7 +223,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	cost := s.state.GetSlotHintCost(teamSlot)
 	points := s.state.GetSlotRemainingPoints(teamSlot)
-	hints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), *itemID, &s.state.SphereLocs, cost, points)
+	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), *itemID, &s.state.SphereLocs, cost, points)
 
 	if len(hints) == 0 {
 		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
@@ -231,10 +231,26 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 		return nil
 	}
 
-	if len(hints) == 0 {
-		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
-			fmt.Sprintf("No locations found containing %q", itemName))
-		return nil
+	if len(newHints) > 0 {
+		// Notify listeners of change
+		affectedSlots := make(map[TeamSlot]struct{})
+		for _, hint := range newHints {
+			affectedSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
+			if hint.ReceivingPlayer != hint.FindingPlayer {
+				affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
+			}
+		}
+		s.notifyHintsChanged(ctx, affectedSlots)
+
+		// Send own clients hint points update
+		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
+		clients := make([]*RegisteredClient, 0)
+
+		s.submitOrdered(func() {
+			BroadcastJSON(ctx, clients, []any{RoomUpdateMessage{
+				HintPoints: &newPoints,
+			}})
+		})
 	}
 
 	var msgs []PrintJsonMessage
