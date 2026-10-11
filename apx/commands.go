@@ -114,6 +114,11 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 	)
 	r.AddTopLevel(
 		chatCommand{
+			name:        "collect",
+			description: "Collect all remaining items for your game",
+			handler:     s.handleCollectCommand,
+		},
+		chatCommand{
 			name:        "release",
 			description: "Release all remaining items from your game",
 			handler:     s.handleReleaseCommand,
@@ -284,6 +289,27 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 	if len(msgs) > 0 {
 		s.broadcastPrintJson(ctx, msgs)
 	}
+	return nil
+}
+
+func (s *ApxRoom) handleCollectCommand(ctx context.Context, connState *connectionState, args string) error {
+	cm := s.state.ServerOptions.GetCollectMode()
+	status := s.state.ClientStatuses.Get(connState.registeredClient.Team, connState.registeredClient.Slot)
+
+	if cm == PermissionEnabled || cm == PermissionAutoEnabled {
+		s.CollectPlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		return nil
+	}
+	if cm == PermissionDisabled {
+		text := "Sorry, client item collecting has been disabled on this server. You can ask the server admin for a /collect"
+		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		return nil
+	}
+	if cm == PermissionGoal && status == ClientStatusGoal {
+		s.CollectPlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		return nil
+	}
+
 	return nil
 }
 
