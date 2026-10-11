@@ -688,6 +688,16 @@ func (h *HintsState) HintExists(findingPlayer int32, location int64) bool {
 	return h.findIndex(findingPlayer, location) >= 0
 }
 
+func (h *HintsState) GetHint(findingPlayer int32, location int64) (Hint, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	i := h.findIndex(findingPlayer, location)
+	if i < 0 {
+		return Hint{}, false
+	}
+	return h.hints[i], true
+}
+
 func (h *HintsState) SetHintStatus(owner TeamSlot, location int64, status HintStatus, requestingPlayer TeamSlot) (changedHint Hint, allowed bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1588,6 +1598,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleConnectUpdate(ctx, connState, raw)
 		case MessageTypeSay:
 			return s.handleSay(ctx, connState, raw)
+		case MessageTypeLocationScouts:
+			return s.handleLocationScouts(ctx, connState, raw)
 		case MessageTypeLocationChecks:
 			return s.handleLocationChecks(ctx, connState, raw)
 		case MessageTypeCreateHints:
@@ -1618,7 +1630,83 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 	}
 }
 
-func (s ApxRoom) handleLocationChecks(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+func (s *ApxRoom) handleLocationScouts(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg LocationScoutsMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeLocationScouts
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid LocationScouts arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	newHints := make([]*Hint, 0)
+	existingHints := make([]*Hint, 0)
+
+	replyLocs := make([]*NetworkItem, len(msg.Locations))
+	for _, locId := range msg.Locations {
+		loc, ok := s.state.Locations[TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}][locId]
+		if !ok {
+			cmd := MessageTypeLocationScouts
+			return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("LocationScouts: Invalid location id: %d", locId), s.lokiLogger, connState.slotName)
+		}
+
+		if msg.CreateAsHint != 0 {
+			existingHint, ok := s.state.Hints.GetHint(int32(connState.registeredClient.Slot), locId)
+			if !ok {
+				found := s.state.Checks.IsChecked(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}, locId)
+				status := HintStatusPriority
+				if found {
+					status = HintStatusFound
+				}
+				newHint := Hint{
+					ReceivingPlayer: int32(loc.Player),
+					FindingPlayer:   int32(connState.registeredClient.Slot),
+					Location:        locId,
+					Item:            loc.Item,
+					ItemFlags:       loc.Flags,
+					Found:           found,
+					Status:          status,
+				}
+				s.state.Hints.AddSlotHint(newHint)
+				newHints = append(newHints, &newHint)
+			} else {
+				existingHints = append(existingHints, &existingHint)
+			}
+		}
+
+		replyLocs = append(replyLocs, &NetworkItem{
+			Item:     loc.Item,
+			Location: locId,
+			Player:   loc.Player,
+			Flags:    loc.Flags,
+		})
+	}
+
+	if msg.CreateAsHint != 0 {
+		affectedSlots := make(map[TeamSlot]struct{})
+
+		for _, hint := range newHints {
+			affectedSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
+			affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
+		}
+
+		// When 2, don't notify for existing hints
+		if msg.CreateAsHint != 2 {
+			for _, hint := range existingHints {
+				affectedSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
+				affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
+			}
+		}
+
+		if len(affectedSlots) > 0 {
+			s.notifyHintsChanged(ctx, affectedSlots)
+		}
+	}
+
+	return wsjson.Write(ctx, connState.clientConn, []any{LocationInfoMessage{
+		Locations: replyLocs,
+	}})
+}
+
+func (s *ApxRoom) handleLocationChecks(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
 	var msg LocationChecksMessage
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		cmd := MessageTypeLocationChecks
@@ -1713,7 +1801,7 @@ func (s *ApxRoom) handleUpdateHint(ctx context.Context, connState *connectionSta
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		cmd := MessageTypeUpdateHint
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
-			fmt.Sprintf("invalid CreateHints arguments: %v", err), s.lokiLogger, connState.slotName)
+			fmt.Sprintf("invalid UpdateHint arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
 
 	// Why is this even optional?
@@ -1727,7 +1815,7 @@ func (s *ApxRoom) handleUpdateHint(ctx context.Context, connState *connectionSta
 	if !allowed {
 		cmd := MessageTypeUpdateHint
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
-			"invalid CreateHints arguments: Cannot update hint for a different player, or hint does not exist", s.lokiLogger, connState.slotName)
+			"invalid UpdateHint arguments: Cannot update hint for a different player, or hint does not exist", s.lokiLogger, connState.slotName)
 	}
 
 	affectedHintSlots := make(map[TeamSlot]struct{})

@@ -436,6 +436,23 @@ func (np NetworkVersion) MarshalJSON() ([]byte, error) {
 	})
 }
 
+type LocationScoutsMessage struct {
+	Locations    []int64 `json:"locations"`
+	CreateAsHint int     `json:"create_as_hint"`
+}
+
+type LocationInfoMessage struct {
+	Locations []*NetworkItem `json:"locations"`
+}
+
+func (m LocationInfoMessage) MarshalJSON() ([]byte, error) {
+	type Alias LocationInfoMessage
+	return json.Marshal(struct {
+		Cmd MessageType `json:"cmd"`
+		Alias
+	}{Cmd: MessageTypeLocationInfo, Alias: Alias(m)})
+}
+
 type LocationChecksMessage struct {
 	Locations []int64 `json:"locations"`
 }
