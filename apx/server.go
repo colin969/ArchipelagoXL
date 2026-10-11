@@ -299,6 +299,14 @@ type Hint struct {
 	Entrance        string     `json:"entrance"`
 }
 
+func (m Hint) MarshalJSON() ([]byte, error) {
+	type Alias Hint
+	return json.Marshal(struct {
+		Class string `json:"class"`
+		Alias
+	}{Class: "Hint", Alias: Alias(m)})
+}
+
 type SlotType int
 
 const (
@@ -680,6 +688,21 @@ func (h *HintsState) HintExists(findingPlayer int32, location int64) bool {
 	return h.findIndex(findingPlayer, location) >= 0
 }
 
+func (h *HintsState) SetHintStatus(owner TeamSlot, location int64, status HintStatus, requestingPlayer TeamSlot) (changedHint Hint, allowed bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	i := h.findIndex(int32(owner.Slot), location)
+	if i < 0 {
+		return Hint{}, false
+	}
+	if h.hints[i].Location == location && h.hints[i].ReceivingPlayer == int32(requestingPlayer.Slot) {
+		h.hints[i].Status = status
+		return h.hints[i], true
+	} else {
+		return Hint{}, false
+	}
+}
+
 func (h *HintsState) GetSlotHints(ts TeamSlot) []Hint {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -711,7 +734,7 @@ func (h *HintsState) UpdateStatusIfExists(findingPlayer int32, location int64, s
 		return Hint{}, false
 	}
 	if h.hints[i].Status == status && h.hints[i].Found == found {
-		return h.hints[i], false // no change
+		return h.hints[i], false
 	}
 	h.hints[i].Status = status
 	h.hints[i].Found = found
@@ -755,7 +778,7 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sp
 				if _, alreadyHinted := hintedLocs[locID]; alreadyHinted {
 					continue
 				}
-				hintStatus := HintStatusUnspecified
+				hintStatus := HintStatusPriority
 				if loc.Checked {
 					hintStatus = HintStatusFound
 				}
@@ -1569,6 +1592,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleLocationChecks(ctx, connState, raw)
 		case MessageTypeCreateHints:
 			return s.handleCreateHints(ctx, connState, raw)
+		case MessageTypeUpdateHint:
+			return s.handleUpdateHint(ctx, connState, raw)
 		case MessageTypeGet:
 			return s.handleGet(ctx, connState, raw)
 		case MessageTypeSet:
@@ -1619,13 +1644,12 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 
 	status := HintStatusUnspecified
 	if msg.Status != nil {
-		hintStatus := HintStatus(*msg.Status)
-		if hintStatus == HintStatusFound {
+		status := HintStatus(*msg.Status)
+		if status == HintStatusFound {
 			cmd := MessageTypeCreateHints
 			return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
 				"CreateHints: cannot set status to HINT_FOUND", s.lokiLogger, connState.slotName)
 		}
-		status = hintStatus
 	}
 
 	locationTS := TeamSlot{Team: client.Team, Slot: locationPlayer}
@@ -1684,6 +1708,38 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 	return nil
 }
 
+func (s *ApxRoom) handleUpdateHint(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg UpdateHintMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeUpdateHint
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			fmt.Sprintf("invalid CreateHints arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	// Why is this even optional?
+	if msg.Status == nil {
+		return nil
+	}
+
+	log.Println(*msg.Status)
+
+	updatedHint, allowed := s.state.Hints.SetHintStatus(TeamSlot{0, msg.Player}, int64(msg.Location), *msg.Status, TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
+	if !allowed {
+		cmd := MessageTypeUpdateHint
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
+			"invalid CreateHints arguments: Cannot update hint for a different player, or hint does not exist", s.lokiLogger, connState.slotName)
+	}
+
+	affectedHintSlots := make(map[TeamSlot]struct{})
+	affectedHintSlots[TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}] = struct{}{}
+	if updatedHint.FindingPlayer != int32(connState.registeredClient.Slot) {
+		affectedHintSlots[TeamSlot{0, int(updatedHint.FindingPlayer)}] = struct{}{}
+	}
+	s.notifyHintsChanged(ctx, affectedHintSlots)
+
+	return nil
+}
+
 func formatHintMessage(hint Hint) PrintJsonMessage {
 	found := hint.Found
 	receiving := int(hint.ReceivingPlayer)
@@ -1703,7 +1759,7 @@ func formatHintMessage(hint Hint) PrintJsonMessage {
 		{Type: "location_id", Text: fmt.Sprintf("%d", hint.Location), Player: int(hint.FindingPlayer)},
 		{Type: "text", Text: " in "},
 		{Type: "player_id", Text: fmt.Sprintf("%d", hint.FindingPlayer)},
-		{Type: "text", Text: "'s World"},
+		{Type: "text", Text: "'s World. "},
 	}
 
 	if hint.Entrance != "" {

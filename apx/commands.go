@@ -198,6 +198,17 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	if allowed {
 		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatHintMessage(hint)})
 	}
+
+	// Send own clients hint points update
+	newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
+	clients := s.connections.GetSlotClients(teamSlot)
+
+	s.submitOrdered(func() {
+		BroadcastJSON(ctx, clients, []any{RoomUpdateMessage{
+			HintPoints: &newPoints,
+		}})
+	})
+
 	return nil
 }
 
@@ -244,7 +255,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 		// Send own clients hint points update
 		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
-		clients := make([]*RegisteredClient, 0)
+		clients := s.connections.GetSlotClients(teamSlot)
 
 		s.submitOrdered(func() {
 			BroadcastJSON(ctx, clients, []any{RoomUpdateMessage{

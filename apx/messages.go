@@ -255,7 +255,7 @@ func (m ConnectedMessage) MarshalJSON() ([]byte, error) {
 
 type RoomUpdateMessage struct {
 	Players          []NetworkPlayer `json:"players,omitempty"`
-	CheckedLocations []int64         `json:"checked_locations"`
+	CheckedLocations []int64         `json:"checked_locations,omitempty"`
 	HintPoints       *int            `json:"hint_points,omitempty"`
 }
 
@@ -476,9 +476,9 @@ func (m CreateHintsMessage) MarshalJSON() ([]byte, error) {
 }
 
 type UpdateHintMessage struct {
-	Player   int  `json:"player"`
-	Location int  `json:"location"`
-	Status   *int `json:"status"`
+	Player   int         `json:"player"`
+	Location int64       `json:"location"`
+	Status   *HintStatus `json:"status"`
 }
 
 func (m UpdateHintMessage) MarshalJSON() ([]byte, error) {
