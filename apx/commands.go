@@ -106,12 +106,17 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 			description: "Spend hint points for a location in your game",
 			handler:     s.handleHintLocationCommand,
 		},
-	)
-	r.AddTopLevel(
 		chatCommand{
 			name:        "hint",
 			description: "Spend hint points for an item in your game",
 			handler:     s.handleHintItemCommand,
+		},
+	)
+	r.AddTopLevel(
+		chatCommand{
+			name:        "release",
+			description: "Release all remaining items from your game",
+			handler:     s.handleReleaseCommand,
 		},
 	)
 
@@ -279,5 +284,26 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 	if len(msgs) > 0 {
 		s.broadcastPrintJson(ctx, msgs)
 	}
+	return nil
+}
+
+func (s *ApxRoom) handleReleaseCommand(ctx context.Context, connState *connectionState, args string) error {
+	rm := s.state.ServerOptions.GetReleaseMode()
+	status := s.state.ClientStatuses.Get(connState.registeredClient.Team, connState.registeredClient.Slot)
+
+	if rm == PermissionEnabled || rm == PermissionAutoEnabled {
+		s.ReleasePlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		return nil
+	}
+	if rm == PermissionDisabled {
+		text := "Sorry, client item releasing has been disabled on this server. You can ask the server admin for a /release"
+		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		return nil
+	}
+	if rm == PermissionGoal && status == ClientStatusGoal {
+		s.ReleasePlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		return nil
+	}
+
 	return nil
 }

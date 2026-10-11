@@ -242,15 +242,15 @@ type SphereLocs []SphereLocGroup
 
 type ServerOptions struct {
 	mu                  sync.RWMutex
-	password            string // "password" - default ""
-	hintCost            int    // "hint_cost" - default 10
-	locationCheckPoints int    // "location_check_points" - default 1
-	releaseMode         string // "release_mode" - default "auto"
-	collectMode         string // "collect_mode" - default "auto"
-	remainingMode       string // "remaining_mode" - default "goal"
-	countdownMode       string // "countdown_mode" - default "auto"
-	disableItemCheat    bool   // "disable_item_cheat" - default false
-	compatibility       int    // "compatibility" - default 2
+	password            string     // "password" - default ""
+	hintCost            int        // "hint_cost" - default 10
+	locationCheckPoints int        // "location_check_points" - default 1
+	releaseMode         Permission // "release_mode" - default "auto"
+	collectMode         Permission // "collect_mode" - default "auto"
+	remainingMode       Permission // "remaining_mode" - default "goal"
+	countdownMode       string     // "countdown_mode" - default "auto"
+	disableItemCheat    bool       // "disable_item_cheat" - default false
+	compatibility       int        // "compatibility" - default 2
 }
 
 func (so *ServerOptions) GetPassword() string {
@@ -269,6 +269,18 @@ func (so *ServerOptions) SetHintCost(hintCost int) {
 	so.mu.Lock()
 	defer so.mu.Unlock()
 	so.hintCost = hintCost
+}
+
+func (so *ServerOptions) GetCollectMode() Permission {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.collectMode
+}
+
+func (so *ServerOptions) GetReleaseMode() Permission {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.releaseMode
 }
 
 func (so *ServerOptions) PasswordCheck(password *string) bool {
@@ -416,6 +428,24 @@ func (ls *Checks) GetMissing(ts TeamSlot) []int64 {
 	return missing
 }
 
+func (ls *Checks) GetCollectLocIds(team int, slot int) map[TeamSlot][]int64 {
+	slot16 := int16(slot)
+	ls.mu.RLock()
+	defer ls.mu.RUnlock()
+	locIdMaps := make(map[TeamSlot][]int64)
+	for ts, group := range ls.locations {
+		if ts.Team != team {
+			continue
+		}
+		for locId, loc := range group {
+			if !loc.Checked && loc.Player == slot16 {
+				locIdMaps[ts] = append(locIdMaps[ts], locId)
+			}
+		}
+	}
+	return locIdMaps
+}
+
 func (s *ApxRoom) submitBroadcast(fn func()) {
 	select {
 	case s.bcUnorderedCh <- fn:
@@ -448,7 +478,7 @@ func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[Team
 	}
 }
 
-func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState, teamSlot TeamSlot, locations []int64) error {
+func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locations []int64) error {
 	newChecks := make(map[int64]struct{})
 
 	// Mark new locations as found, and collect the items found
@@ -504,7 +534,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 
 		var printJsonMsgs []PrintJsonMessage
 		for _, item := range newItems {
-			printJsonMsgs = append(printJsonMsgs, formatSendItemMessage(item, connState.registeredClient.Slot, int(item.Player)))
+			printJsonMsgs = append(printJsonMsgs, formatSendItemMessage(item, teamSlot.Slot, int(item.Player)))
 		}
 
 		if len(printJsonMsgs) > 0 {
@@ -525,14 +555,19 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, connState *connectionState
 
 	// Send room update to sender
 	if len(newChecks) > 0 {
+		slotClients := s.connections.GetSlotClients(teamSlot)
 		checkedList := make([]int64, 0, len(newChecks))
 		for locID := range newChecks {
 			checkedList = append(checkedList, locID)
 		}
-		return wsjson.Write(ctx, connState.clientConn, []any{RoomUpdateMessage{
-			CheckedLocations: checkedList,
-			HintPoints:       new(100),
-		}})
+		s.submitOrdered(func() {
+			for _, c := range slotClients {
+				wsjson.Write(ctx, c.clientConn, []any{RoomUpdateMessage{
+					CheckedLocations: checkedList,
+					HintPoints:       new(100),
+				}})
+			}
+		})
 	}
 
 	return nil
@@ -854,12 +889,33 @@ func (h *HintsState) GetHintsUsed(ts TeamSlot) int {
 	return h.hintsUsed[ts]
 }
 
+type ClientStatuses struct {
+	mu     sync.RWMutex
+	status map[int]map[int]ClientStatus
+}
+
+func (cs *ClientStatuses) Get(team int, slot int) ClientStatus {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.status[team][slot]
+}
+
+func (cs *ClientStatuses) Set(team int, slot int, status ClientStatus) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.status[team] == nil {
+		cs.status[team] = make(map[int]ClientStatus)
+	}
+	cs.status[team][slot] = status
+}
+
 type ApState struct {
-	Checks        Checks
-	ReceivedItems ReceivedItems
-	Hints         HintsState
-	ServerOptions *ServerOptions
-	DataStorage   *DataStorage
+	Checks         Checks
+	ReceivedItems  ReceivedItems
+	Hints          HintsState
+	ServerOptions  *ServerOptions
+	DataStorage    *DataStorage
+	ClientStatuses *ClientStatuses
 	// Immutable
 	Locations          map[TeamSlot]map[int64]Location
 	Spheres            Spheres
@@ -1331,9 +1387,6 @@ type connectionState struct {
 	prevDatapackageGamesReq string
 	remoteAddr              string
 	fromReducedPort         bool
-	// Retry storm may happen before auth, we can read this after connect for metrics
-	isRetryStormClient bool
-	largeDpRequested   int // Max that were requested at once before auth
 }
 
 func (cs *connectionState) SendMessage(ctx context.Context, msg []any) error {
@@ -1558,9 +1611,9 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 		Tags:     s.state.Tags,
 		Password: s.perSlotPasswords || so.password != "",
 		Permissions: map[string]Permission{
-			"release":   permissionFromString(so.releaseMode),
-			"collect":   permissionFromString(so.collectMode),
-			"remaining": permissionFromString(so.remainingMode),
+			"release":   so.releaseMode,
+			"collect":   so.collectMode,
+			"remaining": so.remainingMode,
 		},
 		HintCost:             so.hintCost,
 		LocationCheckPoints:  so.locationCheckPoints,
@@ -1592,6 +1645,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleAuthedConnect(ctx, connState, raw)
 		case MessageTypeConnectUpdate:
 			return s.handleConnectUpdate(ctx, connState, raw)
+		case MessageTypeStatusUpdate:
+			return s.handleStatusUpdate(ctx, connState, raw)
 		case MessageTypeSay:
 			return s.handleSay(ctx, connState, raw)
 		case MessageTypeSync:
@@ -1626,6 +1681,63 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return nil
 		}
 	}
+}
+
+func (s *ApxRoom) handleStatusUpdate(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
+	var msg StatusUpdateMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		cmd := MessageTypeStatusUpdate
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid StatusUpdate arguments: %v", err), s.lokiLogger, connState.slotName)
+	}
+
+	if !msg.Status.Valid() {
+		cmd := MessageTypeStatusUpdate
+		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid StatusUpdate arguments: invalid status: %d", msg.Status), s.lokiLogger, connState.slotName)
+	}
+
+	return s.SetClientStatus(ctx, connState.registeredClient.Team, connState.registeredClient.Slot, *connState.slotName, msg.Status)
+}
+
+func (s *ApxRoom) SetClientStatus(ctx context.Context, team int, slot int, slotName string, status ClientStatus) error {
+	curStatus := s.state.ClientStatuses.Get(team, slot)
+
+	// Don't allow player to ungoal
+	if curStatus == ClientStatusGoal {
+		return nil
+	}
+
+	if status == ClientStatusGoal {
+		// Trigger goal checks
+		s.broadcastPrintJson(ctx, []PrintJsonMessage{
+			// TODO: Decide to add slot info if this needs to be slot specific?
+			formatGenericMessage(nil, nil, "Goal", fmt.Sprintf("%s (Team #%d) has completed their goal", slotName, team)),
+		})
+
+		cm := s.state.ServerOptions.GetCollectMode()
+		rm := s.state.ServerOptions.GetReleaseMode()
+		if cm == PermissionAuto || cm == PermissionAutoEnabled {
+			s.CollectPlayer(team, slot)
+		}
+
+		if rm == PermissionAuto || rm == PermissionAutoEnabled {
+			s.ReleasePlayer(team, slot)
+		}
+	}
+
+	s.state.ClientStatuses.Set(team, slot, status)
+
+	return nil
+}
+
+func (s *ApxRoom) CollectPlayer(team int, slot int) {
+	locIdMaps := s.state.Checks.GetCollectLocIds(team, slot)
+	for ts, locIds := range locIdMaps {
+		s.RegisterChecks(context.Background(), ts, locIds)
+	}
+}
+
+func (s *ApxRoom) ReleasePlayer(team int, slot int) {
+	s.RegisterChecks(context.Background(), TeamSlot{team, slot}, s.state.Checks.GetMissing(TeamSlot{team, slot}))
 }
 
 func (s *ApxRoom) handleSync(ctx context.Context, connState *connectionState, _ json.RawMessage) error {
@@ -1714,7 +1826,7 @@ func (s *ApxRoom) handleLocationChecks(ctx context.Context, connState *connectio
 		cmd := MessageTypeLocationChecks
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid LocationChecks arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
-	err := s.RegisterChecks(ctx, connState, TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}, msg.Locations)
+	err := s.RegisterChecks(ctx, TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}, msg.Locations)
 	return err
 }
 
@@ -2287,11 +2399,22 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 		return nil, err
 	}
 
+	clientStatuses := ClientStatuses{
+		status: make(map[int]map[int]ClientStatus),
+	}
+	for ts := range slotInfoMap {
+		if clientStatuses.status[ts.Team] == nil {
+			clientStatuses.status[ts.Team] = make(map[int]ClientStatus)
+		}
+		clientStatuses.status[ts.Team][ts.Slot] = ClientStatusUnknown
+	}
+
 	apState := ApState{
 		Checks:             newChecksState(locations),
 		ReceivedItems:      newReceivedItems(),
 		Hints:              newHintsState(),
 		DataStorage:        newDataStorage(),
+		ClientStatuses:     &clientStatuses,
 		Locations:          locations,
 		Spheres:            spheres,
 		SphereLocs:         sphereLocs,
@@ -2357,9 +2480,9 @@ func defaultServerOptions() ServerOptions {
 	return ServerOptions{
 		hintCost:            10,
 		locationCheckPoints: 1,
-		releaseMode:         "auto",
-		collectMode:         "auto",
-		remainingMode:       "goal",
+		releaseMode:         PermissionAuto,
+		collectMode:         PermissionAuto,
+		remainingMode:       PermissionGoal,
 		countdownMode:       "auto",
 		compatibility:       2,
 	}
@@ -2384,17 +2507,17 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 	}
 	if v, ok := raw["release_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.releaseMode = s
+			opts.releaseMode = permissionFromString(s)
 		}
 	}
 	if v, ok := raw["collect_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.collectMode = s
+			opts.collectMode = permissionFromString(s)
 		}
 	}
 	if v, ok := raw["remaining_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.remainingMode = s
+			opts.remainingMode = permissionFromString(s)
 		}
 	}
 	if v, ok := raw["countdown_mode"]; ok {
@@ -2462,4 +2585,14 @@ func startOrderedWorker(ctx context.Context) chan func() {
 		}
 	}()
 	return ch
+}
+
+func formatGenericMessage(team *int, slot *int, msgType string, text string) PrintJsonMessage {
+	return PrintJsonMessage{
+		Type:    msgType,
+		Data:    []JsonMessagePart{{Type: "text", Text: text}},
+		Team:    team,
+		Slot:    slot,
+		Message: &text,
+	}
 }

@@ -919,3 +919,72 @@ func TestClient_UpdateHint_NotifiesSetNotify(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, HintStatusNoPriority, updatedHint.Status)
 }
+
+func TestClient_StatusUpdate_Goal_Release(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+	room.apx.state.ServerOptions.releaseMode = PermissionGoal
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	reader := newExpectedMessageReader(ctx, conn, t)
+	_ = reader.readExpectedMessage("RoomInfo", t)
+
+	err = wsjson.Write(ctx, conn, []any{ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader.readExpectedMessage("Connected", t)
+	_ = reader.readExpectedMessage("ReceivedItems", t)
+	reader.discardFor(100 * time.Millisecond)
+
+	ts := TeamSlot{0, 1}
+
+	// Verify not yet at goal
+	assert.NotEqual(t, ClientStatusGoal, room.apx.state.ClientStatuses.Get(ts.Team, ts.Slot))
+
+	// Send StatusUpdate: Goal
+	err = wsjson.Write(ctx, conn, []any{map[string]any{
+		"cmd":    "StatusUpdate",
+		"status": ClientStatusGoal,
+	}})
+	require.NoError(t, err)
+
+	// Give server time to process
+	reader.discardFor(100 * time.Millisecond)
+
+	// Verify goal status stored
+	assert.Equal(t, ClientStatusGoal, room.apx.state.ClientStatuses.Get(ts.Team, ts.Slot))
+
+	// !release should now work — collect all unchecked locations belonging to slot 1
+	missingBefore := room.apx.state.Checks.GetMissing(ts)
+	require.NotEmpty(t, missingBefore, "need unchecked locations to release")
+
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!release"}})
+	require.NoError(t, err)
+
+	// Should receive ReceivedItems with the released items
+	raw := reader.readUntil("ReceivedItems", t)
+	var recvItems ReceivedItemsMessage
+	err = json.Unmarshal(raw, &recvItems)
+	require.NoError(t, err)
+	assert.NotEmpty(t, recvItems.Items, "release should send items to receiving players")
+
+	// All locations for slot 1 should now be checked
+	reader.discardFor(200 * time.Millisecond)
+	missingAfter := room.apx.state.Checks.GetMissing(ts)
+	assert.Empty(t, missingAfter, "all locations should be checked after release")
+}

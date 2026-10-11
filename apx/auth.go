@@ -200,13 +200,7 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 	slot := connState.registeredClient.Slot
 	team := connState.registeredClient.Team
 	text = fmt.Sprintf("%s: %s", *connState.slotName, text)
-	s.broadcastPrintJson(ctx, []PrintJsonMessage{{
-		Type:    "Chat",
-		Data:    []JsonMessagePart{{Type: "text", Text: text}},
-		Team:    &team,
-		Slot:    &slot,
-		Message: &text,
-	}})
+	s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&team, &slot, "Chat", text)})
 
 	return nil
 }

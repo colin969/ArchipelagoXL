@@ -80,6 +80,14 @@ const (
 	PermissionAutoEnabled Permission = 0b111
 )
 
+func (perm Permission) Valid() bool {
+	switch perm {
+	case PermissionDisabled, PermissionEnabled, PermissionGoal, PermissionAuto, PermissionAutoEnabled:
+		return true
+	}
+	return false
+}
+
 func permissionFromString(mode string) Permission {
 	switch mode {
 	case "enabled":
@@ -434,6 +442,28 @@ func (np NetworkVersion) MarshalJSON() ([]byte, error) {
 		Alias: Alias(np),
 		Class: "Version",
 	})
+}
+
+type ClientStatus int
+
+const (
+	ClientStatusUnknown   ClientStatus = 0
+	ClientStatusConnected ClientStatus = 5
+	ClientStatusReady     ClientStatus = 10
+	ClientStatusPlaying   ClientStatus = 20
+	ClientStatusGoal      ClientStatus = 30
+)
+
+func (cs ClientStatus) Valid() bool {
+	switch cs {
+	case ClientStatusUnknown, ClientStatusConnected, ClientStatusReady, ClientStatusPlaying, ClientStatusGoal:
+		return true
+	}
+	return false
+}
+
+type StatusUpdateMessage struct {
+	Status ClientStatus `json:"status"`
 }
 
 type LocationScoutsMessage struct {
