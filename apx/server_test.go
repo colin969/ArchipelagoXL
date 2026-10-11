@@ -780,7 +780,7 @@ func TestConnectionRegistryTextIndices(t *testing.T) {
 		c := newClient(1)
 		cr.Register(1, c, game, []string{"TextConcernsSelf"})
 
-		assert.Contains(t, cr.concernsSelfClients, c)
+		assert.Contains(t, cr.concernsSelfClients[c.Slot], c)
 		assert.NotContains(t, cr.fullClients, c)
 	})
 
@@ -818,7 +818,7 @@ func TestConnectionRegistryTextIndices(t *testing.T) {
 		cr.UpdateTags(c, []string{"TextConcernsSelf"})
 
 		assert.NotContains(t, cr.fullClients, c)
-		assert.Contains(t, cr.concernsSelfClients, c)
+		assert.Contains(t, cr.concernsSelfClients[c.Slot], c)
 	})
 
 	t.Run("Unregister removes from fullClients", func(t *testing.T) {
@@ -858,12 +858,12 @@ func TestConnectionRegistryTextIndices(t *testing.T) {
 		cr.Register(1, c2, game, []string{"TextConcernsSelf"})
 
 		assert.Contains(t, cr.fullClients, c1)
-		assert.Contains(t, cr.concernsSelfClients, c2)
+		assert.Contains(t, cr.concernsSelfClients[c2.Slot], c2)
 
 		cr.Unregister(c1)
 
 		assert.NotContains(t, cr.fullClients, c1)
-		assert.Contains(t, cr.concernsSelfClients, c2)
+		assert.Contains(t, cr.concernsSelfClients[c2.Slot], c2)
 	})
 
 	t.Run("tagless forcedTextConcernsSelf client lands in concernsSelfClients", func(t *testing.T) {
@@ -873,7 +873,7 @@ func TestConnectionRegistryTextIndices(t *testing.T) {
 		cr.Register(1, c, game, []string{})
 
 		assert.True(t, c.textConcernsSelf)
-		assert.Contains(t, cr.concernsSelfClients, c)
+		assert.Contains(t, cr.concernsSelfClients[c.Slot], c)
 		assert.NotContains(t, cr.fullClients, c)
 	})
 
