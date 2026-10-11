@@ -113,12 +113,11 @@ func TestClient_Connected_WithItems(t *testing.T) {
 	_ = msgReader.readExpectedMessage("RoomInfo", t)
 
 	connectMsg := ConnectMessage{
-		Game:           "Hollow Knight",
-		Name:           "Player",
-		UUID:           StringOrBigInt("1234"),
-		Version:        NetworkVersion{0, 7, 0},
-		ItemsHandling:  new(7),
-		ReducedTraffic: false,
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
 	}
 
 	err = wsjson.Write(ctx, conn, []any{connectMsg})
@@ -131,8 +130,17 @@ func TestClient_Connected_WithItems(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 10, connected.HintPoints)
-	assert.Len(t, connected.Players, 2)
-	assert.Len(t, connected.SlotInfo, 2)
+
+	var players []NetworkPlayer
+	err = json.Unmarshal(connected.Players, &players)
+	require.NoError(t, err)
+	assert.Len(t, players, 2)
+	assert.Equal(t, 10, connected.HintPoints)
+
+	var slotInfo map[int]NetworkSlot
+	err = json.Unmarshal(connected.SlotInfo, &slotInfo)
+	require.NoError(t, err)
+	assert.Len(t, slotInfo, 2)
 	assert.Equal(t, 1, connected.Slot)
 
 	rawMsg = msgReader.readExpectedMessage("ReceivedItems", t)
@@ -739,4 +747,175 @@ func TestClient_Cmd_Hint(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, rancidAfterSecond, "should have exactly 2 unfound Rancid_Egg hints stored after second call")
+}
+
+func TestClient_CreateHints_NotifiesSetNotify(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// Slot 1 — will create the hint
+	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn1.CloseNow()
+	reader1 := newExpectedMessageReader(ctx, conn1, t)
+	_ = reader1.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn1, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player", UUID: StringOrBigInt("1"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader1.readExpectedMessage("Connected", t)
+	_ = reader1.readExpectedMessage("ReceivedItems", t)
+
+	// Slot 2 — subscribes to slot 1's hints via SetNotify
+	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn2.CloseNow()
+	reader2 := newExpectedMessageReader(ctx, conn2, t)
+	_ = reader2.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn2, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player2", UUID: StringOrBigInt("2"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader2.readExpectedMessage("Connected", t)
+
+	err = wsjson.Write(ctx, conn2, []any{map[string]any{
+		"cmd":  "SetNotify",
+		"keys": []string{"_read_hints_0_1"},
+	}})
+	require.NoError(t, err)
+
+	reader1.discardFor(100 * time.Millisecond)
+	reader2.discardFor(100 * time.Millisecond)
+
+	missing := room.apx.state.Checks.GetMissing(TeamSlot{0, 1})
+	require.NotEmpty(t, missing)
+	locID := missing[0]
+
+	err = wsjson.Write(ctx, conn1, []any{map[string]any{
+		"cmd":       "CreateHints",
+		"locations": []int64{locID},
+	}})
+	require.NoError(t, err)
+
+	// Slot 2 should receive a SetReply for _read_hints_0_1
+	raw := reader2.readUntil("SetReply", t)
+	var reply SetReplyMessage
+	err = json.Unmarshal(raw, &reply)
+	require.NoError(t, err)
+	assert.Equal(t, "_read_hints_0_1", reply.Key)
+	require.NotNil(t, reply.Value)
+}
+
+func TestClient_UpdateHint_NotifiesSetNotify(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	// Slot 1 — receiving player, will update the hint
+	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn1.CloseNow()
+	reader1 := newExpectedMessageReader(ctx, conn1, t)
+	_ = reader1.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn1, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player", UUID: StringOrBigInt("1"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader1.readExpectedMessage("Connected", t)
+	_ = reader1.readExpectedMessage("ReceivedItems", t)
+
+	// Slot 2 — finding player
+	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn2.CloseNow()
+	reader2 := newExpectedMessageReader(ctx, conn2, t)
+	_ = reader2.readExpectedMessage("RoomInfo", t)
+	err = wsjson.Write(ctx, conn2, []any{ConnectMessage{
+		Game: "Hollow Knight", Name: "Player2", UUID: StringOrBigInt("2"),
+		Version: NetworkVersion{0, 7, 0}, ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader2.readExpectedMessage("Connected", t)
+
+	// Both subscribe to their hint keys
+	err = wsjson.Write(ctx, conn1, []any{map[string]any{
+		"cmd":  "SetNotify",
+		"keys": []string{"_read_hints_0_1"},
+	}})
+	require.NoError(t, err)
+	err = wsjson.Write(ctx, conn2, []any{map[string]any{
+		"cmd":  "SetNotify",
+		"keys": []string{"_read_hints_0_2"},
+	}})
+	require.NoError(t, err)
+
+	// Find a location in slot 2 holding an item for slot 1
+	missing2 := room.apx.state.Checks.GetMissing(TeamSlot{0, 2})
+	var targetLocID int64
+	foundLoc := false
+	for _, locID := range missing2 {
+		loc := room.apx.state.Locations[TeamSlot{0, 2}][locID]
+		if int(loc.Player) == 1 {
+			targetLocID = locID
+			foundLoc = true
+			break
+		}
+	}
+	require.True(t, foundLoc, "need a location in slot 2 holding an item for slot 1")
+
+	// Slot 2 creates the hint (finder=slot2, receiver=slot1) — no cost
+	err = wsjson.Write(ctx, conn2, []any{map[string]any{
+		"cmd":       "CreateHints",
+		"locations": []int64{targetLocID},
+	}})
+	require.NoError(t, err)
+
+	// Drain the PrintJSON broadcast before testing UpdateHint notifies
+	_ = reader1.readUntil("PrintJSON", t)
+	_ = reader2.readUntil("PrintJSON", t)
+	reader1.discardFor(100 * time.Millisecond)
+	reader2.discardFor(100 * time.Millisecond)
+
+	// Slot 1 (receiver) updates the hint status
+	err = wsjson.Write(ctx, conn1, []any{map[string]any{
+		"cmd":      "UpdateHint",
+		"player":   2,
+		"location": targetLocID,
+		"status":   HintStatusNoPriority,
+	}})
+	require.NoError(t, err)
+
+	// Both slots should receive a SetReply for their hint keys
+	raw1 := reader1.readUntil("SetReply", t)
+	var reply1 SetReplyMessage
+	err = json.Unmarshal(raw1, &reply1)
+	require.NoError(t, err)
+	assert.Equal(t, "_read_hints_0_1", reply1.Key)
+
+	raw2 := reader2.readUntil("SetReply", t)
+	var reply2 SetReplyMessage
+	err = json.Unmarshal(raw2, &reply2)
+	require.NoError(t, err)
+	assert.Equal(t, "_read_hints_0_2", reply2.Key)
+
+	// Verify status updated in state
+	updatedHint, ok := room.apx.state.Hints.GetHint(2, targetLocID)
+	require.True(t, ok)
+	assert.Equal(t, HintStatusNoPriority, updatedHint.Status)
 }

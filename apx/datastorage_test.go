@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"math"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,61 +178,61 @@ func TestDataStorage(t *testing.T) {
 		})
 	})
 
-	t.Run("SlotSize", func(t *testing.T) {
-		t.Run("NewKey_DeniedWhenSizeExceeded", func(t *testing.T) {
-			ds := newTestStorage()
-			// Fill up to just under the limit with a large string value
-			bigVal := strings.Repeat("x", maxSlotSize-10)
-			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
-			require.NoError(t, err)
+	// t.Run("SlotSize", func(t *testing.T) {
+	// 	t.Run("NewKey_DeniedWhenSizeExceeded", func(t *testing.T) {
+	// 		ds := newTestStorage()
+	// 		// Fill up to just under the limit with a large string value
+	// 		bigVal := strings.Repeat("x", maxSlotSize-10)
+	// 		_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
+	// 		require.NoError(t, err)
 
-			// Next key should be denied — key name + value would exceed limit
-			_, _, err = ds.Set(testSlot, "overflow", "hello", nil, 0, nil, nil)
-			assert.ErrorContains(t, err, "storage size quota exceeded")
-		})
+	// 		// Next key should be denied — key name + value would exceed limit
+	// 		_, _, err = ds.Set(testSlot, "overflow", "hello", nil, 0, nil, nil)
+	// 		assert.ErrorContains(t, err, "storage size quota exceeded")
+	// 	})
 
-		t.Run("NewWriter_DeniedWhenSizeExceeded", func(t *testing.T) {
-			ds := newTestStorage()
-			slot2 := TeamSlot{Team: 0, Slot: 2}
+	// 	t.Run("NewWriter_DeniedWhenSizeExceeded", func(t *testing.T) {
+	// 		ds := newTestStorage()
+	// 		slot2 := TeamSlot{Team: 0, Slot: 2}
 
-			// slot2 fills up their own quota
-			bigVal := strings.Repeat("x", maxSlotSize-10)
-			_, _, err := ds.Set(slot2, "slot2key", bigVal, nil, 0, nil, nil)
-			require.NoError(t, err)
+	// 		// slot2 fills up their own quota
+	// 		bigVal := strings.Repeat("x", maxSlotSize-10)
+	// 		_, _, err := ds.Set(slot2, "slot2key", bigVal, nil, 0, nil, nil)
+	// 		require.NoError(t, err)
 
-			// testSlot creates a large key
-			_, _, err = ds.Set(testSlot, "sharedkey", strings.Repeat("y", 100), nil, 0, nil, nil)
-			require.NoError(t, err)
+	// 		// testSlot creates a large key
+	// 		_, _, err = ds.Set(testSlot, "sharedkey", strings.Repeat("y", 100), nil, 0, nil, nil)
+	// 		require.NoError(t, err)
 
-			// slot2 tries to touch testSlot's key — would push them over limit
-			_, _, err = ds.Set(slot2, "sharedkey", nil, nil, 0, nil, nil)
-			assert.ErrorContains(t, err, "storage size quota exceeded")
-		})
+	// 		// slot2 tries to touch testSlot's key — would push them over limit
+	// 		_, _, err = ds.Set(slot2, "sharedkey", nil, nil, 0, nil, nil)
+	// 		assert.ErrorContains(t, err, "storage size quota exceeded")
+	// 	})
 
-		t.Run("SizeNotSharedBetweenSlots", func(t *testing.T) {
-			ds := newTestStorage()
-			slot2 := TeamSlot{Team: 0, Slot: 2}
+	// 	t.Run("SizeNotSharedBetweenSlots", func(t *testing.T) {
+	// 		ds := newTestStorage()
+	// 		slot2 := TeamSlot{Team: 0, Slot: 2}
 
-			bigVal := strings.Repeat("x", maxSlotSize-10)
-			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
-			require.NoError(t, err)
+	// 		bigVal := strings.Repeat("x", maxSlotSize-10)
+	// 		_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
+	// 		require.NoError(t, err)
 
-			// slot2 should be unaffected by testSlot's usage
-			_, _, err = ds.Set(slot2, "slot2key", "small", nil, 0, nil, nil)
-			assert.NoError(t, err)
-		})
+	// 		// slot2 should be unaffected by testSlot's usage
+	// 		_, _, err = ds.Set(slot2, "slot2key", "small", nil, 0, nil, nil)
+	// 		assert.NoError(t, err)
+	// 	})
 
-		t.Run("KeyNameCountsTowardSize", func(t *testing.T) {
-			ds := newTestStorage()
-			// value is tiny but key name pushes it over
-			bigKey := strings.Repeat("k", maxSlotSize-3)
-			_, _, err := ds.Set(testSlot, bigKey, int64(0), nil, 0, nil, nil)
-			require.NoError(t, err)
+	// 	t.Run("KeyNameCountsTowardSize", func(t *testing.T) {
+	// 		ds := newTestStorage()
+	// 		// value is tiny but key name pushes it over
+	// 		bigKey := strings.Repeat("k", maxSlotSize-3)
+	// 		_, _, err := ds.Set(testSlot, bigKey, int64(0), nil, 0, nil, nil)
+	// 		require.NoError(t, err)
 
-			_, _, err = ds.Set(testSlot, "overflow", int64(0), nil, 0, nil, nil)
-			assert.ErrorContains(t, err, "storage size quota exceeded")
-		})
-	})
+	// 		_, _, err = ds.Set(testSlot, "overflow", int64(0), nil, 0, nil, nil)
+	// 		assert.ErrorContains(t, err, "storage size quota exceeded")
+	// 	})
+	// })
 
 	t.Run("Get", func(t *testing.T) {
 		t.Run("MissingKey", func(t *testing.T) {

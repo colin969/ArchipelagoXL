@@ -432,7 +432,6 @@ func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[Team
 	for ts := range affectedSlots {
 		key := fmt.Sprintf("_read_hints_%d_%d", ts.Team, ts.Slot)
 		val, _ := s.state.DataStorage.Get(key)
-		log.Printf("hints changed: %v", val)
 		clients := s.state.DataStorage.GetNotifyClients(key)
 		if len(clients) == 0 {
 			continue
@@ -441,8 +440,6 @@ func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[Team
 			Key:   key,
 			Value: val,
 		}
-		testOut, _ := json.Marshal(reply)
-		log.Printf("hints changed: %s", testOut)
 		s.submitOrdered(func() {
 			for _, c := range clients {
 				wsjson.Write(ctx, c.clientConn, []any{reply})
@@ -1574,7 +1571,6 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 }
 
 func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, cmd MessageType, raw json.RawMessage) error {
-	log.Printf("incoming: %v", raw)
 	// Shovel logs to any debug listeners
 	if connState.authenticated && s.debugTap != nil && s.debugTap.HasListeners(connState.registeredClient.Slot) {
 		if raw, err := json.Marshal(raw); err == nil {
@@ -1598,6 +1594,8 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return s.handleConnectUpdate(ctx, connState, raw)
 		case MessageTypeSay:
 			return s.handleSay(ctx, connState, raw)
+		case MessageTypeSync:
+			return s.handleSync(ctx, connState, raw)
 		case MessageTypeLocationScouts:
 			return s.handleLocationScouts(ctx, connState, raw)
 		case MessageTypeLocationChecks:
@@ -1628,6 +1626,10 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 			return nil
 		}
 	}
+}
+
+func (s *ApxRoom) handleSync(ctx context.Context, connState *connectionState, _ json.RawMessage) error {
+	return s.SyncReceivedItems(ctx, connState.registeredClient, connState.registeredClient.GetItemsHandling())
 }
 
 func (s *ApxRoom) handleLocationScouts(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
@@ -1786,6 +1788,15 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 	}
 
 	if len(newHints) > 0 {
+		affectedSlots := make(map[TeamSlot]struct{})
+
+		for _, hint := range newHints {
+			affectedSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
+			affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
+		}
+
+		s.notifyHintsChanged(ctx, affectedSlots)
+
 		var msgs []PrintJsonMessage
 		for _, hint := range newHints {
 			msgs = append(msgs, formatHintMessage(hint))
@@ -2366,7 +2377,6 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 			opts.hintCost = n
 		}
 	}
-	opts.hintCost = 0
 	if v, ok := raw["location_check_points"]; ok {
 		if n, ok := toInt(v); ok {
 			opts.locationCheckPoints = n
