@@ -1611,6 +1611,8 @@ func (s *ApxRoom) buildRoomInfoFromState() {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
 
+	games = append(games, "Archipelago")
+
 	s.roomInfo.Store(RoomInfoMessage{
 		Version: NetworkVersion{
 			Major: IntOrString(s.state.Version.Major),
@@ -1768,7 +1770,7 @@ func (s *ApxRoom) handleLocationScouts(ctx context.Context, connState *connectio
 	newHints := make([]*Hint, 0)
 	existingHints := make([]*Hint, 0)
 
-	replyLocs := make([]*NetworkItem, len(msg.Locations))
+	replyLocs := make([]*NetworkItem, 0, len(msg.Locations))
 	for _, locId := range msg.Locations {
 		loc, ok := s.state.Locations[TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}][locId]
 		if !ok {
@@ -2290,9 +2292,7 @@ func convertMultiDataToState(md *multidata.MultiData) (*ApState, error) {
 	slotData := make(map[TeamSlot]map[string]any, len(md.SlotData))
 	for slot, data := range md.SlotData {
 		dataCopy := make(map[string]any, len(data))
-		for k, v := range data {
-			dataCopy[k] = v
-		}
+		maps.Copy(dataCopy, data)
 		slotData[TeamSlot{Team: 0, Slot: slot}] = dataCopy
 	}
 

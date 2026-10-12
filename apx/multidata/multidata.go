@@ -647,7 +647,7 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 		}
 		m := make(map[string]any, len(*inner))
 		for _, kv := range *inner {
-			m[fmt.Sprint(kv.Key)] = kv.Value
+			m[fmt.Sprint(kv.Key)] = pickleToGo(kv.Value)
 		}
 		return m, nil
 	})
@@ -679,6 +679,43 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 	}
 
 	return md, nil
+}
+
+func pickleToGo(v any) any {
+	switch val := v.(type) {
+	case *types.Dict:
+		m := make(map[string]any, len(*val))
+		for _, kv := range *val {
+			m[fmt.Sprint(kv.Key)] = pickleToGo(kv.Value)
+		}
+		return m
+	case *types.List:
+		out := make([]any, len(*val))
+		for i, e := range *val {
+			out[i] = pickleToGo(e)
+		}
+		return out
+	case *types.Tuple:
+		out := make([]any, len(*val))
+		for i, e := range *val {
+			out[i] = pickleToGo(e)
+		}
+		return out
+	case *types.Set:
+		out := make([]any, 0, len(*val))
+		for e := range *val {
+			out = append(out, pickleToGo(e))
+		}
+		return out
+	case *types.FrozenSet:
+		out := make([]any, 0, len(*val))
+		for _, e := range *val {
+			out = append(out, pickleToGo(e))
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func ParseMultidata(data []byte) (*MultiData, error) {

@@ -373,7 +373,7 @@ func (s *ApxRoom) handlePlayersCommand(ctx context.Context, connState *connectio
 	numSlotsConnected := len(s.connections.clients)
 	s.connections.mu.RUnlock()
 
-	playerNames := make([]string, len(s.state.SlotInfo))
+	playerNames := make([]string, 0, len(s.state.SlotInfo))
 	for _, ts := range s.state.SlotInfo {
 		if ts.Type == SlotTypePlayer {
 			playerNames = append(playerNames, ts.Name)
@@ -440,7 +440,7 @@ func (s *ApxRoom) handleAdminReleaseCommand(ctx context.Context, connState *conn
 		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
 	})
 
-	locIds := make([]int64, len(s.state.Locations[TeamSlot{slotInfo.Team, slotInfo.Slot}]))
+	locIds := make([]int64, 0, len(s.state.Locations[TeamSlot{slotInfo.Team, slotInfo.Slot}]))
 	for locId := range s.state.Locations[TeamSlot{slotInfo.Team, slotInfo.Slot}] {
 		locIds = append(locIds, locId)
 	}
