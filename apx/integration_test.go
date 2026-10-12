@@ -988,3 +988,66 @@ func TestClient_StatusUpdate_Goal_Release(t *testing.T) {
 	missingAfter := room.apx.state.Checks.GetMissing(ts)
 	assert.Empty(t, missingAfter, "all locations should be checked after release")
 }
+
+func TestClient_AdminLogin_Release(t *testing.T) {
+	rm := newTestRoomManager(t)
+	room := startRoomFromFile(t, rm, "./testdata/small.archipelago")
+	room.apx.state.ServerOptions.releaseMode = PermissionDisabled
+
+	// Set admin password
+	adminPass := "12345"
+	room.apx.state.ServerOptions.mu.Lock()
+	room.apx.state.ServerOptions.adminPassword = adminPass
+	room.apx.state.ServerOptions.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv := httptest.NewServer(room.normalHandler)
+	t.Cleanup(srv.Close)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+
+	reader := newExpectedMessageReader(ctx, conn, t)
+	_ = reader.readExpectedMessage("RoomInfo", t)
+
+	err = wsjson.Write(ctx, conn, []any{ConnectMessage{
+		Game:          "Hollow Knight",
+		Name:          "Player",
+		UUID:          StringOrBigInt("1234"),
+		Version:       NetworkVersion{0, 7, 0},
+		ItemsHandling: new(7),
+	}})
+	require.NoError(t, err)
+	_ = reader.readExpectedMessage("Connected", t)
+	_ = reader.readExpectedMessage("ReceivedItems", t)
+	reader.discardFor(100 * time.Millisecond)
+
+	ts := TeamSlot{0, 1}
+	missingBefore := room.apx.state.Checks.GetMissing(ts)
+	require.NotEmpty(t, missingBefore, "need unchecked locations to release")
+
+	// Correct password
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!admin login " + adminPass}})
+	require.NoError(t, err)
+	raw := reader.readUntil("PrintJSON", t)
+	assert.Contains(t, string(raw), "successful")
+
+	// Admin release Player
+	err = wsjson.Write(ctx, conn, []any{SayMessage{Text: "!admin release Player"}})
+	require.NoError(t, err)
+
+	// Should receive ReceivedItems for the released locations
+	raw = reader.readUntil("ReceivedItems", t)
+	var recvItems ReceivedItemsMessage
+	err = json.Unmarshal(raw, &recvItems)
+	require.NoError(t, err)
+	assert.NotEmpty(t, recvItems.Items, "admin release should send items")
+
+	reader.discardFor(200 * time.Millisecond)
+	missingAfter := room.apx.state.Checks.GetMissing(ts)
+	assert.Empty(t, missingAfter, "all locations should be checked after admin release")
+}

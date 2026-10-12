@@ -8,10 +8,12 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
+type chatHandler func(ctx context.Context, connState *connectionState, args string) error
+
 type chatCommand struct {
 	name        string
 	description string
-	handler     func(ctx context.Context, connState *connectionState, args string) error
+	handler     chatHandler
 }
 
 type chatCommandGroup struct {
@@ -74,6 +76,7 @@ func (r *chatCommandRouter) Handle(ctx context.Context, connState *connectionSta
 	for _, group := range r.groups {
 		if rest == group.prefix || strings.HasPrefix(rest, group.prefix+" ") {
 			sub := strings.TrimSpace(strings.TrimPrefix(rest, group.prefix))
+			sub = strings.TrimPrefix(sub, "/") // Mostly for !admin compat with python multiserver, e.g !admin release and !admin /release
 			for _, cmd := range group.commands {
 				if sub == cmd.name || strings.HasPrefix(sub, cmd.name+" ") {
 					args := strings.TrimSpace(strings.TrimPrefix(sub, cmd.name))
@@ -133,6 +136,28 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 			handler:     s.handlePlayersCommand,
 		},
 	)
+
+	r.AddGroup(&chatCommandGroup{
+		prefix:      "admin",
+		description: "Admin commands (must be !admin login <password> first)",
+		commands: []chatCommand{
+			{
+				name:        "login",
+				description: "Login with password",
+				handler:     s.handleAdminLoginCommand,
+			},
+			{
+				name:        "logout",
+				description: "Logout",
+				handler:     handleAuthedCommand(s.handleAdminLogoutCommand),
+			},
+			{
+				name:        "release",
+				description: "Release a players items",
+				handler:     handleAuthedCommand(s.handleAdminReleaseCommand),
+			},
+		},
+	})
 
 	r.AddGroup(&chatCommandGroup{
 		prefix:      "apx",
@@ -361,4 +386,79 @@ func (s *ApxRoom) handlePlayersCommand(ctx context.Context, connState *connectio
 	})
 
 	return nil
+}
+
+func (s *ApxRoom) handleAdminLoginCommand(ctx context.Context, connState *connectionState, args string) error {
+	authed := connState.adminAuthed.Load()
+	if authed {
+		text := "You are already authenticated as admin"
+		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+		})
+		return nil
+	}
+
+	allowed := s.state.ServerOptions.AdminPasswordCheck(&args)
+	if !allowed {
+		text := "Entered password was incorrect, or there is none set"
+		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+		})
+		return nil
+	}
+
+	connState.adminAuthed.Store(true)
+	text := "Login successful. You can now issue server side commands."
+	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+	})
+	return nil
+}
+
+func (s *ApxRoom) handleAdminLogoutCommand(ctx context.Context, connState *connectionState, args string) error {
+	connState.adminAuthed.Store(false)
+	text := "Logout successful. You can no longer issue server side commands."
+	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+	})
+
+	return nil
+}
+
+func (s *ApxRoom) handleAdminReleaseCommand(ctx context.Context, connState *connectionState, args string) error {
+	slotInfo, ok := s.state.NameToSlot[args]
+	if !ok {
+		text := fmt.Sprintf("No player found for name '%s'", args)
+		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+		})
+		return nil
+	}
+
+	text := fmt.Sprintf("Releasing player '%s' (slot %d)", args, slotInfo.Slot)
+	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+	})
+
+	locIds := make([]int64, len(s.state.Locations[TeamSlot{slotInfo.Team, slotInfo.Slot}]))
+	for locId := range s.state.Locations[TeamSlot{slotInfo.Team, slotInfo.Slot}] {
+		locIds = append(locIds, locId)
+	}
+	s.RegisterChecks(context.Background(), TeamSlot{slotInfo.Team, slotInfo.Slot}, locIds)
+	return nil
+}
+
+func handleAuthedCommand(handler chatHandler) chatHandler {
+	return func(ctx context.Context, connState *connectionState, args string) error {
+		authed := connState.adminAuthed.Load()
+		if !authed {
+			text := "You must first login using !admin login <password>"
+			wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+				formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+			})
+			return nil
+		}
+
+		return handler(ctx, connState, args)
+	}
 }

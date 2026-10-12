@@ -243,6 +243,7 @@ type SphereLocs []SphereLocGroup
 type ServerOptions struct {
 	mu                  sync.RWMutex
 	password            string     // "password" - default ""
+	adminPassword       string     // "server_password" - default ""
 	hintCost            int        // "hint_cost" - default 10
 	locationCheckPoints int        // "location_check_points" - default 1
 	releaseMode         Permission // "release_mode" - default "auto"
@@ -293,6 +294,18 @@ func (so *ServerOptions) PasswordCheck(password *string) bool {
 		return false
 	}
 	return so.password == *password
+}
+
+func (so *ServerOptions) AdminPasswordCheck(password *string) bool {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	if so.adminPassword == "" {
+		return false
+	}
+	if password == nil {
+		return false
+	}
+	return so.adminPassword == *password
 }
 
 type TeamSlot struct {
@@ -1387,6 +1400,7 @@ type connectionState struct {
 	prevDatapackageGamesReq string
 	remoteAddr              string
 	fromReducedPort         bool
+	adminAuthed             atomic.Bool
 }
 
 func (cs *connectionState) SendMessage(ctx context.Context, msg []any) error {
