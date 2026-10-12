@@ -212,6 +212,16 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("invalid ConnectUpdate arguments: %v", err), s.lokiLogger, connState.slotName)
 	}
 
+	if msg.ItemsHandling != nil && *msg.ItemsHandling != connState.registeredClient.GetItemsHandling() {
+		// Items handling changed, clean slate for sent items?
+		connState.registeredClient.SetItemsHandling(*msg.ItemsHandling)
+		if *msg.ItemsHandling != ItemsHandlingNone {
+			s.SyncReceivedItems(ctx, connState.registeredClient, *msg.ItemsHandling)
+		} else {
+			connState.registeredClient.sendIndex.Store(0)
+		}
+	}
+
 	s.connections.UpdateTags(connState.registeredClient, msg.Tags)
 
 	// TODO: Implement Connect Update properly
