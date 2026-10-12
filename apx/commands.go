@@ -280,7 +280,8 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 	points := s.state.GetSlotRemainingPoints(teamSlot)
 	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), *itemID, &s.state.SphereLocs, cost, points)
 
-	if len(hints) == 0 {
+	// Had points to spend, never found a hint
+	if (cost <= 0 || points >= cost) && len(hints) == 0 {
 		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
 			fmt.Sprintf("No locations found containing %q", itemName))
 		return nil
@@ -320,8 +321,28 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 		}
 	}
 
+	if cost > 0 && points < cost {
+		text := fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points)
+		msgs = append(msgs, formatGenericMessage(&client.Team, &client.Slot, "CommandResult", text))
+	} else if len(newHints) == 0 {
+		text := fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points)
+		msgs = append(msgs, formatGenericMessage(&client.Team, &client.Slot, "CommandResult", text))
+	}
+
 	if len(msgs) > 0 {
 		s.broadcastPrintJson(ctx, msgs)
+	}
+
+	if cost > 0 && points < cost {
+		text := fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points)
+		wsjson.Write(ctx, client.clientConn, []PrintJsonMessage{
+			formatGenericMessage(&client.Team, &client.Slot, "CommandResult", text),
+		})
+	} else if len(newHints) == 0 {
+		text := "No more copies of this item left to find."
+		wsjson.Write(ctx, client.clientConn, []PrintJsonMessage{
+			formatGenericMessage(&client.Team, &client.Slot, "CommandResult", text),
+		})
 	}
 	return nil
 }

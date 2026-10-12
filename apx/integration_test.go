@@ -43,7 +43,7 @@ func TestClient_RoomInfo(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, room.apx.state.Seed, roomInfo.SeedName)
-	assert.Len(t, roomInfo.Games, 1)
+	assert.Len(t, roomInfo.Games, 2)
 	assert.Contains(t, roomInfo.Tags, "AP")
 	assert.NotNil(t, roomInfo.Permissions)
 	assert.Len(t, roomInfo.DatapackageChecksums, 2)
