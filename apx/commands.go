@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/coder/websocket/wsjson"
 )
 
 type chatCommand struct {
@@ -122,6 +124,13 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 			name:        "release",
 			description: "Release all remaining items from your game",
 			handler:     s.handleReleaseCommand,
+		},
+	)
+	r.AddTopLevel(
+		chatCommand{
+			name:        "players",
+			description: "List all players in the room",
+			handler:     s.handlePlayersCommand,
 		},
 	)
 
@@ -330,6 +339,26 @@ func (s *ApxRoom) handleReleaseCommand(ctx context.Context, connState *connectio
 		s.ReleasePlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
 		return nil
 	}
+
+	return nil
+}
+
+func (s *ApxRoom) handlePlayersCommand(ctx context.Context, connState *connectionState, args string) error {
+	s.connections.mu.RLock()
+	numSlotsConnected := len(s.connections.clients)
+	s.connections.mu.RUnlock()
+
+	playerNames := make([]string, len(s.state.SlotInfo))
+	for _, ts := range s.state.SlotInfo {
+		if ts.Type == SlotTypePlayer {
+			playerNames = append(playerNames, ts.Name)
+		}
+	}
+
+	text := fmt.Sprintf("%d players of %d connected: %s", numSlotsConnected, len(playerNames), strings.Join(playerNames, ", "))
+	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
+	})
 
 	return nil
 }
