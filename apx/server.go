@@ -2509,6 +2509,11 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 			opts.password = s
 		}
 	}
+	if v, ok := raw["server_password"]; ok {
+		if s, ok := v.(string); ok {
+			opts.adminPassword = s
+		}
+	}
 	if v, ok := raw["hint_cost"]; ok {
 		if n, ok := toInt(v); ok {
 			opts.hintCost = n
