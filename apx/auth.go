@@ -222,9 +222,9 @@ func (s ApxRoom) handleConnectUpdate(ctx context.Context, connState *connectionS
 		}
 	}
 
-	s.connections.UpdateTags(connState.registeredClient, msg.Tags)
-
-	// TODO: Implement Connect Update properly
+	if msg.Tags != nil {
+		s.connections.UpdateTags(connState.registeredClient, *msg.Tags)
+	}
 
 	return nil
 }

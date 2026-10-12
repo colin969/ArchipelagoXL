@@ -212,8 +212,8 @@ func (m ConnectionRefusedMessage) MarshalJSON() ([]byte, error) {
 }
 
 type ConnectUpdateMessage struct {
-	ItemsHandling *int     `json:"items_handling"`
-	Tags          []string `json:"tags"`
+	ItemsHandling *int      `json:"items_handling"`
+	Tags          *[]string `json:"tags"`
 }
 
 type ConnectedMessage struct {
