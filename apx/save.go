@@ -22,6 +22,7 @@ type SavedDSEntry struct {
 }
 
 type SaveState struct {
+	SeedName      string                          `json:"seed_name"`
 	Checked       map[string][]int64              `json:"checked"`
 	ReceivedItems map[string][]NetworkItem        `json:"received_items"`
 	Hints         []Hint                          `json:"hints"`
@@ -45,18 +46,20 @@ func (l *SafeSaveHandler) Save(ctx context.Context, roomId string, state *SaveSt
 	return l.handler.Save(ctx, roomId, state)
 }
 
-func (l *SafeSaveHandler) Load(ctx context.Context, roomId string) (*SaveState, error) {
-	// Load doesn't need the lock — only called once at startup before any saves
-	return l.handler.Load(ctx, roomId)
+func (l *SafeSaveHandler) Load(ctx context.Context, roomId string, seedName string) (*SaveState, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.handler.Load(ctx, roomId, seedName)
 }
 
 type SaveStateHandler interface {
 	Save(ctx context.Context, roomId string, state *SaveState) error
-	Load(ctx context.Context, roomId string) (*SaveState, error)
+	Load(ctx context.Context, roomId string, seedName string) (*SaveState, error)
 }
 
 func snapshotState(s *ApState) *SaveState {
 	ss := &SaveState{
+		SeedName:      s.Seed,
 		Checked:       make(map[string][]int64),
 		ReceivedItems: make(map[string][]NetworkItem),
 		HintsUsed:     make(map[string]int),
@@ -130,11 +133,11 @@ func newSaveFileHandler(dir string) *SaveFileHandler {
 }
 
 func (f *SaveFileHandler) path(roomId string) string {
-	return filepath.Join(f.Dir, roomId+".apstate.zst")
+	return filepath.Join(f.Dir, roomId+".apxsave")
 }
 
 func (f *SaveFileHandler) Save(_ context.Context, roomId string, ss *SaveState) error {
-	tmp, err := os.CreateTemp(f.Dir, "apstate-*.tmp")
+	tmp, err := os.CreateTemp(f.Dir, "apxsave-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -171,7 +174,7 @@ func (f *SaveFileHandler) Save(_ context.Context, roomId string, ss *SaveState) 
 	return nil
 }
 
-func (f *SaveFileHandler) Load(_ context.Context, roomId string) (*SaveState, error) {
+func (f *SaveFileHandler) Load(_ context.Context, roomId string, seedName string) (*SaveState, error) {
 	file, err := os.Open(f.path(roomId))
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -191,154 +194,63 @@ func (f *SaveFileHandler) Load(_ context.Context, roomId string) (*SaveState, er
 	if err := json.NewDecoder(r).Decode(&ss); err != nil {
 		return nil, err
 	}
+
+	if ss.SeedName != seedName {
+		log.Printf("save file seed mismatch for room %q: got %q, expected %q — deleting", roomId, ss.SeedName, seedName)
+		os.Remove(f.path(roomId))
+		return nil, nil
+	}
+
 	return &ss, nil
 }
 
 // --- Postgres save system ---
 
 type SaveDBHandler struct {
-	DB *pgxpool.Pool
+	pool *pgxpool.Pool
+}
+
+func newSaveDBHandler(pool *pgxpool.Pool) *SaveDBHandler {
+	return &SaveDBHandler{pool: pool}
 }
 
 func (d *SaveDBHandler) Save(ctx context.Context, roomId string, ss *SaveState) error {
-	tx, err := d.DB.Begin(ctx)
+	data, err := json.Marshal(ss)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `
-        INSERT INTO rooms (id, closed_at)
-        VALUES ($1, NOW())
-        ON CONFLICT (id) DO UPDATE SET closed_at = NOW()`,
-		roomId,
+	_, err = d.pool.Exec(ctx, `
+			INSERT INTO saved_rooms (lobby_room_id, state)
+			VALUES ($1, $2)
+			ON CONFLICT (lobby_room_id) DO UPDATE SET state = $2`,
+		roomId, data,
 	)
-	if err != nil {
-		return err
-	}
-
-	for key, ids := range ss.Checked {
-		var team, slot int
-		fmt.Sscanf(key, "%d:%d", &team, &slot)
-		_, err = tx.Exec(ctx, `
-            INSERT INTO slot_checks (room_id, team, slot, checked_locations)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (room_id, team, slot) DO UPDATE SET checked_locations = $4`,
-			roomId, team, slot, ids,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	for _, hint := range ss.Hints {
-		_, err = tx.Exec(ctx, `
-            INSERT INTO hints (room_id, finding_player, receiving_player, location, item, found, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			roomId, hint.FindingPlayer, hint.ReceivingPlayer,
-			hint.Location, hint.Item, hint.Found, hint.Status,
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	for teamStr, slots := range ss.Statuses {
-		var team int
-		fmt.Sscanf(teamStr, "%d", &team)
-		for slot, status := range slots {
-			_, err = tx.Exec(ctx, `
-                INSERT INTO client_statuses (room_id, team, slot, status)
-                VALUES ($1, $2, $3, $4)`,
-				roomId, team, slot, status,
-			)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	dsJSON, err := json.Marshal(ss.DataStorage)
-	if err != nil {
-		return err
-	}
-	_, err = tx.Exec(ctx, `
-        UPDATE rooms SET data_storage = $1 WHERE id = $2`,
-		dsJSON, roomId,
-	)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(ctx)
+	return err
 }
 
-func (d *SaveDBHandler) Load(ctx context.Context, roomId string) (*SaveState, error) {
-	ss := &SaveState{
-		Checked:       make(map[string][]int64),
-		ReceivedItems: make(map[string][]NetworkItem),
-		HintsUsed:     make(map[string]int),
-		Statuses:      make(map[string]map[int]ClientStatus),
-		DataStorage:   make(map[string]SavedDSEntry),
-	}
-
-	var dsJSON []byte
-	err := d.DB.QueryRow(ctx, `SELECT data_storage FROM rooms WHERE id = $1`, roomId).Scan(&dsJSON)
+func (d *SaveDBHandler) Load(ctx context.Context, roomId string, seedName string) (*SaveState, error) {
+	var data []byte
+	err := d.pool.QueryRow(ctx, `SELECT state FROM saved_rooms WHERE lobby_room_id = $1`, roomId).Scan(&data)
 	if err != nil {
 		return nil, nil // room not found
 	}
-	if dsJSON != nil {
-		json.Unmarshal(dsJSON, &ss.DataStorage)
-	}
 
-	rows, err := d.DB.Query(ctx, `SELECT team, slot, checked_locations FROM slot_checks WHERE room_id = $1`, roomId)
-	if err != nil {
+	var ss SaveState
+	if err := json.Unmarshal(data, &ss); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var team, slot int
-		var ids []int64
-		if err := rows.Scan(&team, &slot, &ids); err != nil {
-			return nil, err
+
+	if ss.SeedName != seedName {
+		log.Printf("DB seed mismatch for room %q: got %q, expected %q — deleting", roomId, ss.SeedName, seedName)
+		_, err := d.pool.Exec(ctx, `DELETE FROM saved_rooms WHERE lobby_room_id = $1`, roomId)
+		if err != nil {
+			log.Printf("failed to delete room %q after seed mismatch: %v", roomId, err)
 		}
-		ss.Checked[fmt.Sprintf("%d:%d", team, slot)] = ids
+		return nil, nil
 	}
 
-	hintRows, err := d.DB.Query(ctx, `
-        SELECT finding_player, receiving_player, location, item, found, status
-        FROM hints WHERE room_id = $1`, roomId)
-	if err != nil {
-		return nil, err
-	}
-	defer hintRows.Close()
-	for hintRows.Next() {
-		var h Hint
-		if err := hintRows.Scan(&h.FindingPlayer, &h.ReceivingPlayer, &h.Location, &h.Item, &h.Found, &h.Status); err != nil {
-			return nil, err
-		}
-		ss.Hints = append(ss.Hints, h)
-	}
-
-	statusRows, err := d.DB.Query(ctx, `SELECT team, slot, status FROM client_statuses WHERE room_id = $1`, roomId)
-	if err != nil {
-		return nil, err
-	}
-	defer statusRows.Close()
-	for statusRows.Next() {
-		var team, slot int
-		var status ClientStatus
-		if err := statusRows.Scan(&team, &slot, &status); err != nil {
-			return nil, err
-		}
-		key := fmt.Sprintf("%d", team)
-		if ss.Statuses[key] == nil {
-			ss.Statuses[key] = make(map[int]ClientStatus)
-		}
-		ss.Statuses[key][slot] = status
-	}
-
-	return ss, nil
+	return &ss, nil
 }
 
 // --- ApxRoom impls ---
@@ -346,14 +258,6 @@ func (d *SaveDBHandler) Load(ctx context.Context, roomId string) (*SaveState, er
 func (s *ApxRoom) Persist(ctx context.Context) error {
 	ss := snapshotState(s.state)
 	return s.saveHandler.Save(ctx, s.lobbyRoomId, ss)
-}
-
-func (s *ApxRoom) RestoreFrom(ctx context.Context) error {
-	ss, err := s.saveHandler.Load(ctx, s.lobbyRoomId)
-	if err != nil || ss == nil {
-		return err
-	}
-	return applySnapshot(s.state, ss)
 }
 
 // --- Helpers and stuff ---

@@ -8,6 +8,7 @@ import (
 
 func makeTestSaveState() *SaveState {
 	return &SaveState{
+		SeedName: "test-seed",
 		Checked: map[string][]int64{
 			"0:1": {100, 200, 300},
 			"0:2": {400, 500},
@@ -52,167 +53,184 @@ func makeTestSaveState() *SaveState {
 	}
 }
 
-func TestFileSaveRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	handler := &SaveFileHandler{Dir: dir}
-	ctx := context.Background()
-	roomId := "test-room"
+func TestSave(t *testing.T) {
+	t.Run("RoundTrip", func(t *testing.T) {
+		dir := t.TempDir()
+		handler := &SaveFileHandler{Dir: dir}
+		ctx := context.Background()
+		roomId := "test-room"
 
-	original := makeTestSaveState()
+		original := makeTestSaveState()
 
-	if err := handler.Save(ctx, roomId, original); err != nil {
-		t.Fatalf("Save failed: %v", err)
-	}
-
-	// Verify file exists
-	if _, err := os.Stat(handler.path(roomId)); err != nil {
-		t.Fatalf("save file not found: %v", err)
-	}
-
-	loaded, err := handler.Load(ctx, roomId)
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-	if loaded == nil {
-		t.Fatal("Load returned nil")
-	}
-
-	assertSaveStateEqual(t, original, loaded)
-}
-
-func TestFileLoadMissing(t *testing.T) {
-	handler := &SaveFileHandler{Dir: t.TempDir()}
-	ss, err := handler.Load(context.Background(), "nonexistent")
-	if err != nil {
-		t.Fatalf("expected nil error for missing file, got: %v", err)
-	}
-	if ss != nil {
-		t.Fatal("expected nil SaveState for missing file")
-	}
-}
-
-func TestApplySnapshot(t *testing.T) {
-	ss := makeTestSaveState()
-
-	// Build a minimal ApState to apply into
-	locations := map[TeamSlot]map[int64]Location{
-		{0, 1}: {100: {}, 200: {}, 300: {}},
-		{0, 2}: {400: {}, 500: {}},
-	}
-	state := &ApState{
-		Checks:        newChecksState(locations),
-		ReceivedItems: newReceivedItems(),
-		Hints:         newHintsState(),
-		DataStorage:   newDataStorage(),
-		ClientStatuses: &ClientStatuses{
-			status: make(map[int]map[int]ClientStatus),
-		},
-	}
-
-	if err := applySnapshot(state, ss); err != nil {
-		t.Fatalf("applySnapshot failed: %v", err)
-	}
-
-	// Checks
-	for _, id := range []int64{100, 200, 300} {
-		if !state.Checks.IsChecked(TeamSlot{0, 1}, id) {
-			t.Errorf("expected loc %d to be checked for slot 1", id)
+		if err := handler.Save(ctx, roomId, original); err != nil {
+			t.Fatalf("Save failed: %v", err)
 		}
-	}
-	for _, id := range []int64{400, 500} {
-		if !state.Checks.IsChecked(TeamSlot{0, 2}, id) {
-			t.Errorf("expected loc %d to be checked for slot 2", id)
+
+		if _, err := os.Stat(handler.path(roomId)); err != nil {
+			t.Fatalf("save file not found: %v", err)
 		}
-	}
 
-	// ReceivedItems
-	items := state.ReceivedItems.Get(ReceivedItemsKey{0, 1, true})
-	if len(items) != 2 {
-		t.Errorf("expected 2 received items, got %d", len(items))
-	}
+		loaded, err := handler.Load(ctx, roomId, "test-seed")
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+		if loaded == nil {
+			t.Fatal("Load returned nil")
+		}
 
-	// Hints
-	state.Hints.mu.RLock()
-	if len(state.Hints.hints) != 1 {
-		t.Errorf("expected 1 hint, got %d", len(state.Hints.hints))
-	}
-	if state.Hints.hints[0].FindingPlayer != 2 {
-		t.Errorf("expected finding player 2, got %d", state.Hints.hints[0].FindingPlayer)
-	}
-	state.Hints.mu.RUnlock()
+		assertSaveStateEqual(t, original, loaded)
+	})
 
-	// HintsUsed
-	if used := state.Hints.GetHintsUsed(TeamSlot{0, 1}); used != 2 {
-		t.Errorf("expected 2 hints used for slot 1, got %d", used)
-	}
+	t.Run("LoadMissing", func(t *testing.T) {
+		handler := &SaveFileHandler{Dir: t.TempDir()}
+		ss, err := handler.Load(context.Background(), "nonexistent", "any-seed")
+		if err != nil {
+			t.Fatalf("expected nil error for missing file, got: %v", err)
+		}
+		if ss != nil {
+			t.Fatal("expected nil SaveState for missing file")
+		}
+	})
 
-	// ClientStatuses
-	if s := state.ClientStatuses.Get(0, 1); s != ClientStatusGoal {
-		t.Errorf("expected ClientStatusGoal for slot 1, got %v", s)
-	}
+	t.Run("SeedMismatch", func(t *testing.T) {
+		dir := t.TempDir()
+		handler := &SaveFileHandler{Dir: dir}
+		ctx := context.Background()
+		roomId := "test-room"
 
-	// DataStorage — int value
-	val, ok := state.DataStorage.Get("my_key")
-	if !ok {
-		t.Error("expected my_key in DataStorage")
-	}
-	if val != int64(42) {
-		t.Errorf("expected int64(42), got %T(%v)", val, val)
-	}
+		original := makeTestSaveState() // SeedName = "test-seed"
+		if err := handler.Save(ctx, roomId, original); err != nil {
+			t.Fatalf("Save failed: %v", err)
+		}
 
-	// DataStorage — keyCount restored
-	state.DataStorage.mu.RLock()
-	if state.DataStorage.keyCount[TeamSlot{0, 1}] != 2 { // my_key + my_map
-		t.Errorf("expected keyCount 2 for slot 1, got %d", state.DataStorage.keyCount[TeamSlot{0, 1}])
-	}
-	state.DataStorage.mu.RUnlock()
+		if _, err := os.Stat(handler.path(roomId)); err != nil {
+			t.Fatalf("save file not found before load: %v", err)
+		}
+
+		loaded, err := handler.Load(ctx, roomId, "different-seed")
+		if err != nil {
+			t.Fatalf("expected nil error on seed mismatch, got: %v", err)
+		}
+		if loaded != nil {
+			t.Fatal("expected nil SaveState on seed mismatch")
+		}
+
+		if _, err := os.Stat(handler.path(roomId)); !os.IsNotExist(err) {
+			t.Fatal("expected save file to be deleted after seed mismatch")
+		}
+	})
+
+	t.Run("ApplySnapshot", func(t *testing.T) {
+		ss := makeTestSaveState()
+
+		locations := map[TeamSlot]map[int64]Location{
+			{0, 1}: {100: {}, 200: {}, 300: {}},
+			{0, 2}: {400: {}, 500: {}},
+		}
+		state := &ApState{
+			Checks:        newChecksState(locations),
+			ReceivedItems: newReceivedItems(),
+			Hints:         newHintsState(),
+			DataStorage:   newDataStorage(),
+			ClientStatuses: &ClientStatuses{
+				status: make(map[int]map[int]ClientStatus),
+			},
+		}
+
+		if err := applySnapshot(state, ss); err != nil {
+			t.Fatalf("applySnapshot failed: %v", err)
+		}
+
+		for _, id := range []int64{100, 200, 300} {
+			if !state.Checks.IsChecked(TeamSlot{0, 1}, id) {
+				t.Errorf("expected loc %d to be checked for slot 1", id)
+			}
+		}
+		for _, id := range []int64{400, 500} {
+			if !state.Checks.IsChecked(TeamSlot{0, 2}, id) {
+				t.Errorf("expected loc %d to be checked for slot 2", id)
+			}
+		}
+
+		items := state.ReceivedItems.Get(ReceivedItemsKey{0, 1, true})
+		if len(items) != 2 {
+			t.Errorf("expected 2 received items, got %d", len(items))
+		}
+
+		state.Hints.mu.RLock()
+		if len(state.Hints.hints) != 1 {
+			t.Errorf("expected 1 hint, got %d", len(state.Hints.hints))
+		}
+		if state.Hints.hints[0].FindingPlayer != 2 {
+			t.Errorf("expected finding player 2, got %d", state.Hints.hints[0].FindingPlayer)
+		}
+		state.Hints.mu.RUnlock()
+
+		if used := state.Hints.GetHintsUsed(TeamSlot{0, 1}); used != 2 {
+			t.Errorf("expected 2 hints used for slot 1, got %d", used)
+		}
+
+		if s := state.ClientStatuses.Get(0, 1); s != ClientStatusGoal {
+			t.Errorf("expected ClientStatusGoal for slot 1, got %v", s)
+		}
+
+		val, ok := state.DataStorage.Get("my_key")
+		if !ok {
+			t.Error("expected my_key in DataStorage")
+		}
+		if val != int64(42) {
+			t.Errorf("expected int64(42), got %T(%v)", val, val)
+		}
+
+		state.DataStorage.mu.RLock()
+		if state.DataStorage.keyCount[TeamSlot{0, 1}] != 2 {
+			t.Errorf("expected keyCount 2 for slot 1, got %d", state.DataStorage.keyCount[TeamSlot{0, 1}])
+		}
+		state.DataStorage.mu.RUnlock()
+	})
+
+	t.Run("SaveApplyRoundTrip", func(t *testing.T) {
+		dir := t.TempDir()
+		handler := &SaveFileHandler{Dir: dir}
+		ctx := context.Background()
+
+		original := makeTestSaveState()
+		if err := handler.Save(ctx, "room", original); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+
+		loaded, err := handler.Load(ctx, "room", "test-seed")
+		if err != nil || loaded == nil {
+			t.Fatalf("Load: %v", err)
+		}
+
+		locations := map[TeamSlot]map[int64]Location{
+			{0, 1}: {100: {}, 200: {}, 300: {}},
+			{0, 2}: {400: {}, 500: {}},
+		}
+		state := &ApState{
+			Checks:        newChecksState(locations),
+			ReceivedItems: newReceivedItems(),
+			Hints:         newHintsState(),
+			DataStorage:   newDataStorage(),
+			ClientStatuses: &ClientStatuses{
+				status: make(map[int]map[int]ClientStatus),
+			},
+		}
+
+		if err := applySnapshot(state, loaded); err != nil {
+			t.Fatalf("applySnapshot: %v", err)
+		}
+
+		if !state.Hints.HintExists(2, 100) {
+			t.Error("hint index not rebuilt: HintExists(2, 100) returned false")
+		}
+	})
 }
-
-func TestFileSaveApplyRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	handler := &SaveFileHandler{Dir: dir}
-	ctx := context.Background()
-
-	original := makeTestSaveState()
-	if err := handler.Save(ctx, "room", original); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	loaded, err := handler.Load(ctx, "room")
-	if err != nil || loaded == nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	locations := map[TeamSlot]map[int64]Location{
-		{0, 1}: {100: {}, 200: {}, 300: {}},
-		{0, 2}: {400: {}, 500: {}},
-	}
-	state := &ApState{
-		Checks:        newChecksState(locations),
-		ReceivedItems: newReceivedItems(),
-		Hints:         newHintsState(),
-		DataStorage:   newDataStorage(),
-		ClientStatuses: &ClientStatuses{
-			status: make(map[int]map[int]ClientStatus),
-		},
-	}
-
-	if err := applySnapshot(state, loaded); err != nil {
-		t.Fatalf("applySnapshot: %v", err)
-	}
-
-	// Spot check: hint index rebuilt correctly
-	if !state.Hints.HintExists(2, 100) {
-		t.Error("hint index not rebuilt: HintExists(2, 100) returned false")
-	}
-}
-
-// --- helpers ---
 
 func assertSaveStateEqual(t *testing.T, want, got *SaveState) {
 	t.Helper()
 
-	// Checked
 	for key, wantIDs := range want.Checked {
 		gotIDs := got.Checked[key]
 		if len(wantIDs) != len(gotIDs) {
@@ -220,7 +238,6 @@ func assertSaveStateEqual(t *testing.T, want, got *SaveState) {
 		}
 	}
 
-	// Hints
 	if len(want.Hints) != len(got.Hints) {
 		t.Errorf("Hints: want %d, got %d", len(want.Hints), len(got.Hints))
 	} else {
@@ -232,14 +249,12 @@ func assertSaveStateEqual(t *testing.T, want, got *SaveState) {
 		}
 	}
 
-	// HintsUsed
 	for key, wantUsed := range want.HintsUsed {
 		if got.HintsUsed[key] != wantUsed {
 			t.Errorf("HintsUsed[%s]: want %d, got %d", key, wantUsed, got.HintsUsed[key])
 		}
 	}
 
-	// Statuses
 	for teamKey, wantSlots := range want.Statuses {
 		for slot, wantStatus := range wantSlots {
 			if got.Statuses[teamKey][slot] != wantStatus {
@@ -248,7 +263,6 @@ func assertSaveStateEqual(t *testing.T, want, got *SaveState) {
 		}
 	}
 
-	// DataStorage keys present
 	for k := range want.DataStorage {
 		if _, ok := got.DataStorage[k]; !ok {
 			t.Errorf("DataStorage missing key %q", k)

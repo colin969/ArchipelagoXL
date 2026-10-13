@@ -6,12 +6,15 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -36,7 +39,29 @@ type Config struct {
 	PerSlotPasswords       bool   `json:"per_slot_passwords"`
 	LokiEndpoint           string `json:"loki_endpoint"`
 	DataPackageStoragePath string `json:"datapackage_storage_path"`
-	DebugMultidata         string `json:"debug_multidata"`
+	SavesPath              string `json:"saves_path"`
+	PostgresURL            string `json:"postgres_url"`
+}
+
+type ApxArgs struct {
+	configFile    string
+	multidataFile string // positional, optional
+}
+
+func parseArgs() ApxArgs {
+	a := ApxArgs{}
+	flag.StringVar(&a.configFile, "config", "config.json", "path to config file")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: apx [options] [multidata-file]\n\n")
+		fmt.Fprintf(os.Stderr, "  multidata-file  optional path to multidata file for running standalone rooms without a db\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+	if flag.NArg() > 0 {
+		a.multidataFile = flag.Arg(0)
+	}
+	return a
 }
 
 func main() {
@@ -49,6 +74,9 @@ func main() {
 // run starts a http.Server for the passed in address
 // with all requests handled by echoServer.
 func run() error {
+	args := parseArgs()
+	standalone := args.multidataFile != ""
+
 	cfg, err := getConfig()
 	if err != nil {
 		return err
@@ -65,7 +93,11 @@ func run() error {
 
 	runProfiler()
 	reg, metrics := initMetrics()
-	roomStore, err := NewRoomStore("./data.sqlite")
+	if standalone {
+		// Disable DB operations in standalone mode
+		cfg.PostgresURL = ""
+	}
+	roomStore, err := NewRoomStore(cfg.PostgresURL)
 	if err != nil {
 		log.Panicf("creating room store: %v", err)
 	}
@@ -74,9 +106,19 @@ func run() error {
 		log.Panicf("starting room manager: %v", err)
 	}
 
-	err = startWsRouter(cfg, rm)
-	if err != nil {
-		log.Panicf("starting ws router: %v", err)
+	if standalone {
+		if cfg.NormalPort == 0 {
+			cfg.NormalPort = 38281
+		}
+		if cfg.ReducedPort == 0 {
+			cfg.ReducedPort = cfg.NormalPort + 1
+		}
+		err = startStandaloneWsRouter(rm, cfg.NormalPort, cfg.ReducedPort)
+	} else {
+		err = startWsRouter(cfg, rm)
+		if err != nil {
+			log.Panicf("starting ws router: %v", err)
+		}
 	}
 
 	s := &http.Server{
@@ -86,12 +128,15 @@ func run() error {
 		WriteTimeout: time.Second * 10,
 	}
 
-	if cfg.LobbyRoomId != "" && cfg.DebugMultidata != "" {
-		md, err := multidata.LoadMultiData(cfg.DebugMultidata)
+	if standalone {
+		base := filepath.Base(args.multidataFile)
+		roomId := strings.TrimSuffix(base, filepath.Ext(base))
+
+		md, err := multidata.LoadMultiData(args.multidataFile)
 		if err != nil {
 			log.Fatal(err)
 		}
-		_, err = rm.startRoomFromMultiData(cfg.LobbyRoomId, md, &cfg.NormalPort, &cfg.ReducedPort,
+		_, err = rm.startRoomFromMultiData(roomId, md, &cfg.NormalPort, &cfg.ReducedPort,
 			false, false, false, 1, true)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)
@@ -181,6 +226,15 @@ func getConfig() (*Config, error) {
 		}
 		cfg.LobbyEnabled = enabled
 	}
+	if v := os.Getenv("SAVES_PATH"); v != "" {
+		cfg.SavesPath = v
+	}
+	if cfg.SavesPath == "" {
+		cfg.SavesPath = "./saves"
+	}
+	if v := os.Getenv("POSTGRES_URL"); v != "" {
+		cfg.PostgresURL = v
+	}
 	if v := os.Getenv("LOBBY_ROOT_URL"); v != "" {
 		cfg.LobbyRootUrl = v
 	}
@@ -216,9 +270,6 @@ func getConfig() (*Config, error) {
 		dpStoragePath = "./data/datapackages/"
 	}
 	cfg.DataPackageStoragePath = dpStoragePath
-	if v := os.Getenv("DEBUG_MULTIDATA"); v != "" {
-		cfg.DebugMultidata = v
-	}
 	cfg.PerSlotPasswords = true
 	if v := os.Getenv("PER_SLOT_PASSWORDS"); v != "" {
 		enabled, err := strconv.ParseBool(v)

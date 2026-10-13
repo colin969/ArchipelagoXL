@@ -1,13 +1,18 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
+	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type RoomStore struct {
-	db *sql.DB
+	pool    *pgxpool.Pool
+	enabled bool
 }
 
 type RoomRecord struct {
@@ -22,73 +27,115 @@ type RoomRecord struct {
 	DeathlinkProbability float64
 }
 
-func NewRoomStore(path string) (*RoomStore, error) {
-	db, err := sql.Open("sqlite3", path)
-	if err != nil {
-		return nil, fmt.Errorf("opening sqlite: %w", err)
+func NewRoomStore(connString string) (*RoomStore, error) {
+	if connString == "" {
+		log.Printf("Room record saving disabled, postgres not configured")
+		return &RoomStore{enabled: false}, nil
 	}
-	err = runMigrations(db)
+
+	pool, err := pgxpool.New(context.Background(), connString)
 	if err != nil {
+		return nil, fmt.Errorf("opening postgres: %w", err)
+	}
+	if err := pool.Ping(context.Background()); err != nil {
+		return nil, fmt.Errorf("connecting to database: %w", err)
+	}
+
+	// migrations use database/sql; adapt the pool rather than opening a second connection
+	db := stdlib.OpenDBFromPool(pool)
+	if err := runMigrations(db); err != nil {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
-	return &RoomStore{db: db}, nil
+
+	return &RoomStore{pool: pool, enabled: true}, nil
+}
+
+func (s *RoomStore) Pool() *pgxpool.Pool {
+	return s.pool
 }
 
 func (s *RoomStore) Disable(lobbyRoomId string) error {
-	_, err := s.db.Exec(`UPDATE rooms SET disabled = 1 WHERE lobby_room_id = ?`, lobbyRoomId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `UPDATE rooms SET disabled = TRUE WHERE lobby_room_id = $1`, lobbyRoomId)
+	return err
+}
+
+func (s *RoomStore) Enable(lobbyRoomId string) error {
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`UPDATE rooms SET disabled = FALSE WHERE lobby_room_id = $1`, lobbyRoomId,
+	)
 	return err
 }
 
 func (s *RoomStore) Save(r RoomRecord) error {
-	_, err := s.db.Exec(`
-			INSERT INTO rooms (lobby_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(lobby_room_id) DO UPDATE SET
-					normal_port        = excluded.normal_port,
-					reduced_port       = excluded.reduced_port,
-					per_slot_passwords = excluded.per_slot_passwords,
-					deathlink_disabled = excluded.deathlink_disabled,
-					reduced_access     = excluded.reduced_access
-	`, r.LobbyRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(), r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `
+        INSERT INTO rooms (lobby_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (lobby_room_id) DO UPDATE SET
+            normal_port        = excluded.normal_port,
+            reduced_port       = excluded.reduced_port,
+            per_slot_passwords = excluded.per_slot_passwords,
+            deathlink_disabled = excluded.deathlink_disabled,
+            reduced_access     = excluded.reduced_access
+    `, r.LobbyRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(), r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess)
 	return err
 }
 
 func (s *RoomStore) Delete(lobbyRoomId string) error {
-	_, err := s.db.Exec(`DELETE FROM rooms WHERE lobby_room_id = ?`, lobbyRoomId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `DELETE FROM rooms WHERE lobby_room_id = $1`, lobbyRoomId)
 	return err
 }
 
-// Deathlink probability
-
 func (s *RoomStore) SaveDeathlinkProbability(lobbyRoomId string, prob float64) error {
-	_, err := s.db.Exec(
-		`UPDATE rooms SET deathlink_probability = ? WHERE lobby_room_id = ?`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`UPDATE rooms SET deathlink_probability = $1 WHERE lobby_room_id = $2`,
 		prob, lobbyRoomId,
 	)
 	return err
 }
 
-// Normal access / Full feed slots
-
 func (s *RoomStore) SetFullFeedSlot(lobbyRoomId string, slotId int) error {
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO room_full_feed (lobby_room_id, slot_id) VALUES (?, ?)`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`INSERT INTO room_full_feed (lobby_room_id, slot_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		lobbyRoomId, slotId,
 	)
 	return err
 }
 
 func (s *RoomStore) DeleteFullFeedSlot(lobbyRoomId string, slotId int) error {
-	_, err := s.db.Exec(
-		`DELETE FROM room_full_feed WHERE lobby_room_id = ? AND slot_id = ?`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`DELETE FROM room_full_feed WHERE lobby_room_id = $1 AND slot_id = $2`,
 		lobbyRoomId, slotId,
 	)
 	return err
 }
 
 func (s *RoomStore) LoadFullFeedSlots(lobbyRoomId string) ([]int, error) {
-	rows, err := s.db.Query(
-		`SELECT slot_id FROM room_full_feed WHERE lobby_room_id = ?`, lobbyRoomId,
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT slot_id FROM room_full_feed WHERE lobby_room_id = $1`, lobbyRoomId,
 	)
 	if err != nil {
 		return nil, err
@@ -106,31 +153,41 @@ func (s *RoomStore) LoadFullFeedSlots(lobbyRoomId string) ([]int, error) {
 }
 
 func (s *RoomStore) DeleteFullFeedSlots(lobbyRoomId string) error {
-	_, err := s.db.Exec(`DELETE FROM room_full_feed WHERE lobby_room_id = ?`, lobbyRoomId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `DELETE FROM room_full_feed WHERE lobby_room_id = $1`, lobbyRoomId)
 	return err
 }
 
-// Slot isolation / bounce exclusions
-
 func (s *RoomStore) AddSlotBounceExclusion(lobbyRoomId string, slotId int) error {
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO room_slot_bounce_exclusions (lobby_room_id, slot_id) VALUES (?, ?)`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`INSERT INTO room_slot_bounce_exclusions (lobby_room_id, slot_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
 		lobbyRoomId, slotId,
 	)
 	return err
 }
 
 func (s *RoomStore) DeleteSlotBounceExclusion(lobbyRoomId string, slotId int) error {
-	_, err := s.db.Exec(
-		`DELETE FROM room_slot_bounce_exclusions WHERE lobby_room_id = ? AND slot_id = ?`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`DELETE FROM room_slot_bounce_exclusions WHERE lobby_room_id = $1 AND slot_id = $2`,
 		lobbyRoomId, slotId,
 	)
 	return err
 }
 
 func (s *RoomStore) LoadSlotBounceExclusions(lobbyRoomId string) ([]int, error) {
-	rows, err := s.db.Query(
-		`SELECT slot_id FROM room_slot_bounce_exclusions WHERE lobby_room_id = ?`, lobbyRoomId,
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT slot_id FROM room_slot_bounce_exclusions WHERE lobby_room_id = $1`, lobbyRoomId,
 	)
 	if err != nil {
 		return nil, err
@@ -148,31 +205,41 @@ func (s *RoomStore) LoadSlotBounceExclusions(lobbyRoomId string) ([]int, error) 
 }
 
 func (s *RoomStore) DeleteSlotBounceExclusions(lobbyRoomId string) error {
-	_, err := s.db.Exec(`DELETE FROM room_slot_bounce_exclusions WHERE lobby_room_id = ?`, lobbyRoomId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `DELETE FROM room_slot_bounce_exclusions WHERE lobby_room_id = $1`, lobbyRoomId)
 	return err
 }
 
-// Bounce tag exclusions
-
 func (s *RoomStore) AddBounceTagExclusion(lobbyRoomId string, slotId int, tag string) error {
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO room_bounce_tag_exclusions (lobby_room_id, slot_id, tag) VALUES (?, ?, ?)`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`INSERT INTO room_bounce_tag_exclusions (lobby_room_id, slot_id, tag) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
 		lobbyRoomId, slotId, tag,
 	)
 	return err
 }
 
 func (s *RoomStore) DeleteBounceTagExclusion(lobbyRoomId string, slotId int, tag string) error {
-	_, err := s.db.Exec(
-		`DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = ? AND slot_id = ? AND tag = ?`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = $1 AND slot_id = $2 AND tag = $3`,
 		lobbyRoomId, slotId, tag,
 	)
 	return err
 }
 
 func (s *RoomStore) LoadBounceTagExclusions(lobbyRoomId string) (map[int][]string, error) {
-	rows, err := s.db.Query(
-		`SELECT slot_id, tag FROM room_bounce_tag_exclusions WHERE lobby_room_id = ?`, lobbyRoomId,
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT slot_id, tag FROM room_bounce_tag_exclusions WHERE lobby_room_id = $1`, lobbyRoomId,
 	)
 	if err != nil {
 		return nil, err
@@ -191,39 +258,52 @@ func (s *RoomStore) LoadBounceTagExclusions(lobbyRoomId string) (map[int][]strin
 }
 
 func (s *RoomStore) DeleteBounceTagExclusions(lobbyRoomId string) error {
-	_, err := s.db.Exec(`DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = ?`, lobbyRoomId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = $1`, lobbyRoomId)
 	return err
 }
 
 func (s *RoomStore) DeleteBounceTagExclusionsForTag(lobbyRoomId string, tag string) error {
-	_, err := s.db.Exec(
-		`DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = ? AND tag = ?`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`DELETE FROM room_bounce_tag_exclusions WHERE lobby_room_id = $1 AND tag = $2`,
 		lobbyRoomId, tag,
 	)
 	return err
 }
 
-// Alt connect names
-
 func (s *RoomStore) AddAltConnectName(lobbyRoomId, altName, slotName string) error {
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO room_alt_connect_names (lobby_room_id, alt_name, slot_name) VALUES (?, ?, ?)`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`INSERT INTO room_alt_connect_names (lobby_room_id, alt_name, slot_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
 		lobbyRoomId, altName, slotName,
 	)
 	return err
 }
 
 func (s *RoomStore) DeleteAltConnectName(lobbyRoomId, altName string) error {
-	_, err := s.db.Exec(
-		`DELETE FROM room_alt_connect_names WHERE lobby_room_id = ? AND alt_name = ?`,
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(),
+		`DELETE FROM room_alt_connect_names WHERE lobby_room_id = $1 AND alt_name = $2`,
 		lobbyRoomId, altName,
 	)
 	return err
 }
 
 func (s *RoomStore) LoadAltConnectNamesBySlot(lobbyRoomId, slotName string) ([]string, error) {
-	rows, err := s.db.Query(
-		`SELECT alt_name FROM room_alt_connect_names WHERE lobby_room_id = ? AND slot_name = ?`,
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT alt_name FROM room_alt_connect_names WHERE lobby_room_id = $1 AND slot_name = $2`,
 		lobbyRoomId, slotName,
 	)
 	if err != nil {
@@ -242,8 +322,11 @@ func (s *RoomStore) LoadAltConnectNamesBySlot(lobbyRoomId, slotName string) ([]s
 }
 
 func (s *RoomStore) LoadAltConnectNames(lobbyRoomId string) (map[string]string, error) {
-	rows, err := s.db.Query(
-		`SELECT alt_name, slot_name FROM room_alt_connect_names WHERE lobby_room_id = ?`, lobbyRoomId,
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT alt_name, slot_name FROM room_alt_connect_names WHERE lobby_room_id = $1`, lobbyRoomId,
 	)
 	if err != nil {
 		return nil, err
@@ -261,24 +344,31 @@ func (s *RoomStore) LoadAltConnectNames(lobbyRoomId string) (map[string]string, 
 }
 
 func (s *RoomStore) DeleteAltConnectNames(lobbyRoomId string) error {
-	_, err := s.db.Exec(`DELETE FROM room_alt_connect_names WHERE lobby_room_id = ?`, lobbyRoomId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `DELETE FROM room_alt_connect_names WHERE lobby_room_id = $1`, lobbyRoomId)
 	return err
 }
 
-// Deaths
-
 func (s *RoomStore) IncrementSlotDeathCount(lobbyRoomId string, slotId int) error {
-	_, err := s.db.Exec(`
-			INSERT INTO room_slot_deaths (lobby_room_id, slot_id, count)
-			VALUES (?, ?, 1)
-			ON CONFLICT(lobby_room_id, slot_id) DO UPDATE SET count = count + 1
-	`, lobbyRoomId, slotId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `
+        INSERT INTO room_slot_deaths (lobby_room_id, slot_id, count)
+        VALUES ($1, $2, 1)
+        ON CONFLICT (lobby_room_id, slot_id) DO UPDATE SET count = room_slot_deaths.count + 1
+    `, lobbyRoomId, slotId)
 	return err
 }
 
 func (s *RoomStore) LoadSlotDeaths(lobbyRoomId string) (map[int]int, error) {
-	rows, err := s.db.Query(
-		`SELECT slot_id, count FROM room_slot_deaths WHERE lobby_room_id = ?`, lobbyRoomId,
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT slot_id, count FROM room_slot_deaths WHERE lobby_room_id = $1`, lobbyRoomId,
 	)
 	if err != nil {
 		return nil, err
@@ -296,33 +386,44 @@ func (s *RoomStore) LoadSlotDeaths(lobbyRoomId string) (map[int]int, error) {
 }
 
 func (s *RoomStore) DeleteSlotDeaths(lobbyRoomId string) error {
-	_, err := s.db.Exec(`DELETE FROM room_slot_deaths WHERE lobby_room_id = ?`, lobbyRoomId)
+	if !s.enabled {
+		return nil
+	}
+	_, err := s.pool.Exec(context.Background(), `DELETE FROM room_slot_deaths WHERE lobby_room_id = $1`, lobbyRoomId)
 	return err
 }
 
 func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
-	var r RoomRecord
-	var ts int64
-	var perSlotPasswords, deathlinkDisabled, reducedAccess int
-	err := s.db.QueryRow(
-		`SELECT lobby_room_id, normal_port, reduced_port, created_at, disabled, per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability FROM rooms WHERE lobby_room_id = ?`,
-		lobbyRoomId,
-	).Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts, &r.Disabled, &perSlotPasswords, &deathlinkDisabled, &reducedAccess, &r.DeathlinkProbability)
-	if err == sql.ErrNoRows {
+	if !s.enabled {
 		return nil, nil
 	}
+	var r RoomRecord
+	var ts int64
+	err := s.pool.QueryRow(context.Background(), `
+        SELECT lobby_room_id, normal_port, reduced_port, created_at, disabled,
+               per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability
+        FROM rooms WHERE lobby_room_id = $1`,
+		lobbyRoomId,
+	).Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts, &r.Disabled,
+		&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability)
 	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return nil, nil
+		}
 		return nil, err
 	}
 	r.CreatedAt = time.Unix(ts, 0)
-	r.PerSlotPasswords = perSlotPasswords == 1
-	r.DeathlinkDisabled = deathlinkDisabled == 1
-	r.ReducedAccess = reducedAccess == 1
 	return &r, nil
 }
 
 func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
-	rows, err := s.db.Query(`SELECT lobby_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability FROM rooms WHERE disabled = 0`)
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(), `
+        SELECT lobby_room_id, normal_port, reduced_port, created_at,
+               per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability
+        FROM rooms WHERE disabled = FALSE`)
 	if err != nil {
 		return nil, err
 	}
@@ -332,14 +433,11 @@ func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 	for rows.Next() {
 		var r RoomRecord
 		var ts int64
-		var perSlotPasswords, deathlinkDisabled, reducedAccess int
-		if err := rows.Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts, &perSlotPasswords, &deathlinkDisabled, &reducedAccess, &r.DeathlinkProbability); err != nil {
+		if err := rows.Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts,
+			&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.Unix(ts, 0)
-		r.PerSlotPasswords = perSlotPasswords == 1
-		r.DeathlinkDisabled = deathlinkDisabled == 1
-		r.ReducedAccess = reducedAccess == 1
 		records = append(records, r)
 	}
 	return records, rows.Err()

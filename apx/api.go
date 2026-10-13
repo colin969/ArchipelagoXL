@@ -339,6 +339,51 @@ func startWsRouter(cfg *Config, rm *RoomManager) error {
 	return nil
 }
 
+func startStandaloneWsRouter(rm *RoomManager, normalPort int, reducedPort int) error {
+	makeHandler := func(targetId int) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h, ok := rm.registry.GetHandlerById(targetId)
+			if !ok {
+				http.Error(w, "room not found", http.StatusNotFound)
+				return
+			}
+			h.ServeHTTP(w, r)
+		})
+	}
+
+	startOne := func(port int, reduced bool) error {
+		addr := fmt.Sprintf(":%d", port)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("standalone ws listen on %s: %w", addr, err)
+		}
+		var listener net.Listener = ln
+		if rm.tlsCfg != nil {
+			listener = &httpDropper{listener: ln, tlsCfg: rm.tlsCfg}
+		}
+		label := "normal"
+		if reduced {
+			label = "reduced"
+		}
+		log.Printf("Standalone WS (%s) listening on :%d", label, port)
+		server := &http.Server{
+			Handler:  makeHandler(port),
+			ErrorLog: log.New(io.Discard, "", 0),
+		}
+		go func() {
+			if err := server.Serve(listener); err != nil {
+				log.Printf("standalone ws (%s) error: %v", label, err)
+			}
+		}()
+		return nil
+	}
+
+	if err := startOne(normalPort, false); err != nil {
+		return err
+	}
+	return startOne(reducedPort, true)
+}
+
 // Only works on room routes
 func (rm *RoomManager) logRequestMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -570,7 +615,7 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 
 	// Re-enable in DB if it was disabled
 	if record.Disabled {
-		if _, err := rm.store.db.Exec(`UPDATE rooms SET disabled = 0 WHERE lobby_room_id = ?`, roomId); err != nil {
+		if err := rm.store.Enable(roomId); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]string{"error": "failed to re-enable room"})
 			return
@@ -879,8 +924,12 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 	apx.buildRoomInfoFromState()
 
 	if save != false {
-		apx.saveHandler = newSafeSaveHandler(newSaveFileHandler("./saves"))
-		ls, err := apx.saveHandler.Load(context.Background(), apx.lobbyRoomId)
+		if rm.config.PostgresURL != "" {
+			apx.saveHandler = newSafeSaveHandler(newSaveDBHandler(rm.store.Pool()))
+		} else {
+			apx.saveHandler = newSafeSaveHandler(newSaveFileHandler(rm.config.SavesPath))
+		}
+		ls, err := apx.saveHandler.Load(context.Background(), apx.lobbyRoomId, apx.state.Seed)
 		if err != nil {
 			log.Printf("Failed to load save state for room %s: %v", apx.lobbyRoomId, err)
 		} else {
