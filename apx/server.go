@@ -523,16 +523,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 
 	// Send items out to relevant clients
 	if len(newItems) > 0 {
-		s.state.ReceivedItems.mu.Lock()
-		for _, item := range newItems {
-			keyAll := ReceivedItemsKey{Team: teamSlot.Team, Slot: int(item.Player), RemoteItems: true}
-			s.state.ReceivedItems.receivedItems[keyAll] = append(s.state.ReceivedItems.receivedItems[keyAll], item)
-			if int(item.Player) != teamSlot.Slot {
-				keyForeign := ReceivedItemsKey{Team: teamSlot.Team, Slot: int(item.Player), RemoteItems: false}
-				s.state.ReceivedItems.receivedItems[keyForeign] = append(s.state.ReceivedItems.receivedItems[keyForeign], item)
-			}
-		}
-		s.state.ReceivedItems.mu.Unlock()
+		s.state.ReceivedItems.Add(teamSlot.Team, teamSlot.Slot, newItems)
 
 		affectedHintSlots := make(map[TeamSlot]struct{})
 		for _, item := range newItems {
@@ -678,6 +669,21 @@ type ReceivedItems struct {
 
 func newReceivedItems() ReceivedItems {
 	return ReceivedItems{receivedItems: make(map[ReceivedItemsKey][]NetworkItem)}
+}
+
+func (ri *ReceivedItems) Add(team int, adderSlot int, items []NetworkItem) {
+	ri.mu.Lock()
+	defer ri.mu.Unlock()
+
+	for _, item := range items {
+		slot := int(item.Player)
+		keyAll := ReceivedItemsKey{team, slot, true}
+		ri.receivedItems[keyAll] = append(ri.receivedItems[keyAll], item)
+		if int(item.Player) != adderSlot {
+			keyForeign := ReceivedItemsKey{team, slot, false}
+			ri.receivedItems[keyForeign] = append(ri.receivedItems[keyForeign], item)
+		}
+	}
 }
 
 func (ri *ReceivedItems) Get(key ReceivedItemsKey) []NetworkItem {

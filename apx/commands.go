@@ -156,6 +156,11 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 				description: "Release a players items",
 				handler:     handleAuthedCommand(s.handleAdminReleaseCommand),
 			},
+			{
+				name:        "send",
+				description: "Send an item to a player",
+				handler:     handleAuthedCommand(s.handleAdminSendCommand),
+			},
 		},
 	})
 
@@ -469,6 +474,42 @@ func (s *ApxRoom) handleAdminReleaseCommand(ctx context.Context, connState *conn
 	return nil
 }
 
+func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connectionState, args string) error {
+	argsList := splitArgs(args)
+	if len(argsList) < 2 {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			"Usage: !admin send <player> <item>")
+		return nil
+	}
+
+	player := argsList[0]
+	item := strings.Join(argsList[1:], " ")
+
+	slotInfo, ok := s.state.NameToSlot[player]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Player '%s' not found", player))
+		return nil
+	}
+	itemId, ok := s.datapackages.ItemNameToID[slotInfo.Game][item]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Item '%s' not found for game %s", item, slotInfo.Game))
+		return nil
+	}
+
+	s.state.ReceivedItems.Add(slotInfo.Team, slotInfo.Slot, []NetworkItem{
+		NetworkItem{
+			Item:     itemId,
+			Location: -1,
+			Player:   0,
+			Flags:    0,
+		},
+	})
+
+	return nil
+}
+
 func handleAuthedCommand(handler chatHandler) chatHandler {
 	return func(ctx context.Context, connState *connectionState, args string) error {
 		authed := connState.adminAuthed.Load()
@@ -482,4 +523,40 @@ func handleAuthedCommand(handler chatHandler) chatHandler {
 
 		return handler(ctx, connState, args)
 	}
+}
+
+// Return list of args with respect to quotes around args with spaces
+func splitArgs(args string) []string {
+	quotesOpen := false
+	argsList := make([]string, 0)
+
+	// Find next space or quote
+	runningArg := ""
+	for _, arg := range strings.Split(args, " ") {
+		if len(arg) > 0 {
+			if !quotesOpen && strings.HasPrefix(arg, "\"") {
+				quotesOpen = true
+				runningArg = arg[1:] + " "
+			} else if quotesOpen {
+				runningArg += arg + " "
+			} else {
+				argsList = append(argsList, arg)
+			}
+			if quotesOpen && strings.HasSuffix(arg, "\"") {
+				quotesOpen = false
+				cleanArg := strings.TrimSpace(runningArg)
+				cleanArg = cleanArg[:len(cleanArg)-1]
+				argsList = append(argsList, cleanArg)
+				runningArg = ""
+			}
+		}
+	}
+
+	// Unclosed quote :(
+	if len(runningArg) > 0 {
+		cleanArg := strings.TrimSpace(runningArg)
+		argsList = append(argsList, cleanArg)
+	}
+
+	return argsList
 }
