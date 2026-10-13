@@ -85,6 +85,12 @@ var migrations = []struct {
 						ADD CONSTRAINT fk_saved_rooms_room
 						FOREIGN KEY (lobby_room_id) REFERENCES rooms(lobby_room_id) ON DELETE CASCADE;
 	`},
+	{6, `
+		ALTER TABLE rooms ADD COLUMN IF NOT EXISTS multidata BYTEA;
+	`},
+	{7, `
+    DELETE FROM rooms WHERE multidata IS NULL;
+	`},
 }
 
 func runMigrations(db *sql.DB) error {
@@ -128,6 +134,8 @@ func runMigrations(db *sql.DB) error {
 			return fmt.Errorf("migration %d: commit: %w", m.version, err)
 		}
 	}
+
+	db.Exec(`DELETE FROM rooms WHERE multidata IS NULL`)
 
 	return nil
 }

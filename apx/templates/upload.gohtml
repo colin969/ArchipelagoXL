@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>APX - Upload Room</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+        .field { margin-bottom: 12px; }
+        label { display: block; margin-bottom: 4px; font-weight: bold; }
+        input[type=file], input[type=text] { width: 100%; box-sizing: border-box; padding: 6px; }
+        input[type=checkbox] { margin-right: 6px; }
+        button { padding: 8px 20px; cursor: pointer; }
+        #result { margin-top: 20px; white-space: pre; background: #f4f4f4; padding: 12px; display: none; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>Upload Room</h1>
+    <form id="upload-form">
+        <div class="field">
+            <label for="file">Multidata File</label>
+            <input type="file" id="file" name="file" required>
+        </div>
+        <div class="field">
+            <label for="lobby_room_id">Room ID (optional)</label>
+            <input type="text" id="lobby_room_id" name="lobby_room_id" placeholder="auto-generated if empty">
+        </div>
+        <div class="field">
+            <label><input type="checkbox" name="per_slot_passwords" value="true"> Per-slot passwords</label>
+        </div>
+        <div class="field">
+            <label><input type="checkbox" name="deathlink_disabled" value="true"> Disable DeathLink</label>
+        </div>
+        <div class="field">
+            <label><input type="checkbox" name="reduced_access" value="true"> Reduced access</label>
+        </div>
+        <button type="submit">Upload</button>
+    </form>
+    <div id="result"></div>
+
+    <script>
+        document.getElementById('upload-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const data = new FormData();
+
+            data.append('file', form.file.files[0]);
+            data.append('lobby_room_id', form.lobby_room_id.value);
+            data.append('per_slot_passwords', form.per_slot_passwords.checked ? 'true' : 'false');
+            data.append('deathlink_disabled', form.deathlink_disabled.checked ? 'true' : 'false');
+            data.append('reduced_access', form.reduced_access.checked ? 'true' : 'false');
+
+            const resultEl = document.getElementById('result');
+            resultEl.className = '';
+            resultEl.style.display = 'block';
+            resultEl.textContent = 'Uploading...';
+
+            try {
+                const resp = await fetch('/api/room', {
+                    method: 'POST',
+                    headers: { 'X-API-Key': '{{.ApiKey}}' },
+                    body: data,
+                });
+                const json = await resp.json();
+                if (!resp.ok) {
+                    resultEl.className = 'error';
+                    resultEl.textContent = 'Error: ' + (json.error ?? resp.statusText);
+                } else {
+                    resultEl.textContent = JSON.stringify(json, null, 2);
+                }
+            } catch (err) {
+                resultEl.className = 'error';
+                resultEl.textContent = 'Request failed: ' + err.message;
+            }
+        });
+    </script>
+</body>
+</html>

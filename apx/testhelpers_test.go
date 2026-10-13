@@ -37,7 +37,7 @@ func startRoomFromFile(t *testing.T, rm *RoomManager, path string) *HostedRoom {
 
 	room, err := rm.startRoomFromMultiData(
 		"test-room-"+t.Name(),
-		md,
+		md, nil,
 		nil, nil,
 		false, // perSlotPasswords
 		false, // deathlinkDisabled

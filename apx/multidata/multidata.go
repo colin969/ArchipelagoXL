@@ -753,7 +753,12 @@ func LoadMultiData(path string) (*MultiData, error) {
 	var err error
 
 	if strings.HasSuffix(strings.ToLower(path), ".zip") {
-		data, err = readArchipelagoFromZip(path)
+		r, err := zip.OpenReader(path)
+		if err != nil {
+			return nil, fmt.Errorf("open zip: %w", err)
+		}
+		defer r.Close()
+		data, err = ReadArchipelagoFromZip(&r.Reader)
 		if err != nil {
 			return nil, fmt.Errorf("load: %w", err)
 		}
@@ -767,13 +772,7 @@ func LoadMultiData(path string) (*MultiData, error) {
 	return ParseMultidata(data)
 }
 
-func readArchipelagoFromZip(path string) ([]byte, error) {
-	r, err := zip.OpenReader(path)
-	if err != nil {
-		return nil, fmt.Errorf("open zip: %w", err)
-	}
-	defer r.Close()
-
+func ReadArchipelagoFromZip(r *zip.Reader) ([]byte, error) {
 	for _, f := range r.File {
 		if strings.HasSuffix(f.Name, ".archipelago") {
 			rc, err := f.Open()

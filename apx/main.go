@@ -40,17 +40,23 @@ type Config struct {
 	LokiEndpoint           string `json:"loki_endpoint"`
 	DataPackageStoragePath string `json:"datapackage_storage_path"`
 	SavesPath              string `json:"saves_path"`
-	PostgresURL            string `json:"postgres_url"`
+	DatabaseURL            string `json:"database_url"`
 }
 
 type ApxArgs struct {
 	configFile    string
 	multidataFile string // positional, optional
+	apiAddr       string // optional
+	normalPort    int    // optional
+	reducedPort   int    // optional
 }
 
 func parseArgs() ApxArgs {
 	a := ApxArgs{}
 	flag.StringVar(&a.configFile, "config", "config.json", "path to config file")
+	flag.StringVar(&a.apiAddr, "api-addr", "", "API listen address (default 127.0.0.1:8080)")
+	flag.IntVar(&a.normalPort, "port", 0, "normal WS port (default 38281)")
+	flag.IntVar(&a.reducedPort, "reduced-port", 0, "reduced WS port (default normal-port + 1)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: apx [options] [multidata-file]\n\n")
 		fmt.Fprintf(os.Stderr, "  multidata-file  optional path to multidata file for running standalone rooms without a db\n\n")
@@ -82,6 +88,17 @@ func run() error {
 		return err
 	}
 
+	// Arg overrides
+	if args.apiAddr != "" {
+		cfg.ApiListenAddr = args.apiAddr
+	}
+	if args.normalPort != 0 {
+		cfg.NormalPort = args.normalPort
+	}
+	if args.reducedPort != 0 {
+		cfg.ReducedPort = args.reducedPort
+	}
+
 	var tlsCfg *tls.Config
 	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
@@ -95,9 +112,9 @@ func run() error {
 	reg, metrics := initMetrics()
 	if standalone {
 		// Disable DB operations in standalone mode
-		cfg.PostgresURL = ""
+		cfg.DatabaseURL = ""
 	}
-	roomStore, err := NewRoomStore(cfg.PostgresURL)
+	roomStore, err := NewRoomStore(cfg.DatabaseURL)
 	if err != nil {
 		log.Panicf("creating room store: %v", err)
 	}
@@ -136,7 +153,7 @@ func run() error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_, err = rm.startRoomFromMultiData(roomId, md, &cfg.NormalPort, &cfg.ReducedPort,
+		_, err = rm.startRoomFromMultiData(roomId, md, nil, &cfg.NormalPort, &cfg.ReducedPort,
 			false, false, false, 1, true)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)
@@ -232,8 +249,8 @@ func getConfig() (*Config, error) {
 	if cfg.SavesPath == "" {
 		cfg.SavesPath = "./saves"
 	}
-	if v := os.Getenv("POSTGRES_URL"); v != "" {
-		cfg.PostgresURL = v
+	if v := os.Getenv("DATABASE_URL"); v != "" {
+		cfg.DatabaseURL = v
 	}
 	if v := os.Getenv("LOBBY_ROOT_URL"); v != "" {
 		cfg.LobbyRootUrl = v
@@ -246,6 +263,9 @@ func getConfig() (*Config, error) {
 	}
 	if v := os.Getenv("APX_API_LISTENADDR"); v != "" {
 		cfg.ApiListenAddr = v
+	}
+	if cfg.ApiListenAddr == "" {
+		cfg.ApiListenAddr = "127.0.0.1:8080"
 	}
 	if v := os.Getenv("APX_API_KEY"); v != "" {
 		cfg.ApiKey = v

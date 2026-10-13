@@ -2,6 +2,7 @@ package main
 
 import (
 	"apx/multidata"
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -14,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -251,6 +253,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 
 	r := mux.NewRouter()
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
+	r.HandleFunc("/upload", srv.handleFrontendUpload).Methods(http.MethodGet)
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(srv.loggingMiddleware)
 	api.Use(srv.authMiddleware)
@@ -291,7 +294,14 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 	for _, record := range records {
-		room, err := srv.startNewHostedRoom(record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
+		md, err := multidata.ParseMultidata(record.MultidataBytes)
+		if err != nil {
+			log.Printf("Failed to bring room online, error parsing multidata: %v", err)
+			continue
+		}
+		record.MultidataBytes = nil
+
+		room, err := srv.startNewHostedRoom(record.LobbyRoomId, md, nil, &record.NormalId, &record.ReducedId,
 			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 		if err != nil {
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
@@ -454,7 +464,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	file, _, err := r.FormFile("file")
+	file, header, err := r.FormFile("file")
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "no file provided"})
@@ -469,6 +479,22 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
+		zr, err := zip.NewReader(bytes.NewReader(fileBytes), int64(len(fileBytes)))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid zip: %v", err)})
+			return
+		}
+		fileBytes, err = multidata.ReadArchipelagoFromZip(zr)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("reading zip: %v", err)})
+			return
+		}
+
+	}
+
 	md, err := multidata.ParseMultidata(fileBytes)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -481,7 +507,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		lobbyRoomId = randomId(24)
 	}
 
-	room, err := rm.startRoomFromMultiData(lobbyRoomId, md, nil, nil,
+	room, err := rm.startRoomFromMultiData(lobbyRoomId, md, fileBytes, nil, nil,
 		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -571,7 +597,7 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	record, err := rm.store.FindByLobbyRoomId(roomId)
+	record, err := rm.store.FindFullByLobbyRoomId(roomId)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to query store"})
@@ -632,7 +658,14 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	room, err := rm.startNewHostedRoom(record.LobbyRoomId, nil, &record.NormalId, &record.ReducedId,
+	md, err := multidata.ParseMultidata(record.MultidataBytes)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
+		return
+	}
+
+	room, err := rm.startNewHostedRoom(record.LobbyRoomId, md, record.MultidataBytes, &record.NormalId, &record.ReducedId,
 		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -821,17 +854,17 @@ func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 func (rm *RoomManager) startRoomFromMultiData(
 	lobbyRoomId string,
 	md *multidata.MultiData,
+	rawMd []byte,
 	normalIdPtr, reducedIdPtr *int,
 	perSlotPasswords, deathlinkDisabled, reducedAccess bool,
 	deathlinkProbability float64,
 	save bool,
 ) (*HostedRoom, error) {
-	rm.saveDataPackagesToDisk(md)
-	return rm.startNewHostedRoom(lobbyRoomId, md, normalIdPtr, reducedIdPtr,
+	return rm.startNewHostedRoom(lobbyRoomId, md, rawMd, normalIdPtr, reducedIdPtr,
 		perSlotPasswords, deathlinkDisabled, reducedAccess, deathlinkProbability, save)
 }
 
-func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.MultiData, normalIdPtr, reducedIdPtr *int,
+func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.MultiData, rawMd []byte, normalIdPtr, reducedIdPtr *int,
 	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, deathlinkProbability float64, save bool) (*HostedRoom, error) {
 
 	_, exists := rm.registry.Get(lobbyRoomId)
@@ -924,7 +957,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 	apx.buildRoomInfoFromState()
 
 	if save != false {
-		if rm.config.PostgresURL != "" {
+		if rm.config.DatabaseURL != "" {
 			apx.saveHandler = newSafeSaveHandler(newSaveDBHandler(rm.store.Pool()))
 		} else {
 			apx.saveHandler = newSafeSaveHandler(newSaveFileHandler(rm.config.SavesPath))
@@ -991,19 +1024,20 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 	}
 
 	// We can run APX temporarily without a lobby using the env vars, so ignore if save not specified
-	// if save {
-	// 	if err := rm.store.Save(RoomRecord{
-	// 		LobbyRoomId:       lobbyRoomId,
-	// 		NormalId:          room.normalHandler.id,
-	// 		ReducedId:         room.reducedHandler.id,
-	// 		CreatedAt:         time.Now(),
-	// 		PerSlotPasswords:  perSlotPasswords,
-	// 		DeathlinkDisabled: deathlinkDisabled,
-	// 		ReducedAccess:     reducedAccess,
-	// 	}); err != nil {
-	// 		log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
-	// 	}
-	// }
+	if save {
+		if err := rm.store.Save(RoomRecord{
+			LobbyRoomId:       lobbyRoomId,
+			NormalId:          room.normalHandler.id,
+			ReducedId:         room.reducedHandler.id,
+			CreatedAt:         time.Now(),
+			PerSlotPasswords:  perSlotPasswords,
+			DeathlinkDisabled: deathlinkDisabled,
+			ReducedAccess:     reducedAccess,
+			MultidataBytes:    rawMd,
+		}); err != nil {
+			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
+		}
+	}
 
 	return room, nil
 }

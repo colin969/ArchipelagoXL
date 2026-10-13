@@ -25,6 +25,7 @@ type RoomRecord struct {
 	DeathlinkDisabled    bool
 	ReducedAccess        bool
 	DeathlinkProbability float64
+	MultidataBytes       []byte
 }
 
 func NewRoomStore(connString string) (*RoomStore, error) {
@@ -77,15 +78,15 @@ func (s *RoomStore) Save(r RoomRecord) error {
 		return nil
 	}
 	_, err := s.pool.Exec(context.Background(), `
-        INSERT INTO rooms (lobby_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO rooms (lobby_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access, multidata)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (lobby_room_id) DO UPDATE SET
             normal_port        = excluded.normal_port,
             reduced_port       = excluded.reduced_port,
             per_slot_passwords = excluded.per_slot_passwords,
             deathlink_disabled = excluded.deathlink_disabled,
             reduced_access     = excluded.reduced_access
-    `, r.LobbyRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(), r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess)
+    `, r.LobbyRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(), r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess, &r.MultidataBytes)
 	return err
 }
 
@@ -416,13 +417,36 @@ func (s *RoomStore) FindByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
 	return &r, nil
 }
 
+func (s *RoomStore) FindFullByLobbyRoomId(lobbyRoomId string) (*RoomRecord, error) {
+	if !s.enabled {
+		return nil, nil
+	}
+	var r RoomRecord
+	var ts int64
+	err := s.pool.QueryRow(context.Background(), `
+        SELECT lobby_room_id, normal_port, reduced_port, created_at, disabled,
+               per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability, multidata
+        FROM rooms WHERE lobby_room_id = $1`,
+		lobbyRoomId,
+	).Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts, &r.Disabled,
+		&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability, &r.MultidataBytes)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	r.CreatedAt = time.Unix(ts, 0)
+	return &r, nil
+}
+
 func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 	if !s.enabled {
 		return nil, nil
 	}
 	rows, err := s.pool.Query(context.Background(), `
         SELECT lobby_room_id, normal_port, reduced_port, created_at,
-               per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability
+               per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability, multidata
         FROM rooms WHERE disabled = FALSE`)
 	if err != nil {
 		return nil, err
@@ -434,7 +458,7 @@ func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 		var r RoomRecord
 		var ts int64
 		if err := rows.Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts,
-			&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability); err != nil {
+			&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability, &r.MultidataBytes); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.Unix(ts, 0)
