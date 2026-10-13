@@ -2,6 +2,7 @@ package main
 
 import (
 	"apx/multidata"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -89,17 +92,27 @@ func run() error {
 			log.Fatal(err)
 		}
 		_, err = rm.startRoomFromMultiData(cfg.LobbyRoomId, md, &cfg.NormalPort, &cfg.ReducedPort,
-			false, false, false, 1, false)
+			false, false, false, 1, true)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)
 		}
 	}
 
-	log.Printf("API server listening on http://%s", cfg.ApiListenAddr)
-	if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("API server error: %v", err)
-		return err
-	}
+	go func() {
+		log.Printf("API server listening on http://%s", cfg.ApiListenAddr)
+		if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Panicf("API server error: %v", err)
+		}
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	log.Printf("waiting for signal...")
+	<-ctx.Done()
+
+	log.Printf("shutting down...")
+	rm.CloseAll()
 
 	return nil
 }

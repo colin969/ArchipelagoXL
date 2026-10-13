@@ -878,6 +878,23 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 	apx.bcOrderedCh = startOrderedWorker(ctx)
 	apx.buildRoomInfoFromState()
 
+	if save != false {
+		apx.saveHandler = newSafeSaveHandler(newSaveFileHandler("./saves"))
+		ls, err := apx.saveHandler.Load(context.Background(), apx.lobbyRoomId)
+		if err != nil {
+			log.Printf("Failed to load save state for room %s: %v", apx.lobbyRoomId, err)
+		} else {
+			if ls != nil {
+				err = applySnapshot(apx.state, ls)
+			}
+			if err != nil {
+				apx.saveHandler = nil
+				cancel()
+				return nil, fmt.Errorf("Failed to apply save snapshot for room %s, possible bad state: %v", apx.lobbyRoomId, err)
+			}
+		}
+	}
+
 	if err := apx.loadDataPackages(rm.diskDataPackages); err != nil {
 		log.Fatalf("loading datapackages: %v", err)
 	}
@@ -925,19 +942,19 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 	}
 
 	// We can run APX temporarily without a lobby using the env vars, so ignore if save not specified
-	if save {
-		if err := rm.store.Save(RoomRecord{
-			LobbyRoomId:       lobbyRoomId,
-			NormalId:          room.normalHandler.id,
-			ReducedId:         room.reducedHandler.id,
-			CreatedAt:         time.Now(),
-			PerSlotPasswords:  perSlotPasswords,
-			DeathlinkDisabled: deathlinkDisabled,
-			ReducedAccess:     reducedAccess,
-		}); err != nil {
-			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
-		}
-	}
+	// if save {
+	// 	if err := rm.store.Save(RoomRecord{
+	// 		LobbyRoomId:       lobbyRoomId,
+	// 		NormalId:          room.normalHandler.id,
+	// 		ReducedId:         room.reducedHandler.id,
+	// 		CreatedAt:         time.Now(),
+	// 		PerSlotPasswords:  perSlotPasswords,
+	// 		DeathlinkDisabled: deathlinkDisabled,
+	// 		ReducedAccess:     reducedAccess,
+	// 	}); err != nil {
+	// 		log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
+	// 	}
+	// }
 
 	return room, nil
 }
@@ -1770,10 +1787,35 @@ func fetchApxServerPassword(cfg *Config, apRoomId string) (string, error) {
 	return data.ApxServerPassword, nil
 }
 
+func (rm *RoomManager) CloseAll() {
+	rooms := rm.registry.List()
+	var wg sync.WaitGroup
+	for _, room := range rooms {
+		wg.Add(1)
+		go func(r *HostedRoom) {
+			defer wg.Done()
+			r.Close()
+		}(room)
+	}
+	wg.Wait()
+}
+
 func (hs *HostedRoom) Close() {
 	// Unassign handlers so no new conns are made
 	hs.normalHandler = nil
 	hs.reducedHandler = nil
 
-	// TODO: Save now
+	hs.cancel()
+
+	log.Printf("Closing room %s", hs.lobbyRoomId)
+
+	if hs.apx != nil && hs.apx.saveHandler != nil {
+		ss := snapshotState(hs.apx.state)
+		err := hs.apx.saveHandler.Save(context.Background(), hs.apx.lobbyRoomId, ss)
+		if err != nil {
+			log.Printf("Failed to save room %s: %v", hs.apx.lobbyRoomId, err)
+			return
+		}
+		log.Printf("Saved room %s", hs.apx.lobbyRoomId)
+	}
 }

@@ -212,6 +212,7 @@ type ApxRoom struct {
 	bcUnorderedCh     chan func()
 	bcOrderedCh       chan func()
 	state             *ApState
+	saveHandler       *SafeSaveHandler
 }
 
 type Location struct {

@@ -6,3 +6,6 @@ gen.zip
 large_datapackage_requests.log
 packets.log
 data.sqlite
+saves/
+testdata/test.zip
+testdata/large.zip
