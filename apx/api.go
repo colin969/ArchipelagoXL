@@ -860,6 +860,7 @@ func (rm *RoomManager) startRoomFromMultiData(
 	deathlinkProbability float64,
 	save bool,
 ) (*HostedRoom, error) {
+	rm.saveDataPackagesToDisk(md)
 	return rm.startNewHostedRoom(lobbyRoomId, md, rawMd, normalIdPtr, reducedIdPtr,
 		perSlotPasswords, deathlinkDisabled, reducedAccess, deathlinkProbability, save)
 }

@@ -52,7 +52,7 @@ func startRoomFromFile(t *testing.T, rm *RoomManager, path string) *HostedRoom {
 
 func newTestStore(t *testing.T) *RoomStore {
 	t.Helper()
-	store, err := NewRoomStore(":memory:")
+	store, err := NewRoomStore("")
 	require.NoError(t, err)
 	return store
 }
