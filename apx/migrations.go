@@ -88,6 +88,16 @@ var migrations = []struct {
 	{6, `
     ALTER TABLE rooms ADD COLUMN IF NOT EXISTS definition BYTEA;
 	`},
+	// Brekaing change, clear rooms
+	{7, `
+		DELETE FROM rooms;
+		CREATE TABLE room_datapackage_refs (
+				lobby_room_id TEXT NOT NULL REFERENCES rooms(lobby_room_id) ON DELETE CASCADE,
+				checksum      TEXT NOT NULL,
+				PRIMARY KEY (lobby_room_id, checksum)
+		);
+		CREATE INDEX ON room_datapackage_refs (checksum);
+	`},
 }
 
 func runMigrations(db *sql.DB) error {

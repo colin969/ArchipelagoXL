@@ -13,6 +13,8 @@ import (
 )
 
 type DiskDataPackageStore struct {
+	// Should prevent reading and deleting race? Should it even happen? Unsure
+	mu      sync.RWMutex
 	dir     string
 	encoder *zstd.Encoder
 	decoder *zstd.Decoder
@@ -38,25 +40,45 @@ func (d *DiskDataPackageStore) path(checksum string) string {
 }
 
 func (d *DiskDataPackageStore) Has(checksum string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	_, err := os.Stat(d.path(checksum))
 	return err == nil
 }
 
-func (d *DiskDataPackageStore) Write(checksum string, data []byte) error {
+func (d *DiskDataPackageStore) WriteIfAbsent(checksum string, data []byte) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, err := os.Stat(d.path(checksum)); err == nil {
+		return false, nil // already exists
+	}
+
 	compressed := d.encoder.EncodeAll(data, nil)
 	tmp := d.path(checksum) + ".tmp"
 	if err := os.WriteFile(tmp, compressed, 0644); err != nil {
-		return err
+		return false, err
 	}
-	return os.Rename(tmp, d.path(checksum))
+	if err := os.Rename(tmp, d.path(checksum)); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (d *DiskDataPackageStore) Read(checksum string) ([]byte, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	compressed, err := os.ReadFile(d.path(checksum))
 	if err != nil {
 		return nil, err
 	}
 	return d.decoder.DecodeAll(compressed, nil)
+}
+
+func (d *DiskDataPackageStore) Delete(checksum string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return os.Remove(d.path(checksum))
 }
 
 type cachedDataPackage struct {

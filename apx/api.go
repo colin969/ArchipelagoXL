@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -247,6 +248,14 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		diskDataPackages: dpDiskStorage,
 	}
 
+	// If store disabled, no DB to read
+	if store.enabled {
+		err = srv.cleanOrphanedDataPackagesOnStartup()
+		if err != nil {
+			log.Panicf("Failed to clean up orphaned datapackages: %v", err)
+		}
+	}
+
 	roomLoggedHandler := func(h http.HandlerFunc) http.HandlerFunc {
 		return srv.logRequestMiddleware(h).ServeHTTP
 	}
@@ -438,15 +447,12 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 
 func (rm *RoomManager) saveDataPackagesToDisk(md *multidata.MultiData) {
 	for game, dp := range md.DataPackage {
-		if rm.diskDataPackages.Has(dp.Checksum) {
-			continue
-		}
 		data, err := json.Marshal(dp)
 		if err != nil {
 			log.Printf("failed to marshal datapackage for %q: %v", game, err)
 			continue
 		}
-		if err := rm.diskDataPackages.Write(dp.Checksum, data); err != nil {
+		if _, err := rm.diskDataPackages.WriteIfAbsent(dp.Checksum, data); err != nil {
 			log.Printf("failed to write datapackage %q (%s) to disk: %v", game, dp.Checksum, err)
 		}
 	}
@@ -792,6 +798,20 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 
 	room, ok := rm.registry.Get(roomId)
 	if ok {
+		checksums := uniqueChecksums(room.apx.roomInfo.DatapackageChecksums)
+		if len(checksums) > 0 {
+			orphaned, err := rm.store.RemoveDataPackageRefs(roomId, checksums)
+			if err != nil {
+				log.Printf("failed to decrement datapackage refs for room %s: %v", roomId, err)
+			} else {
+				for _, checksum := range orphaned {
+					if err := rm.diskDataPackages.Delete(checksum); err != nil && !os.IsNotExist(err) {
+						log.Printf("failed to delete orphaned datapackage %s: %v", checksum, err)
+					}
+				}
+			}
+		}
+
 		room.Close()
 	}
 
@@ -1034,6 +1054,10 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 			Definition:        roomDef,
 		}); err != nil {
 			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
+		}
+		checksums := uniqueChecksums(roomDef.DatapackChecksums)
+		if err := rm.store.AddDataPackageRefs(lobbyRoomId, checksums); err != nil {
+			log.Printf("failed to increment datapackage refs for room %s: %v", lobbyRoomId, err)
 		}
 	}
 
@@ -1894,10 +1918,47 @@ func (rm *RoomManager) CloseAll() {
 	log.Printf("closed %d rooms, %d saved", closed.Load(), saved.Load())
 }
 
-func (hs *HostedRoom) Close() bool {
-	hs.normalHandler = nil
-	hs.reducedHandler = nil
+func (rm *RoomManager) cleanOrphanedDataPackagesOnStartup() error {
+	// Any file not referenced by an existing room record can be deleted
+	var knownChecksums []string
+	rows, err := rm.store.pool.Query(context.Background(), `SELECT DISTINCT checksum FROM room_datapackage_refs`)
+	if err != nil {
+		return fmt.Errorf("querying datapackage refs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return err
+		}
+		knownChecksums = append(knownChecksums, c)
+	}
 
+	known := make(map[string]struct{}, len(knownChecksums))
+	for _, c := range knownChecksums {
+		known[c] = struct{}{}
+	}
+
+	entries, err := os.ReadDir(rm.diskDataPackages.dir)
+	if err != nil {
+		return fmt.Errorf("reading datapackage dir: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		checksum := strings.TrimSuffix(name, ".zst")
+		if strings.HasSuffix(name, ".tmp") || checksum == name {
+			continue // skip tmp files and anything not .zst
+		}
+		if _, ok := known[checksum]; !ok {
+			if err := rm.diskDataPackages.Delete(checksum); err != nil && !os.IsNotExist(err) {
+				log.Printf("failed to delete orphaned datapackage %s: %v", checksum, err)
+			}
+		}
+	}
+	return nil
+}
+
+func (hs *HostedRoom) Close() bool {
 	hs.cancel()
 
 	if hs.apx != nil && hs.apx.saveHandler != nil {
@@ -1910,4 +1971,16 @@ func (hs *HostedRoom) Close() bool {
 	}
 
 	return false
+}
+
+func uniqueChecksums(m map[string]string) []string {
+	seen := make(map[string]struct{}, len(m))
+	for _, checksum := range m {
+		seen[checksum] = struct{}{}
+	}
+	result := make([]string, 0, len(seen))
+	for checksum := range seen {
+		result = append(result, checksum)
+	}
+	return result
 }

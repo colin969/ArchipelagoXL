@@ -492,6 +492,59 @@ func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 	return records, rows.Err()
 }
 
+func (s *RoomStore) AddDataPackageRefs(lobbyRoomId string, checksums []string) error {
+	if !s.enabled {
+		return nil
+	}
+	for _, checksum := range checksums {
+		_, err := s.pool.Exec(context.Background(), `
+					INSERT INTO room_datapackage_refs (lobby_room_id, checksum)
+					VALUES ($1, $2)
+					ON CONFLICT DO NOTHING
+			`, lobbyRoomId, checksum)
+		if err != nil {
+			return fmt.Errorf("adding datapackage ref %q for room %q: %w", checksum, lobbyRoomId, err)
+		}
+	}
+	return nil
+}
+
+// RemoveDataPackageRefs removes refs for the room and returns checksums
+// no longer referenced by any room (safe to delete from disk).
+func (s *RoomStore) RemoveDataPackageRefs(lobbyRoomId string, checksums []string) ([]string, error) {
+	if !s.enabled {
+		return nil, nil
+	}
+	_, err := s.pool.Exec(context.Background(), `
+			DELETE FROM room_datapackage_refs
+			WHERE lobby_room_id = $1 AND checksum = ANY($2)
+	`, lobbyRoomId, checksums)
+	if err != nil {
+		return nil, fmt.Errorf("removing datapackage refs for room %q: %w", lobbyRoomId, err)
+	}
+
+	// Find which of the deleted checksums are now unreferenced
+	rows, err := s.pool.Query(context.Background(), `
+			SELECT unnest($1::text[]) AS checksum
+			EXCEPT
+			SELECT checksum FROM room_datapackage_refs
+	`, checksums)
+	if err != nil {
+		return nil, fmt.Errorf("finding orphaned datapackages: %w", err)
+	}
+	defer rows.Close()
+
+	var orphaned []string
+	for rows.Next() {
+		var checksum string
+		if err := rows.Scan(&checksum); err != nil {
+			return nil, err
+		}
+		orphaned = append(orphaned, checksum)
+	}
+	return orphaned, rows.Err()
+}
+
 func marshalDefinition(def *RoomDefinition) ([]byte, error) {
 	raw, err := json.Marshal(def)
 	if err != nil {

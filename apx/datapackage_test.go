@@ -25,7 +25,7 @@ func writeToDisk(t *testing.T, store *DiskDataPackageStore, checksum string, gd 
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := store.Write(checksum, data); err != nil {
+	if _, err := store.WriteIfAbsent(checksum, data); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 }
