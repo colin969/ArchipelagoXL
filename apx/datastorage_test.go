@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"math"
+	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -282,6 +284,33 @@ func TestDataStorage(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, int64(7), result)
 			})
+			t.Run("OverflowPromotesToBigInt", func(t *testing.T) {
+				result, err := dsOperatorAdd(int64(math.MaxInt64), int64(1))
+				require.NoError(t, err)
+				expected := new(big.Int).Add(big.NewInt(math.MaxInt64), big.NewInt(1))
+				assert.Equal(t, expected, result)
+			})
+			t.Run("BigInt_Plus_Int64", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorAdd(large, int64(1))
+				require.NoError(t, err)
+				expected := new(big.Int).Add(large, big.NewInt(1))
+				assert.Equal(t, expected, result)
+			})
+			t.Run("BigInt_DemotesWhenFits", func(t *testing.T) {
+				// large - large = small: normInt should demote back to int64
+				large := bigIntShift(1, 100)
+				neg := new(big.Int).Neg(large)
+				// large + (-large) + 42 via two ops
+				result, err := dsOperatorAdd(large, neg)
+				require.NoError(t, err)
+				assert.Equal(t, int64(0), result)
+			})
+			t.Run("BigInt_ExceedsLimit", func(t *testing.T) {
+				huge := bigIntShift(1, maxIntBits-1)
+				_, err := dsOperatorAdd(huge, huge)
+				assert.ErrorContains(t, err, "int limit")
+			})
 			t.Run("Float", func(t *testing.T) {
 				result, err := dsOperatorAdd(float64(1.5), float64(2.5))
 				require.NoError(t, err)
@@ -324,14 +353,82 @@ func TestDataStorage(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, int64(0), result)
 			})
+			t.Run("OverflowPromotesToBigInt", func(t *testing.T) {
+				result, err := dsOperatorMul(int64(math.MaxInt64), int64(2))
+				require.NoError(t, err)
+				expected := new(big.Int).Mul(big.NewInt(math.MaxInt64), big.NewInt(2))
+				assert.Equal(t, expected, result)
+			})
+			t.Run("BigInt_Times_Int64", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorMul(large, int64(2))
+				require.NoError(t, err)
+				expected := new(big.Int).Mul(large, big.NewInt(2))
+				assert.Equal(t, expected, result)
+			})
+			t.Run("BigInt_Times_BigInt", func(t *testing.T) {
+				a := bigIntShift(1, 50)
+				b := bigIntShift(1, 50)
+				result, err := dsOperatorMul(a, b)
+				require.NoError(t, err)
+				expected := bigIntShift(1, 100)
+				assert.Equal(t, expected, result)
+			})
+			t.Run("BigInt_ExceedsLimit", func(t *testing.T) {
+				large := bigIntShift(1, 200)
+				_, err := dsOperatorMul(large, bigIntShift(1, 100))
+				assert.ErrorContains(t, err, "int limit")
+			})
+			t.Run("BigInt_DemotesWhenFits", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				// large * 0 = 0, should demote
+				result, err := dsOperatorMul(large, int64(0))
+				require.NoError(t, err)
+				assert.Equal(t, int64(0), result)
+			})
 			t.Run("Float", func(t *testing.T) {
 				result, err := dsOperatorMul(float64(2.5), float64(4.0))
 				require.NoError(t, err)
 				assert.Equal(t, float64(10.0), result)
 			})
-			t.Run("Overflow", func(t *testing.T) {
-				_, err := dsOperatorMul(int64(math.MaxInt64), int64(2))
-				assert.ErrorContains(t, err, "int bit limit")
+			t.Run("IntByString", func(t *testing.T) {
+				result, err := dsOperatorMul(int64(3), "ab")
+				require.NoError(t, err)
+				assert.Equal(t, "ababab", result)
+			})
+			t.Run("StringByInt", func(t *testing.T) {
+				result, err := dsOperatorMul("ab", int64(3))
+				require.NoError(t, err)
+				assert.Equal(t, "ababab", result)
+			})
+			t.Run("StringByZero", func(t *testing.T) {
+				result, err := dsOperatorMul("ab", int64(0))
+				require.NoError(t, err)
+				assert.Equal(t, "", result)
+			})
+			t.Run("StringByNegative", func(t *testing.T) {
+				result, err := dsOperatorMul("ab", int64(-1))
+				require.NoError(t, err)
+				assert.Equal(t, "", result)
+			})
+			t.Run("StringByBigInt", func(t *testing.T) {
+				result, err := dsOperatorMul("ab", big.NewInt(3))
+				require.NoError(t, err)
+				assert.Equal(t, "ababab", result)
+			})
+			t.Run("StringByBigInt_Negative", func(t *testing.T) {
+				result, err := dsOperatorMul("ab", big.NewInt(-1))
+				require.NoError(t, err)
+				assert.Equal(t, "", result)
+			})
+			t.Run("StringExceedsLimit", func(t *testing.T) {
+				s := strings.Repeat("x", maxStringLen/2+1)
+				_, err := dsOperatorMul(s, int64(2))
+				assert.ErrorContains(t, err, "string size limit")
+			})
+			t.Run("TypeMismatch", func(t *testing.T) {
+				_, err := dsOperatorMul(int64(1), float64(1))
+				assert.Error(t, err)
 			})
 		})
 
@@ -351,8 +448,26 @@ func TestDataStorage(t *testing.T) {
 				assert.Error(t, err)
 			})
 			t.Run("Overflow", func(t *testing.T) {
-				_, err := dsOperatorPow(int64(2), int64(63))
-				assert.ErrorContains(t, err, "int bit limit")
+				_, err := dsOperatorPow(int64(2), int64(256))
+				assert.ErrorContains(t, err, "int limit")
+			})
+			t.Run("PromotesToBigInt", func(t *testing.T) {
+				// 2^64 exceeds int64 but fits in 256 bits
+				result, err := dsOperatorPow(int64(2), int64(64))
+				require.NoError(t, err)
+				expected := bigIntShift(1, 64)
+				assert.Equal(t, expected, result)
+			})
+			t.Run("DemotesWhenFits", func(t *testing.T) {
+				// 2^62 fits in int64
+				result, err := dsOperatorPow(int64(2), int64(62))
+				require.NoError(t, err)
+				assert.Equal(t, int64(1<<62), result)
+			})
+			t.Run("BigIntBase_Rejected", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				_, err := dsOperatorPow(large, int64(2))
+				assert.ErrorContains(t, err, "too large")
 			})
 			t.Run("Float", func(t *testing.T) {
 				result, err := dsOperatorPow(float64(2.0), float64(0.5))
@@ -369,6 +484,26 @@ func TestDataStorage(t *testing.T) {
 			})
 			t.Run("ByZero", func(t *testing.T) {
 				_, err := dsOperatorMod(int64(10), int64(0))
+				assert.ErrorContains(t, err, "mod by zero")
+			})
+			t.Run("BigInt_Mod_Int64", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorMod(large, int64(3))
+				require.NoError(t, err)
+				expected := new(big.Int).Mod(large, big.NewInt(3))
+				// result fits in int64 so should be demoted
+				assert.Equal(t, expected.Int64(), result)
+			})
+			t.Run("BigInt_Mod_BigInt", func(t *testing.T) {
+				a := bigIntShift(1, 100)
+				b := bigIntShift(1, 50)
+				result, err := dsOperatorMod(a, b)
+				require.NoError(t, err)
+				assert.Equal(t, int64(0), result) // 2^100 % 2^50 == 0
+			})
+			t.Run("BigInt_ByZero", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				_, err := dsOperatorMod(large, big.NewInt(0))
 				assert.ErrorContains(t, err, "mod by zero")
 			})
 			t.Run("Float", func(t *testing.T) {
@@ -389,6 +524,12 @@ func TestDataStorage(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, int64(3), result)
 			})
+			t.Run("BigInt", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorFloor(large, nil)
+				require.NoError(t, err)
+				assert.Equal(t, large, result)
+			})
 		})
 
 		t.Run("ceil", func(t *testing.T) {
@@ -401,6 +542,12 @@ func TestDataStorage(t *testing.T) {
 				result, err := dsOperatorCeil(int64(3), nil)
 				require.NoError(t, err)
 				assert.Equal(t, int64(3), result)
+			})
+			t.Run("BigInt", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorCeil(large, nil)
+				require.NoError(t, err)
+				assert.Equal(t, large, result)
 			})
 		})
 
@@ -415,6 +562,25 @@ func TestDataStorage(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, int64(10), result)
 			})
+			t.Run("BigInt_Wins", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorMax(int64(1), large)
+				require.NoError(t, err)
+				assert.Equal(t, large, result)
+			})
+			t.Run("Int64_Wins_Over_BigInt", func(t *testing.T) {
+				small := big.NewInt(1)
+				result, err := dsOperatorMax(int64(100), small)
+				require.NoError(t, err)
+				assert.Equal(t, int64(100), result)
+			})
+			t.Run("BigInt_vs_BigInt", func(t *testing.T) {
+				a := bigIntShift(1, 100)
+				b := bigIntShift(1, 200)
+				result, err := dsOperatorMax(a, b)
+				require.NoError(t, err)
+				assert.Equal(t, b, result)
+			})
 		})
 
 		t.Run("min", func(t *testing.T) {
@@ -428,6 +594,19 @@ func TestDataStorage(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, float64(1.5), result)
 			})
+			t.Run("Int64_Wins_Over_BigInt", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorMin(int64(1), large)
+				require.NoError(t, err)
+				assert.Equal(t, int64(1), result)
+			})
+			t.Run("BigInt_vs_BigInt", func(t *testing.T) {
+				a := bigIntShift(1, 100)
+				b := bigIntShift(1, 200)
+				result, err := dsOperatorMin(a, b)
+				require.NoError(t, err)
+				assert.Equal(t, a, result)
+			})
 		})
 
 		t.Run("bitwise", func(t *testing.T) {
@@ -436,6 +615,18 @@ func TestDataStorage(t *testing.T) {
 					result, err := dsOperatorAnd(int64(0b1100), int64(0b1010))
 					require.NoError(t, err)
 					assert.Equal(t, int64(0b1000), result)
+				})
+				t.Run("BigInt", func(t *testing.T) {
+					a := bigIntShift(0b1100, 64)
+					b := bigIntShift(0b1010, 64)
+					result, err := dsOperatorAnd(a, b)
+					require.NoError(t, err)
+					assert.Equal(t, bigIntShift(0b1000, 64), result)
+				})
+				t.Run("Mixed_Int64_BigInt", func(t *testing.T) {
+					result, err := dsOperatorAnd(int64(0xFF), big.NewInt(0x0F))
+					require.NoError(t, err)
+					assert.Equal(t, int64(0x0F), result)
 				})
 				t.Run("TypeMismatch", func(t *testing.T) {
 					_, err := dsOperatorAnd(int64(1), float64(1))
@@ -448,6 +639,18 @@ func TestDataStorage(t *testing.T) {
 					result, err := dsOperatorOr(int64(0b1100), int64(0b1010))
 					require.NoError(t, err)
 					assert.Equal(t, int64(0b1110), result)
+				})
+				t.Run("BigInt", func(t *testing.T) {
+					a := bigIntShift(0b1100, 64)
+					b := bigIntShift(0b1010, 64)
+					result, err := dsOperatorOr(a, b)
+					require.NoError(t, err)
+					assert.Equal(t, bigIntShift(0b1110, 64), result)
+				})
+				t.Run("Mixed_Int64_BigInt", func(t *testing.T) {
+					result, err := dsOperatorOr(int64(0xF0), big.NewInt(0x0F))
+					require.NoError(t, err)
+					assert.Equal(t, int64(0xFF), result)
 				})
 				t.Run("TypeMismatch", func(t *testing.T) {
 					_, err := dsOperatorOr(int64(1), float64(1))
@@ -466,6 +669,24 @@ func TestDataStorage(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, int64(0), result)
 				})
+				t.Run("BigInt_SelfCancels", func(t *testing.T) {
+					a := bigIntShift(0b1111, 64)
+					result, err := dsOperatorXor(a, a)
+					require.NoError(t, err)
+					assert.Equal(t, int64(0), result)
+				})
+				t.Run("BigInt", func(t *testing.T) {
+					a := bigIntShift(0b1100, 64)
+					b := bigIntShift(0b1010, 64)
+					result, err := dsOperatorXor(a, b)
+					require.NoError(t, err)
+					assert.Equal(t, bigIntShift(0b0110, 64), result)
+				})
+				t.Run("Mixed_Int64_BigInt", func(t *testing.T) {
+					result, err := dsOperatorXor(int64(0xFF), big.NewInt(0x0F))
+					require.NoError(t, err)
+					assert.Equal(t, int64(0xF0), result)
+				})
 				t.Run("TypeMismatch", func(t *testing.T) {
 					_, err := dsOperatorXor(int64(1), float64(1))
 					assert.Error(t, err)
@@ -483,17 +704,30 @@ func TestDataStorage(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, int64(5), result)
 				})
+				t.Run("PromotesToBigInt", func(t *testing.T) {
+					// 1 << 63 exceeds int64, should promote
+					result, err := dsOperatorLeftShift(int64(1), int64(63))
+					require.NoError(t, err)
+					assert.Equal(t, bigIntShift(1, 63), result)
+				})
+				t.Run("BigInt_Lhs", func(t *testing.T) {
+					large := bigIntShift(1, 64)
+					result, err := dsOperatorLeftShift(large, int64(10))
+					require.NoError(t, err)
+					assert.Equal(t, bigIntShift(1, 74), result)
+				})
 				t.Run("NegativeShift", func(t *testing.T) {
 					_, err := dsOperatorLeftShift(int64(1), int64(-1))
 					assert.Error(t, err)
 				})
 				t.Run("ShiftExceedsLimit", func(t *testing.T) {
 					_, err := dsOperatorLeftShift(int64(1), int64(maxIntBits))
-					assert.ErrorContains(t, err, "int bit limit")
+					assert.ErrorContains(t, err, "int limit")
 				})
-				t.Run("Overflow", func(t *testing.T) {
-					_, err := dsOperatorLeftShift(int64(1), int64(63))
-					assert.ErrorContains(t, err, "int bit limit")
+				t.Run("ResultExceedsLimit", func(t *testing.T) {
+					large := bigIntShift(1, 200)
+					_, err := dsOperatorLeftShift(large, int64(100))
+					assert.ErrorContains(t, err, "int limit")
 				})
 				t.Run("TypeMismatch", func(t *testing.T) {
 					_, err := dsOperatorLeftShift(int64(1), float64(1))
@@ -517,6 +751,18 @@ func TestDataStorage(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, int64(0), result)
 				})
+				t.Run("BigInt_Rhs_ShiftsDown", func(t *testing.T) {
+					large := bigIntShift(1, 100)
+					result, err := dsOperatorRightShift(large, int64(100))
+					require.NoError(t, err)
+					assert.Equal(t, int64(1), result) // demotes back to int64
+				})
+				t.Run("BigInt_Rhs_Partial", func(t *testing.T) {
+					large := bigIntShift(1, 100)
+					result, err := dsOperatorRightShift(large, int64(50))
+					require.NoError(t, err)
+					assert.Equal(t, int64(1<<50), result)
+				})
 				t.Run("NegativeShift", func(t *testing.T) {
 					_, err := dsOperatorRightShift(int64(1), int64(-1))
 					assert.Error(t, err)
@@ -538,6 +784,18 @@ func TestDataStorage(t *testing.T) {
 				result, err := dsOperatorRemove([]any{int64(1), int64(2)}, int64(99))
 				require.NoError(t, err)
 				assert.Equal(t, []any{int64(1), int64(2)}, result)
+			})
+			t.Run("BigInt_Match", func(t *testing.T) {
+				large := bigIntShift(1, 100)
+				result, err := dsOperatorRemove([]any{int64(1), large, int64(2)}, large)
+				require.NoError(t, err)
+				assert.Equal(t, []any{int64(1), int64(2)}, result)
+			})
+			t.Run("BigInt_CrossType_Match", func(t *testing.T) {
+				// big.NewInt(1) should match int64(1) via storageValEqual
+				result, err := dsOperatorRemove([]any{int64(1), int64(2)}, big.NewInt(1))
+				require.NoError(t, err)
+				assert.Equal(t, []any{int64(2)}, result)
 			})
 			t.Run("RequiresList", func(t *testing.T) {
 				_, err := dsOperatorRemove(map[string]any{"a": int64(1)}, "a")
@@ -625,11 +883,20 @@ func TestDataStorage(t *testing.T) {
 			assert.Equal(t, "hello", shallowCopy("hello"))
 			assert.Equal(t, float64(3.14), shallowCopy(float64(3.14)))
 		})
+		t.Run("BigInt", func(t *testing.T) {
+			large := bigIntShift(1, 100)
+			copied := shallowCopy(large).(*big.Int)
+			copied.SetInt64(0)
+			assert.Equal(t, bigIntShift(1, 100), large) // original unaffected
+		})
 	})
 
 	t.Run("StorageSize", func(t *testing.T) {
 		t.Run("Int64", func(t *testing.T) {
 			assert.Equal(t, 8, storageSize(int64(42)))
+		})
+		t.Run("BigInt", func(t *testing.T) {
+			assert.Equal(t, 13, storageSize(bigIntShift(1, 100)))
 		})
 		t.Run("Float64", func(t *testing.T) {
 			assert.Equal(t, 8, storageSize(float64(3.14)))
@@ -741,4 +1008,8 @@ func TestDataStorage(t *testing.T) {
 			assert.Len(t, ordered, 1, "single job should cover all subscribers")
 		})
 	})
+}
+
+func bigIntShift(base int64, shift uint) *big.Int {
+	return new(big.Int).Lsh(big.NewInt(base), shift)
 }

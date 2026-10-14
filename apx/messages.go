@@ -462,6 +462,20 @@ func (cs ClientStatus) Valid() bool {
 	return false
 }
 
+// Multiserver behaviour
+func (cs *ClientStatus) UnmarshalJSON(data []byte) error {
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	vals, err := parseIntConvFloatList([]json.Number{n})
+	if err != nil {
+		return err
+	}
+	*cs = ClientStatus(vals[0])
+	return nil
+}
+
 type StatusUpdateMessage struct {
 	Status ClientStatus `json:"status"`
 }
@@ -469,6 +483,21 @@ type StatusUpdateMessage struct {
 type LocationScoutsMessage struct {
 	Locations    []int64 `json:"locations"`
 	CreateAsHint int     `json:"create_as_hint"`
+}
+
+// Multiserver behaviour
+func (m *LocationScoutsMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Locations    []json.Number `json:"locations"`
+		CreateAsHint int           `json:"create_as_hint"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.CreateAsHint = raw.CreateAsHint
+	var err error
+	m.Locations, err = parseIntConvFloatList(raw.Locations)
+	return err
 }
 
 type LocationInfoMessage struct {
@@ -485,9 +514,10 @@ func (m LocationInfoMessage) MarshalJSON() ([]byte, error) {
 
 type LocationChecksMessage struct {
 	// Special decoding since the multiserver doesn't type check it, floats are acceptable :(
-	Locations []int64 `json:"-"`
+	Locations []int64 `json:"locations"`
 }
 
+// Multiserver behaviour
 func (m *LocationChecksMessage) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		Locations []json.Number `json:"locations"`
@@ -495,23 +525,9 @@ func (m *LocationChecksMessage) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	m.Locations = make([]int64, len(raw.Locations))
-	for i, n := range raw.Locations {
-		i64, err := strconv.ParseInt(string(n), 10, 64)
-		if err == nil {
-			m.Locations[i] = i64
-			continue
-		}
-		f, err := strconv.ParseFloat(string(n), 64)
-		if err != nil {
-			return fmt.Errorf("locations[%d]: cannot parse %q as number", i, n)
-		}
-		if f != float64(int64(f)) {
-			return fmt.Errorf("locations[%d]: %v is not a whole number", i, f)
-		}
-		m.Locations[i] = int64(f)
-	}
-	return nil
+	var err error
+	m.Locations, err = parseIntConvFloatList(raw.Locations)
+	return err
 }
 
 func (m LocationChecksMessage) MarshalJSON() ([]byte, error) {
@@ -541,6 +557,23 @@ type CreateHintsMessage struct {
 	Status    *int    `json:"status"`
 }
 
+// Multiserver behaviour
+func (m *CreateHintsMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Locations []json.Number `json:"locations"`
+		Player    *int          `json:"player"`
+		Status    *int          `json:"status"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Player = raw.Player
+	m.Status = raw.Status
+	var err error
+	m.Locations, err = parseIntConvFloatList(raw.Locations)
+	return err
+}
+
 func (m CreateHintsMessage) MarshalJSON() ([]byte, error) {
 	type Alias CreateHintsMessage
 	return json.Marshal(struct {
@@ -553,6 +586,26 @@ type UpdateHintMessage struct {
 	Player   int         `json:"player"`
 	Location int64       `json:"location"`
 	Status   *HintStatus `json:"status"`
+}
+
+// Multiserver behaviours
+func (m *UpdateHintMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Player   json.Number `json:"player"`
+		Location json.Number `json:"location"`
+		Status   *HintStatus `json:"status"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Status = raw.Status
+	vals, err := parseIntConvFloatList([]json.Number{raw.Player, raw.Location})
+	if err != nil {
+		return err
+	}
+	m.Player = int(vals[0])
+	m.Location = vals[1]
+	return nil
 }
 
 func (m UpdateHintMessage) MarshalJSON() ([]byte, error) {
@@ -678,4 +731,24 @@ func simplePrintJsonMessage(msgType string, msg string) *PrintJsonMessage {
 		Type:    msgType,
 		Message: &msg,
 	}
+}
+
+func parseIntConvFloatList(nums []json.Number) ([]int64, error) {
+	out := make([]int64, len(nums))
+	for i, n := range nums {
+		i64, err := strconv.ParseInt(string(n), 10, 64)
+		if err == nil {
+			out[i] = i64
+			continue
+		}
+		f, err := strconv.ParseFloat(string(n), 64)
+		if err != nil {
+			return nil, fmt.Errorf("[%d]: cannot parse %q as number", i, n)
+		}
+		if f != float64(int64(f)) {
+			return nil, fmt.Errorf("[%d]: %v is not a whole number", i, f)
+		}
+		out[i] = int64(f)
+	}
+	return out, nil
 }

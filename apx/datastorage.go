@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"math/big"
 	"math/bits"
 	"slices"
 	"strings"
@@ -213,6 +214,8 @@ func storageSize(v StorageValue) int {
 	switch val := v.(type) {
 	case int64:
 		return 8
+	case *big.Int:
+		return (val.BitLen() + 7) / 8
 	case float64:
 		return 8
 	case bool:
@@ -248,6 +251,8 @@ func shallowCopy(v StorageValue) StorageValue {
 		c := make(map[string]any, len(val))
 		maps.Copy(c, val)
 		return c
+	case *big.Int:
+		return new(big.Int).Set(val)
 	default:
 		return v
 	}
@@ -301,15 +306,30 @@ func applyOp(current StorageValue, op string, operand StorageValue) (StorageValu
 func dsOperatorAdd(lhs, rhs StorageValue) (StorageValue, error) {
 	switch l := lhs.(type) {
 	case int64:
-		r, ok := rhs.(int64)
-		if !ok {
-			return nil, fmt.Errorf("type mismatch for add: expected int64, got %T", rhs)
+		switch r := rhs.(type) {
+		case int64:
+			// Fast path: check overflow without big.Int
+			if (r > 0 && l > math.MaxInt64-r) || (r < 0 && l < math.MinInt64-r) {
+				res := new(big.Int).Add(big.NewInt(l), big.NewInt(r))
+				return normInt(res)
+			}
+			return l + r, nil
+		case *big.Int:
+			res := new(big.Int).Add(big.NewInt(l), r)
+			return normInt(res)
+		default:
+			return nil, fmt.Errorf("type mismatch for add: expected int, got %T", rhs)
 		}
-		result := l + r
-		if bits.Len64(uint64(result)) > maxIntBits {
-			return nil, fmt.Errorf("result would exceed int bit limit")
+	case *big.Int:
+		r := toBigInt(rhs)
+		if r == nil {
+			return nil, fmt.Errorf("type mismatch for add: expected int, got %T", rhs)
 		}
-		return result, nil
+		// Pre-check: addition can only grow by 1 bit, so this is conservative but cheap
+		if l.BitLen() > maxIntBits && r.Sign() > 0 {
+			return nil, fmt.Errorf("result would exceed %d-bit int limit", maxIntBits)
+		}
+		return normInt(new(big.Int).Add(l, r))
 	case float64:
 		r, ok := rhs.(float64)
 		if !ok {
@@ -341,18 +361,86 @@ func dsOperatorAdd(lhs, rhs StorageValue) (StorageValue, error) {
 func dsOperatorMul(lhs, rhs StorageValue) (StorageValue, error) {
 	switch l := lhs.(type) {
 	case int64:
-		r, ok := rhs.(int64)
-		if !ok {
-			return nil, fmt.Errorf("type mismatch for mul: expected int64, got %T", rhs)
-		}
-		if l != 0 && r != 0 {
+		switch r := rhs.(type) {
+		case int64:
+			if l == 0 || r == 0 {
+				return int64(0), nil
+			}
 			result := l * r
 			if result/l != r {
-				return nil, fmt.Errorf("result would exceed int bit limit")
+				// Overflow: promote to big.Int
+				bl, br := big.NewInt(l), big.NewInt(r)
+				res := new(big.Int).Mul(bl, br)
+				return normInt(res)
 			}
 			return result, nil
+		case *big.Int:
+			if r.Sign() == 0 {
+				return int64(0), nil
+			}
+			bl := big.NewInt(l)
+			if bits.Len64(uint64(l))+r.BitLen() > maxIntBits {
+				return nil, fmt.Errorf("result would exceed %d-bit int limit", maxIntBits)
+			}
+			return normInt(new(big.Int).Mul(bl, r))
+		case string:
+			if l < 0 {
+				return "", nil
+			}
+			if int64(len(r))*l > maxStringLen {
+				return nil, fmt.Errorf("result would exceed string size limit")
+			}
+			return strings.Repeat(r, int(l)), nil
 		}
-		return int64(0), nil
+		return nil, fmt.Errorf("type mismatch for mul: expected int, or string, got %T", rhs)
+	case *big.Int:
+		switch r := rhs.(type) {
+		case int64:
+			if r == 0 || l.Sign() == 0 {
+				return int64(0), nil
+			}
+			if l.BitLen()+bits.Len64(uint64(r)) > maxIntBits {
+				return nil, fmt.Errorf("result would exceed %d-bit int limit", maxIntBits)
+			}
+			return normInt(new(big.Int).Mul(l, big.NewInt(r)))
+		case *big.Int:
+			if r.Sign() == 0 || l.Sign() == 0 {
+				return int64(0), nil
+			}
+			if l.BitLen()+r.BitLen() > maxIntBits {
+				return nil, fmt.Errorf("result would exceed %d-bit int limit", maxIntBits)
+			}
+			return normInt(new(big.Int).Mul(l, r))
+		case string:
+			if l.Sign() < 0 {
+				return "", nil
+			}
+			if !l.IsInt64() || int64(len(r))*l.Int64() > maxStringLen {
+				return nil, fmt.Errorf("result would exceed string size limit")
+			}
+			return strings.Repeat(r, int(l.Int64())), nil
+		}
+		return nil, fmt.Errorf("type mismatch for mul: expected int or string, got %T", rhs)
+	case string:
+		switch r := rhs.(type) {
+		case int64:
+			if r < 0 {
+				return "", nil
+			}
+			if int64(len(l))*r > maxStringLen {
+				return nil, fmt.Errorf("result would exceed string size limit")
+			}
+			return strings.Repeat(l, int(r)), nil
+		case *big.Int:
+			if r.Sign() < 0 {
+				return "", nil
+			}
+			if !r.IsInt64() || int64(len(l))*r.Int64() > maxStringLen {
+				return nil, fmt.Errorf("result would exceed string size limit")
+			}
+			return strings.Repeat(l, int(r.Int64())), nil
+		}
+		return nil, fmt.Errorf("type mismatch for mul: expected int, got %T", rhs)
 	case float64:
 		r, ok := rhs.(float64)
 		if !ok {
@@ -365,6 +453,9 @@ func dsOperatorMul(lhs, rhs StorageValue) (StorageValue, error) {
 
 func dsOperatorPow(lhs, rhs StorageValue) (StorageValue, error) {
 	switch l := lhs.(type) {
+	// Technically not true for really rare cases, but this shouldn't ever be practically hit
+	case *big.Int:
+		return nil, fmt.Errorf("pow: base too large to exponentiate within %d-bit limit", maxIntBits)
 	case int64:
 		r, ok := rhs.(int64)
 		if !ok {
@@ -373,27 +464,12 @@ func dsOperatorPow(lhs, rhs StorageValue) (StorageValue, error) {
 		if r < 0 {
 			return nil, fmt.Errorf("pow: negative exponent not supported for integers")
 		}
-		result := int64(1)
-		base := l
-		exp := r
-		for exp > 0 {
-			if exp&1 == 1 {
-				prev := result
-				result *= base
-				if base != 0 && result/base != prev {
-					return nil, fmt.Errorf("result would exceed int bit limit")
-				}
-			}
-			exp >>= 1
-			if exp > 0 {
-				prev := base
-				base *= base
-				if prev != 0 && base/prev != prev {
-					return nil, fmt.Errorf("result would exceed int bit limit")
-				}
-			}
+		baseBits := int64(bits.Len64(uint64(l)))
+		if baseBits > 0 && baseBits*r > maxIntBits {
+			return nil, fmt.Errorf("result would exceed %d-bit int limit", maxIntBits)
 		}
-		return result, nil
+		result := new(big.Int).Exp(big.NewInt(l), big.NewInt(r), nil)
+		return normInt(result)
 	case float64:
 		r, ok := rhs.(float64)
 		if !ok {
@@ -407,14 +483,28 @@ func dsOperatorPow(lhs, rhs StorageValue) (StorageValue, error) {
 func dsOperatorMod(lhs, rhs StorageValue) (StorageValue, error) {
 	switch l := lhs.(type) {
 	case int64:
-		r, ok := rhs.(int64)
-		if !ok {
-			return nil, fmt.Errorf("type mismatch for mod: expected int64, got %T", rhs)
+		switch r := rhs.(type) {
+		case int64:
+			if r == 0 {
+				return nil, fmt.Errorf("mod by zero")
+			}
+			return l % r, nil
+		case *big.Int:
+			if r.Sign() == 0 {
+				return nil, fmt.Errorf("mod by zero")
+			}
+			return normInt(new(big.Int).Mod(big.NewInt(l), r))
 		}
-		if r == 0 {
+		return nil, fmt.Errorf("type mismatch for mod: expected int, got %T", rhs)
+	case *big.Int:
+		r := toBigInt(rhs)
+		if r == nil {
+			return nil, fmt.Errorf("type mismatch for mod: expected int, got %T", rhs)
+		}
+		if r.Sign() == 0 {
 			return nil, fmt.Errorf("mod by zero")
 		}
-		return l % r, nil
+		return normInt(new(big.Int).Mod(l, r))
 	case float64:
 		r, ok := rhs.(float64)
 		if !ok {
@@ -431,6 +521,8 @@ func dsOperatorFloor(lhs, _ StorageValue) (StorageValue, error) {
 		return math.Floor(l), nil
 	case int64:
 		return l, nil
+	case *big.Int:
+		return l, nil // integers are already whole
 	}
 	return nil, fmt.Errorf("unsupported type for floor: %T", lhs)
 }
@@ -441,6 +533,8 @@ func dsOperatorCeil(lhs, _ StorageValue) (StorageValue, error) {
 		return math.Ceil(l), nil
 	case int64:
 		return l, nil
+	case *big.Int:
+		return l, nil
 	}
 	return nil, fmt.Errorf("unsupported type for ceil: %T", lhs)
 }
@@ -448,14 +542,28 @@ func dsOperatorCeil(lhs, _ StorageValue) (StorageValue, error) {
 func dsOperatorMax(lhs, rhs StorageValue) (StorageValue, error) {
 	switch l := lhs.(type) {
 	case int64:
-		r, ok := rhs.(int64)
-		if !ok {
-			return nil, fmt.Errorf("type mismatch for max: expected int64, got %T", rhs)
+		switch r := rhs.(type) {
+		case int64:
+			if r > l {
+				return r, nil
+			}
+			return l, nil
+		case *big.Int:
+			if r.Cmp(big.NewInt(l)) > 0 {
+				return r, nil
+			}
+			return l, nil
 		}
-		if r > l {
-			return r, nil
+		return nil, fmt.Errorf("type mismatch for max: expected int, got %T", rhs)
+	case *big.Int:
+		r := toBigInt(rhs)
+		if r == nil {
+			return nil, fmt.Errorf("type mismatch for max: expected int, got %T", rhs)
 		}
-		return l, nil
+		if r.Cmp(l) > 0 {
+			return normInt(r)
+		}
+		return normInt(l)
 	case float64:
 		r, ok := rhs.(float64)
 		if !ok {
@@ -469,14 +577,28 @@ func dsOperatorMax(lhs, rhs StorageValue) (StorageValue, error) {
 func dsOperatorMin(lhs, rhs StorageValue) (StorageValue, error) {
 	switch l := lhs.(type) {
 	case int64:
-		r, ok := rhs.(int64)
-		if !ok {
-			return nil, fmt.Errorf("type mismatch for min: expected int64, got %T", rhs)
+		switch r := rhs.(type) {
+		case int64:
+			if r < l {
+				return r, nil
+			}
+			return l, nil
+		case *big.Int:
+			if r.Cmp(big.NewInt(l)) < 0 {
+				return r, nil
+			}
+			return l, nil
 		}
-		if r < l {
-			return r, nil
+		return nil, fmt.Errorf("type mismatch for min: expected int, got %T", rhs)
+	case *big.Int:
+		r := toBigInt(rhs)
+		if r == nil {
+			return nil, fmt.Errorf("type mismatch for min: expected int, got %T", rhs)
 		}
-		return l, nil
+		if r.Cmp(l) < 0 {
+			return normInt(r)
+		}
+		return normInt(l)
 	case float64:
 		r, ok := rhs.(float64)
 		if !ok {
@@ -487,66 +609,112 @@ func dsOperatorMin(lhs, rhs StorageValue) (StorageValue, error) {
 	return nil, fmt.Errorf("unsupported type for min: %T", lhs)
 }
 
+// Feels lik a lot just for a simple bitwise operation, but still cheaper than big.int allocs etc
 func dsOperatorAnd(lhs, rhs StorageValue) (StorageValue, error) {
-	l, ok1 := lhs.(int64)
-	r, ok2 := rhs.(int64)
-	if !ok1 || !ok2 {
-		return nil, fmt.Errorf("and requires int64 operands, got %T and %T", lhs, rhs)
+	// Fast path: both int64, no allocation
+	if l, ok1 := lhs.(int64); ok1 {
+		if r, ok2 := rhs.(int64); ok2 {
+			return l & r, nil
+		}
+		// Mixed: int64 & *big.Int
+		r := toBigInt(rhs)
+		if r == nil {
+			return nil, fmt.Errorf("and requires int operands, got %T and %T", lhs, rhs)
+		}
+		return normInt(new(big.Int).And(big.NewInt(l), r))
 	}
-	return l & r, nil
+	l := toBigInt(lhs)
+	r := toBigInt(rhs)
+	if l == nil || r == nil {
+		return nil, fmt.Errorf("and requires int operands, got %T and %T", lhs, rhs)
+	}
+	return normInt(new(big.Int).And(l, r))
 }
 
 func dsOperatorOr(lhs, rhs StorageValue) (StorageValue, error) {
-	l, ok1 := lhs.(int64)
-	r, ok2 := rhs.(int64)
-	if !ok1 || !ok2 {
-		return nil, fmt.Errorf("or requires int64 operands, got %T and %T", lhs, rhs)
+	if l, ok1 := lhs.(int64); ok1 {
+		if r, ok2 := rhs.(int64); ok2 {
+			return l | r, nil
+		}
+		r := toBigInt(rhs)
+		if r == nil {
+			return nil, fmt.Errorf("or requires int operands, got %T and %T", lhs, rhs)
+		}
+		return normInt(new(big.Int).Or(big.NewInt(l), r))
 	}
-	return l | r, nil
+	l := toBigInt(lhs)
+	r := toBigInt(rhs)
+	if l == nil || r == nil {
+		return nil, fmt.Errorf("or requires int operands, got %T and %T", lhs, rhs)
+	}
+	return normInt(new(big.Int).Or(l, r))
 }
 
 func dsOperatorXor(lhs, rhs StorageValue) (StorageValue, error) {
-	l, ok1 := lhs.(int64)
-	r, ok2 := rhs.(int64)
-	if !ok1 || !ok2 {
-		return nil, fmt.Errorf("xor requires int64 operands, got %T and %T", lhs, rhs)
+	if l, ok1 := lhs.(int64); ok1 {
+		if r, ok2 := rhs.(int64); ok2 {
+			return l ^ r, nil
+		}
+		r := toBigInt(rhs)
+		if r == nil {
+			return nil, fmt.Errorf("xor requires int operands, got %T and %T", lhs, rhs)
+		}
+		return normInt(new(big.Int).Xor(big.NewInt(l), r))
 	}
-	return l ^ r, nil
+	l := toBigInt(lhs)
+	r := toBigInt(rhs)
+	if l == nil || r == nil {
+		return nil, fmt.Errorf("xor requires int operands, got %T and %T", lhs, rhs)
+	}
+	return normInt(new(big.Int).Xor(l, r))
 }
 
 func dsOperatorLeftShift(lhs, rhs StorageValue) (StorageValue, error) {
-	l, ok1 := lhs.(int64)
-	r, ok2 := rhs.(int64)
-	if !ok1 || !ok2 {
-		return nil, fmt.Errorf("left_shift requires int64 operands, got %T and %T", lhs, rhs)
+	r, ok := rhs.(int64)
+	if !ok {
+		return nil, fmt.Errorf("left_shift: shift amount must be int64, got %T", rhs)
 	}
 	if r < 0 {
 		return nil, fmt.Errorf("left_shift: negative shift amount")
 	}
 	if r >= maxIntBits {
-		return nil, fmt.Errorf("left_shift: shift amount %d exceeds int bit limit", r)
+		return nil, fmt.Errorf("left_shift: shift amount %d exceeds int limit", r)
 	}
-	if l != 0 {
-		if bits.Len64(uint64(l))+int(r) >= maxIntBits {
-			return nil, fmt.Errorf("result would exceed int bit limit")
+	if l, ok := lhs.(int64); ok {
+		if l != 0 && bits.Len64(uint64(l))+int(r) < 63 {
+			return l << uint(r), nil
 		}
+		return normInt(new(big.Int).Lsh(big.NewInt(l), uint(r)))
 	}
-	return l << uint(r), nil
+	l := toBigInt(lhs)
+	if l == nil {
+		return nil, fmt.Errorf("left_shift requires int operands, got %T and %T", lhs, rhs)
+	}
+	return normInt(new(big.Int).Lsh(l, uint(r)))
 }
 
 func dsOperatorRightShift(lhs, rhs StorageValue) (StorageValue, error) {
-	l, ok1 := lhs.(int64)
-	r, ok2 := rhs.(int64)
-	if !ok1 || !ok2 {
-		return nil, fmt.Errorf("right_shift requires int64 operands, got %T and %T", lhs, rhs)
+	r, ok := rhs.(int64)
+	if !ok {
+		return nil, fmt.Errorf("right_shift: shift amount must be int64, got %T", rhs)
 	}
 	if r < 0 {
 		return nil, fmt.Errorf("right_shift: negative shift amount")
 	}
-	if r >= maxIntBits {
-		return int64(0), nil // shifting out all bits
+	if l, ok := lhs.(int64); ok {
+		if r >= 63 {
+			return int64(0), nil
+		}
+		return l >> uint(r), nil
 	}
-	return l >> uint(r), nil
+	if r >= maxIntBits {
+		return int64(0), nil
+	}
+	l := toBigInt(lhs)
+	if l == nil {
+		return nil, fmt.Errorf("right_shift requires int operands, got %T and %T", lhs, rhs)
+	}
+	return normInt(new(big.Int).Rsh(l, uint(r)))
 }
 
 func dsOperatorRemove(lhs, rhs StorageValue) (StorageValue, error) {
@@ -555,11 +723,11 @@ func dsOperatorRemove(lhs, rhs StorageValue) (StorageValue, error) {
 		return nil, fmt.Errorf("remove requires a list, got %T", lhs)
 	}
 	for i, v := range list {
-		if v == rhs {
+		if storageValEqual(v, rhs) {
 			return append(list[:i], list[i+1:]...), nil
 		}
 	}
-	return list, nil // not found, return unchanged — matches Python's silent pass
+	return list, nil
 }
 
 func dsOperatorPop(lhs, rhs StorageValue) (StorageValue, error) {
@@ -610,10 +778,56 @@ func dsOperatorUpdate(lhs, rhs StorageValue) (StorageValue, error) {
 		if !ok {
 			return nil, fmt.Errorf("update on dict requires map[string]any operand, got %T", rhs)
 		}
-		for k, v := range entries {
-			container[k] = v
-		}
+		maps.Copy(container, entries)
 		return container, nil
 	}
 	return nil, fmt.Errorf("update requires list or dict, got %T", lhs)
+}
+
+func toBigInt(v StorageValue) *big.Int {
+	switch val := v.(type) {
+	case int64:
+		return big.NewInt(val)
+	case *big.Int:
+		return val
+	}
+	return nil
+}
+
+func normInt(v *big.Int) (StorageValue, error) {
+	if v.BitLen() > maxIntBits {
+		return nil, fmt.Errorf("result would exceed %d-bit int limit", maxIntBits)
+	}
+	if v.IsInt64() {
+		return v.Int64(), nil
+	}
+	return v, nil
+}
+
+func isIntType(v StorageValue) bool {
+	switch v.(type) {
+	case int64, *big.Int:
+		return true
+	}
+	return false
+}
+
+func storageValEqual(a, b StorageValue) bool {
+	switch av := a.(type) {
+	case int64:
+		switch bv := b.(type) {
+		case int64:
+			return av == bv
+		case *big.Int:
+			return bv.IsInt64() && bv.Int64() == av
+		}
+	case *big.Int:
+		switch bv := b.(type) {
+		case int64:
+			return av.IsInt64() && av.Int64() == bv
+		case *big.Int:
+			return av.Cmp(bv) == 0
+		}
+	}
+	return a == b
 }
