@@ -498,14 +498,31 @@ func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connect
 		return nil
 	}
 
-	s.state.ReceivedItems.Add(slotInfo.Team, slotInfo.Slot, []NetworkItem{
-		NetworkItem{
-			Item:     itemId,
-			Location: -1,
-			Player:   0,
-			Flags:    0,
-		},
-	})
+	networkItem := NetworkItem{
+		Item:     itemId,
+		Location: -1,
+		Player:   0,
+		Flags:    0,
+	}
+
+	s.state.ReceivedItems.Add(slotInfo.Team, slotInfo.Slot, []NetworkItem{networkItem})
+
+	text := fmt.Sprintf("Cheat console: sending %q to %s", item, player)
+
+	msg := formatGenericMessageWithItem(
+		&connState.registeredClient.Team,
+		&slotInfo.Slot,
+		"ItemCheat",
+		text,
+		&networkItem,
+	)
+
+	s.broadcastPrintJson(ctx, []PrintJsonMessage{msg})
+
+	// Make sure requester always gets the feedback too
+	if connState.registeredClient.textConcernsSelf && slotInfo.Slot != connState.registeredClient.Slot {
+		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{msg})
+	}
 
 	return nil
 }

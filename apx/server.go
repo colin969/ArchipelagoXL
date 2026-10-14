@@ -2622,3 +2622,14 @@ func formatGenericMessage(team *int, slot *int, msgType string, text string) Pri
 		Message: &text,
 	}
 }
+
+func formatGenericMessageWithItem(team *int, slot *int, msgType string, text string, item *NetworkItem) PrintJsonMessage {
+	return PrintJsonMessage{
+		Type:    msgType,
+		Data:    []JsonMessagePart{{Type: "text", Text: text}},
+		Team:    team,
+		Slot:    slot,
+		Message: &text,
+		Item:    item,
+	}
+}
