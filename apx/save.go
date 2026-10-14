@@ -1,11 +1,13 @@
 package main
 
 import (
+	"apx/multidata"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -15,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/klauspost/compress/zstd"
 )
+
+// Mutable
 
 type SavedDSEntry struct {
 	Value       json.RawMessage `json:"value"`
@@ -405,4 +409,323 @@ func copyFile(src, dst string) error {
 	}
 
 	return out.Close()
+}
+
+// Immutable
+
+type RoomDefinition struct {
+	SeedName          string                        `json:"seed_name"`
+	Version           [3]int                        `json:"version"`
+	Tags              []string                      `json:"tags"`
+	RaceMode          int                           `json:"race_mode"`
+	ServerOptions     map[string]any                `json:"server_options"`
+	Locations         map[string]map[int64][3]int64 `json:"locations"` // "team:slot" -> locID -> [item,player,flags]
+	SlotInfo          map[string]SlotInfoDef        `json:"slot_info"`
+	SlotData          map[string]map[string]any     `json:"slot_data"`
+	SlotMinVersions   map[string][3]int             `json:"slot_min_versions"`
+	ConnectNames      map[string][2]int             `json:"connect_names"`
+	PrecollectedItems map[string][]int64            `json:"precollected_items"`
+	PrecollectedHints []Hint                        `json:"precollected_hints"`
+	Spheres           []map[string][]int64          `json:"spheres"`
+	DatapackChecksums map[string]string             `json:"datapack_checksums"`
+}
+
+type SlotInfoDef struct {
+	Name         string `json:"name"`
+	Game         string `json:"game"`
+	Type         int    `json:"type"`
+	GroupMembers []int  `json:"group_members"`
+}
+
+func roomDefinitionFromMultidata(md *multidata.MultiData) *RoomDefinition {
+	dpChecksums := make(map[string]string, len(md.DataPackage))
+	for game, dp := range md.DataPackage {
+		dpChecksums[game] = dp.Checksum
+	}
+	def := &RoomDefinition{
+		SeedName:          md.SeedName,
+		Tags:              make([]string, len(md.Tags)),
+		RaceMode:          md.RaceMode,
+		Version:           [3]int{md.Version[0], md.Version[1], md.Version[2]},
+		DatapackChecksums: dpChecksums,
+		Locations:         make(map[string]map[int64][3]int64),
+		SlotInfo:          make(map[string]SlotInfoDef),
+		SlotData:          make(map[string]map[string]any),
+		SlotMinVersions:   make(map[string][3]int),
+		ConnectNames:      make(map[string][2]int),
+		PrecollectedItems: make(map[string][]int64),
+		PrecollectedHints: make([]Hint, 0),
+		Spheres:           make([]map[string][]int64, len(md.Spheres)),
+		ServerOptions:     make(map[string]any),
+	}
+
+	copy(def.Tags, md.Tags)
+
+	for slot, locs := range md.Locations {
+		key := teamSlotKey(TeamSlot{Team: 0, Slot: slot})
+		inner := make(map[int64][3]int64, len(locs))
+		for locID, t := range locs {
+			inner[locID] = [3]int64{t[0], t[1], t[2]}
+		}
+		def.Locations[key] = inner
+	}
+
+	for slot, info := range md.SlotInfo {
+		members := make([]int, len(info.GroupMembers))
+		copy(members, info.GroupMembers)
+		def.SlotInfo[teamSlotKey(TeamSlot{Team: 0, Slot: slot})] = SlotInfoDef{
+			Name:         info.Name,
+			Game:         info.Game,
+			Type:         int(info.Type),
+			GroupMembers: members,
+		}
+	}
+
+	for slot, data := range md.SlotData {
+		cp := make(map[string]any, len(data))
+		maps.Copy(cp, data)
+		def.SlotData[teamSlotKey(TeamSlot{Team: 0, Slot: slot})] = cp
+	}
+
+	for slot, v := range md.MinimumVersions.Clients {
+		def.SlotMinVersions[teamSlotKey(TeamSlot{Team: 0, Slot: slot})] = [3]int{v[0], v[1], v[2]}
+	}
+
+	for name, pair := range md.ConnectNames {
+		def.ConnectNames[name] = [2]int{pair[0], pair[1]}
+	}
+
+	for slot, itemIDs := range md.PrecollectedItems {
+		ids := make([]int64, len(itemIDs))
+		copy(ids, itemIDs)
+		def.PrecollectedItems[teamSlotKey(TeamSlot{Team: 0, Slot: slot})] = ids
+	}
+
+	for i, sphere := range md.Spheres {
+		s := make(map[string][]int64, len(sphere))
+		for slot, locIDs := range sphere {
+			cp := make([]int64, len(locIDs))
+			copy(cp, locIDs)
+			s[teamSlotKey(TeamSlot{Team: 0, Slot: slot})] = cp
+		}
+		def.Spheres[i] = s
+	}
+
+	var hints []Hint
+	for _, setHints := range md.PrecollectedHints {
+		for _, h := range setHints {
+			status := HintStatusPriority
+			if h.Found {
+				status = HintStatusFound
+			}
+			hints = append(hints, Hint{
+				ReceivingPlayer: int32(h.ReceivingPlayer),
+				FindingPlayer:   int32(h.FindingPlayer),
+				Location:        h.Location,
+				Item:            h.Item,
+				ItemFlags:       int16(h.ItemFlags),
+				Found:           h.Found,
+				Entrance:        h.Entrance,
+				Status:          status,
+			})
+		}
+	}
+	def.PrecollectedHints = hints
+
+	maps.Copy(def.ServerOptions, md.ServerOptions)
+
+	return def
+}
+
+func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
+	locations := make(map[TeamSlot]map[int64]Location, len(def.Locations))
+	for key, locs := range def.Locations {
+		ts := teamSlotFromKey(key)
+		inner := make(map[int64]Location, len(locs))
+		for locID, t := range locs {
+			inner[locID] = Location{
+				Item:    t[0],
+				Player:  int16(t[1]),
+				Flags:   int16(t[2]),
+				Checked: false,
+			}
+		}
+		locations[ts] = inner
+	}
+
+	slotInfoMap := make(map[TeamSlot]SlotInfo, len(def.SlotInfo))
+	for key, info := range def.SlotInfo {
+		ts := teamSlotFromKey(key)
+		members := make([]int, len(info.GroupMembers))
+		copy(members, info.GroupMembers)
+		slotInfoMap[ts] = SlotInfo{
+			Team:         ts.Team,
+			Slot:         ts.Slot,
+			Name:         info.Name,
+			Game:         info.Game,
+			Type:         SlotType(info.Type),
+			GroupMembers: members,
+		}
+	}
+
+	nameToSlot := make(map[string]*SlotInfo, len(def.ConnectNames))
+	for name, pair := range def.ConnectNames {
+		ts := TeamSlot{Team: pair[0], Slot: pair[1]}
+		if info, ok := slotInfoMap[TeamSlot{Team: 0, Slot: ts.Slot}]; ok {
+			infoCopy := info
+			nameToSlot[name] = &infoCopy
+		}
+	}
+
+	slotData := make(map[TeamSlot]map[string]any, len(def.SlotData))
+	for key, data := range def.SlotData {
+		cp := make(map[string]any, len(data))
+		maps.Copy(cp, data)
+		slotData[teamSlotFromKey(key)] = cp
+	}
+
+	slotMinVersions := make(map[TeamSlot]Version, len(def.SlotMinVersions))
+	for key, v := range def.SlotMinVersions {
+		slotMinVersions[teamSlotFromKey(key)] = Version{Major: v[0], Minor: v[1], Build: v[2]}
+	}
+
+	startInv := make(map[TeamSlot][]NetworkItem, len(def.PrecollectedItems))
+	for key, ids := range def.PrecollectedItems {
+		items := make([]NetworkItem, len(ids))
+		for i, id := range ids {
+			items[i] = NetworkItem{Item: id, Location: -2, Player: 0}
+		}
+		startInv[teamSlotFromKey(key)] = items
+	}
+
+	spheres := make(Spheres, len(def.Spheres))
+	sphereLocs := make(SphereLocs, len(def.Spheres))
+	for i, s := range def.Spheres {
+		sphere := make(Sphere, len(s))
+		group := make(SphereLocGroup, len(s))
+		for key, locIDs := range s {
+			ts := teamSlotFromKey(key)
+			cp := make([]int64, len(locIDs))
+			copy(cp, locIDs)
+			sphere[ts] = cp
+			slotLocs := locations[ts]
+			locs := make(map[int64]*Location, len(locIDs))
+			for _, locID := range locIDs {
+				if loc, ok := slotLocs[locID]; ok {
+					locCopy := loc
+					locs[locID] = &locCopy
+				}
+			}
+			group[ts] = locs
+		}
+		spheres[i] = sphere
+		sphereLocs[i] = group
+	}
+
+	// Change with teams support in future
+	playersNetwork := make([]NetworkPlayer, 0, len(def.SlotInfo))
+	slotInfoNetwork := make(map[int]NetworkSlot, len(def.SlotInfo))
+	for key, info := range def.SlotInfo {
+		ts := teamSlotFromKey(key)
+		members := make([]int, len(info.GroupMembers))
+		copy(members, info.GroupMembers)
+		playersNetwork = append(playersNetwork, NetworkPlayer{
+			Team:  ts.Team,
+			Slot:  ts.Slot,
+			Alias: info.Name,
+			Name:  info.Name,
+		})
+		slotInfoNetwork[ts.Slot] = NetworkSlot{
+			Name:         info.Name,
+			Game:         info.Game,
+			Type:         info.Type,
+			GroupMembers: members,
+		}
+	}
+
+	slotInfoNetworkJson, err := json.Marshal(slotInfoNetwork)
+	if err != nil {
+		return nil, err
+	}
+	networkPlayersJson, err := json.Marshal(playersNetwork)
+	if err != nil {
+		return nil, err
+	}
+
+	clientStatuses := ClientStatuses{status: make(map[int]map[int]ClientStatus)}
+	for key := range def.SlotInfo {
+		ts := teamSlotFromKey(key)
+		if clientStatuses.status[ts.Team] == nil {
+			clientStatuses.status[ts.Team] = make(map[int]ClientStatus)
+		}
+		clientStatuses.status[ts.Team][ts.Slot] = ClientStatusUnknown
+	}
+
+	apState := &ApState{
+		Checks:              newChecksState(locations),
+		ReceivedItems:       newReceivedItems(),
+		Hints:               newHintsState(),
+		DataStorage:         newDataStorage(),
+		ClientStatuses:      &clientStatuses,
+		Locations:           locations,
+		Spheres:             spheres,
+		SphereLocs:          sphereLocs,
+		NameToSlot:          nameToSlot,
+		SlotInfo:            slotInfoMap,
+		SlotData:            slotData,
+		SlotMinVersions:     slotMinVersions,
+		SlotStartInventory:  startInv,
+		Version:             Version{Major: def.Version[0], Minor: def.Version[1], Build: def.Version[2]},
+		ServerOptions:       parseEmbeddedServerOptions(def.ServerOptions),
+		Tags:                def.Tags,
+		Seed:                def.SeedName,
+		RaceMode:            def.RaceMode,
+		PlayersNetwork:      NetworkPlayers{players: playersNetwork, rawJson: networkPlayersJson},
+		SlotInfoNetwork:     slotInfoNetwork,
+		SlotInfoNetworkJson: slotInfoNetworkJson,
+	}
+	for _, hint := range def.PrecollectedHints {
+		apState.Hints.AddSlotHint(hint)
+	}
+	populateReadData(apState)
+	return apState, nil
+}
+
+func populateReadData(state *ApState) {
+	ds := state.DataStorage
+
+	// race_mode — static scalar from multidata
+	raceMode := int64(state.RaceMode)
+	ds.RegisterReadKey("race_mode", func() StorageValue {
+		return raceMode
+	})
+
+	// Per-slot keys — all team 0 at load time
+	for ts, slotData := range state.SlotData {
+		ts := ts         // capture
+		data := slotData // capture
+		slot := ts.Slot
+
+		// slot_data_{slot} — static, captured at load
+		ds.RegisterReadKey(fmt.Sprintf("slot_data_%d", slot), func() StorageValue {
+			return data
+		})
+
+		// hints_{team}_{slot} — dynamic, reads live hint state
+		ds.RegisterReadKey(fmt.Sprintf("hints_%d_%d", ts.Team, slot), func() StorageValue {
+			return state.Hints.GetSlotHints(ts)
+		})
+
+		// client_status_{team}_{slot} — not tracked in ApState yet, return 0 (CLIENT_UNKNOWN)
+		// TODO: wire up to client_game_state equivalent when implemented
+		ds.RegisterReadKey(fmt.Sprintf("client_status_%d_%d", ts.Team, slot), func() StorageValue {
+			return int64(0)
+		})
+	}
+}
+
+func teamSlotFromKey(key string) TeamSlot {
+	var team, slot int
+	fmt.Sscanf(key, "%d:%d", &team, &slot)
+	return TeamSlot{Team: team, Slot: slot}
 }

@@ -41,8 +41,8 @@ type NetworkSlot struct {
 type Hint struct {
 	ReceivingPlayer int
 	FindingPlayer   int
-	Location        int
-	Item            int
+	Location        int64
+	Item            int64
 	Found           bool
 	Entrance        string
 	ItemFlags       int
@@ -160,11 +160,11 @@ func buildHint(args ...any) (*Hint, error) {
 	if !ok {
 		return nil, fmt.Errorf("Hint: finding_player must be int, got %T", args[1])
 	}
-	location, ok := toInt(args[2])
+	location, ok := toInt64(args[2])
 	if !ok {
 		return nil, fmt.Errorf("Hint: location must be int, got %T", args[2])
 	}
-	item, ok := toInt(args[3])
+	item, ok := toInt64(args[3])
 	if !ok {
 		return nil, fmt.Errorf("Hint: item must be int, got %T", args[3])
 	}

@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/klauspost/compress/zstd"
 )
 
 type RoomStore struct {
@@ -25,7 +27,7 @@ type RoomRecord struct {
 	DeathlinkDisabled    bool
 	ReducedAccess        bool
 	DeathlinkProbability float64
-	MultidataBytes       []byte
+	Definition           *RoomDefinition
 }
 
 func NewRoomStore(connString string) (*RoomStore, error) {
@@ -77,16 +79,23 @@ func (s *RoomStore) Save(r RoomRecord) error {
 	if !s.enabled {
 		return nil
 	}
-	_, err := s.pool.Exec(context.Background(), `
-        INSERT INTO rooms (lobby_room_id, normal_port, reduced_port, created_at, per_slot_passwords, deathlink_disabled, reduced_access, multidata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (lobby_room_id) DO UPDATE SET
-            normal_port        = excluded.normal_port,
-            reduced_port       = excluded.reduced_port,
-            per_slot_passwords = excluded.per_slot_passwords,
-            deathlink_disabled = excluded.deathlink_disabled,
-            reduced_access     = excluded.reduced_access
-    `, r.LobbyRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(), r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess, &r.MultidataBytes)
+	defBytes, err := marshalDefinition(r.Definition)
+	if err != nil {
+		return fmt.Errorf("marshalling room definition: %w", err)
+	}
+	_, err = s.pool.Exec(context.Background(), `
+			INSERT INTO rooms (lobby_room_id, normal_port, reduced_port, created_at, per_slot_passwords,
+												 deathlink_disabled, reduced_access, definition)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (lobby_room_id) DO UPDATE SET
+					normal_port        = excluded.normal_port,
+					reduced_port       = excluded.reduced_port,
+					per_slot_passwords = excluded.per_slot_passwords,
+					deathlink_disabled = excluded.deathlink_disabled,
+					reduced_access     = excluded.reduced_access,
+					definition         = excluded.definition
+	`, r.LobbyRoomId, r.NormalId, r.ReducedId, r.CreatedAt.Unix(),
+		r.PerSlotPasswords, r.DeathlinkDisabled, r.ReducedAccess, defBytes)
 	return err
 }
 
@@ -423,18 +432,26 @@ func (s *RoomStore) FindFullByLobbyRoomId(lobbyRoomId string) (*RoomRecord, erro
 	}
 	var r RoomRecord
 	var ts int64
+	var defBytes []byte
 	err := s.pool.QueryRow(context.Background(), `
-        SELECT lobby_room_id, normal_port, reduced_port, created_at, disabled,
-               per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability, multidata
-        FROM rooms WHERE lobby_room_id = $1`,
+			SELECT lobby_room_id, normal_port, reduced_port, created_at, disabled,
+						 per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability, definition
+			FROM rooms WHERE lobby_room_id = $1`,
 		lobbyRoomId,
 	).Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts, &r.Disabled,
-		&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability, &r.MultidataBytes)
+		&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability, &defBytes)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if len(defBytes) > 0 {
+		def, err := unmarshalDefinition(defBytes)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshalling room definition: %w", err)
+		}
+		r.Definition = def
 	}
 	r.CreatedAt = time.Unix(ts, 0)
 	return &r, nil
@@ -445,9 +462,9 @@ func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 		return nil, nil
 	}
 	rows, err := s.pool.Query(context.Background(), `
-        SELECT lobby_room_id, normal_port, reduced_port, created_at,
-               per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability, multidata
-        FROM rooms WHERE disabled = FALSE`)
+			SELECT lobby_room_id, normal_port, reduced_port, created_at,
+						 per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability, definition
+			FROM rooms WHERE disabled = FALSE`)
 	if err != nil {
 		return nil, err
 	}
@@ -457,12 +474,39 @@ func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 	for rows.Next() {
 		var r RoomRecord
 		var ts int64
+		var defBytes []byte
 		if err := rows.Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts,
-			&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability, &r.MultidataBytes); err != nil {
+			&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability, &defBytes); err != nil {
 			return nil, err
 		}
 		r.CreatedAt = time.Unix(ts, 0)
+		if len(defBytes) > 0 {
+			def, err := unmarshalDefinition(defBytes)
+			if err != nil {
+				return nil, fmt.Errorf("unmarshalling definition for room %s: %w", r.LobbyRoomId, err)
+			}
+			r.Definition = def
+		}
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+func marshalDefinition(def *RoomDefinition) ([]byte, error) {
+	raw, err := json.Marshal(def)
+	if err != nil {
+		return nil, err
+	}
+	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	return enc.EncodeAll(raw, nil), nil
+}
+
+func unmarshalDefinition(data []byte) (*RoomDefinition, error) {
+	dec, _ := zstd.NewReader(nil)
+	raw, err := dec.DecodeAll(data, nil)
+	if err != nil {
+		return nil, err
+	}
+	var def RoomDefinition
+	return &def, json.Unmarshal(raw, &def)
 }

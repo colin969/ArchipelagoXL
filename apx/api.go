@@ -294,14 +294,12 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 	for _, record := range records {
-		md, err := multidata.ParseMultidata(record.MultidataBytes)
-		if err != nil {
-			log.Printf("Failed to bring room online, error parsing multidata: %v", err)
+		if record.Definition == nil {
+			log.Printf("skipping room %s: no definition stored", record.LobbyRoomId)
 			continue
 		}
-		record.MultidataBytes = nil
 
-		room, err := srv.startNewHostedRoom(record.LobbyRoomId, md, nil, &record.NormalId, &record.ReducedId,
+		room, err := srv.startNewHostedRoom(record.LobbyRoomId, record.Definition, &record.NormalId, &record.ReducedId,
 			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 		if err != nil {
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
@@ -507,7 +505,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		lobbyRoomId = randomId(24)
 	}
 
-	room, err := rm.startRoomFromMultiData(lobbyRoomId, md, fileBytes, nil, nil,
+	room, err := rm.startRoomFromMultiData(lobbyRoomId, md, nil, nil,
 		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -658,14 +656,13 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	md, err := multidata.ParseMultidata(record.MultidataBytes)
-	if err != nil {
+	if record.Definition == nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
+		json.NewEncoder(w).Encode(map[string]string{"error": "room has no definition stored? Broken"})
 		return
 	}
 
-	room, err := rm.startNewHostedRoom(record.LobbyRoomId, md, record.MultidataBytes, &record.NormalId, &record.ReducedId,
+	room, err := rm.startNewHostedRoom(record.LobbyRoomId, record.Definition, &record.NormalId, &record.ReducedId,
 		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -701,7 +698,12 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	room.Close()
+	saved := room.Close()
+	if saved {
+		log.Printf("Closed room %s (saved)", roomId)
+	} else {
+		log.Printf("Closed room %s (not saved)", roomId)
+	}
 
 	if err := rm.store.Disable(roomId); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -854,18 +856,18 @@ func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 func (rm *RoomManager) startRoomFromMultiData(
 	lobbyRoomId string,
 	md *multidata.MultiData,
-	rawMd []byte,
 	normalIdPtr, reducedIdPtr *int,
 	perSlotPasswords, deathlinkDisabled, reducedAccess bool,
 	deathlinkProbability float64,
 	save bool,
 ) (*HostedRoom, error) {
 	rm.saveDataPackagesToDisk(md)
-	return rm.startNewHostedRoom(lobbyRoomId, md, rawMd, normalIdPtr, reducedIdPtr,
+	def := roomDefinitionFromMultidata(md)
+	return rm.startNewHostedRoom(lobbyRoomId, def, normalIdPtr, reducedIdPtr,
 		perSlotPasswords, deathlinkDisabled, reducedAccess, deathlinkProbability, save)
 }
 
-func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.MultiData, rawMd []byte, normalIdPtr, reducedIdPtr *int,
+func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefinition, normalIdPtr, reducedIdPtr *int,
 	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, deathlinkProbability float64, save bool) (*HostedRoom, error) {
 
 	_, exists := rm.registry.Get(lobbyRoomId)
@@ -873,8 +875,8 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 		return nil, fmt.Errorf("room already exists: %s", lobbyRoomId)
 	}
 
-	// Construct the Ap State from the Multidata
-	apState, err := convertMultiDataToState(md)
+	// Construct the Ap State from the Room definition
+	apState, err := apStateFromDefinition(roomDef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse multidata: %v", err)
 	}
@@ -885,7 +887,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 	connRegistry := newConnectionRegistry(&lobbyRoomId, rm.metrics)
 
 	// Only use memory costly optimizations when at least 50 datapackages in the room
-	var useDatapackageOptimization = len(md.DataPackage) >= 50
+	var useDatapackageOptimization = len(roomDef.DatapackChecksums) >= 50
 	datapackageCache := newDataPackageStore(useDatapackageOptimization, rm.registry.datapackages) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	bounceInfo.deathlinkProbability = deathlinkProbability
@@ -918,12 +920,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 		}
 	}
 
-	dpChecksums := make(map[string]string)
-	for game, dp := range md.DataPackage {
-		dpChecksums[game] = dp.Checksum
-	}
-
-	roomInfoStore := newRoomInfoStore(dpChecksums)
+	roomInfoStore := newRoomInfoStore(roomDef.DatapackChecksums)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1034,7 +1031,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, md *multidata.Mult
 			PerSlotPasswords:  perSlotPasswords,
 			DeathlinkDisabled: deathlinkDisabled,
 			ReducedAccess:     reducedAccess,
-			MultidataBytes:    rawMd,
+			Definition:        roomDef,
 		}); err != nil {
 			log.Printf("failed to persist room %s: %v", lobbyRoomId, err)
 		}
@@ -1756,14 +1753,19 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 					continue
 				}
 
-				log.Printf("killing idle room %s", room.lobbyRoomId)
-				room.Close()
+				lobbyId := room.lobbyRoomId
+				saved := room.Close()
+				if saved {
+					log.Printf("Closed room %s (idle timeout, saved)", lobbyId)
+				} else {
+					log.Printf("Closed room %s (idle timeout, not saved)", lobbyId)
+				}
 				if rm.store != nil {
-					if err := rm.store.Disable(room.lobbyRoomId); err != nil {
-						log.Printf("failed to disable room %s in store: %v", room.lobbyRoomId, err)
+					if err := rm.store.Disable(lobbyId); err != nil {
+						log.Printf("failed to disable room %s in store: %v", lobbyId, err)
 					}
 				}
-				rm.registry.Remove(room.lobbyRoomId)
+				rm.registry.Remove(lobbyId)
 			}
 		}
 	}()
@@ -1873,33 +1875,39 @@ func fetchApxServerPassword(cfg *Config, apRoomId string) (string, error) {
 
 func (rm *RoomManager) CloseAll() {
 	rooms := rm.registry.List()
-	var wg sync.WaitGroup
+	var (
+		wg     sync.WaitGroup
+		closed atomic.Int64
+		saved  atomic.Int64
+	)
 	for _, room := range rooms {
 		wg.Add(1)
 		go func(r *HostedRoom) {
 			defer wg.Done()
-			r.Close()
+			if r.Close() {
+				saved.Add(1)
+			}
+			closed.Add(1)
 		}(room)
 	}
 	wg.Wait()
+	log.Printf("closed %d rooms, %d saved", closed.Load(), saved.Load())
 }
 
-func (hs *HostedRoom) Close() {
-	// Unassign handlers so no new conns are made
+func (hs *HostedRoom) Close() bool {
 	hs.normalHandler = nil
 	hs.reducedHandler = nil
 
 	hs.cancel()
-
-	log.Printf("Closing room %s", hs.lobbyRoomId)
 
 	if hs.apx != nil && hs.apx.saveHandler != nil {
 		ss := snapshotState(hs.apx.state)
 		err := hs.apx.saveHandler.Save(context.Background(), hs.apx.lobbyRoomId, ss)
 		if err != nil {
 			log.Printf("Failed to save room %s: %v", hs.apx.lobbyRoomId, err)
-			return
 		}
-		log.Printf("Saved room %s", hs.apx.lobbyRoomId)
+		return err == nil
 	}
+
+	return false
 }

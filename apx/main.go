@@ -153,7 +153,7 @@ func run() error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_, err = rm.startRoomFromMultiData(roomId, md, nil, &cfg.NormalPort, &cfg.ReducedPort,
+		_, err = rm.startRoomFromMultiData(roomId, md, &cfg.NormalPort, &cfg.ReducedPort,
 			false, false, false, 1, true)
 		if err != nil {
 			log.Fatalf("starting env defined room: %v", err)
@@ -170,10 +170,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	log.Printf("waiting for signal...")
 	<-ctx.Done()
 
-	log.Printf("shutting down...")
+	log.Printf("APX shutting down...")
 	rm.CloseAll()
 
 	return nil
