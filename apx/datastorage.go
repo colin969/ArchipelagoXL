@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	maxIntBits     = 64
+	maxIntBits     = 256
 	maxStringLen   = 1 * 1024 * 1024
 	maxListLen     = 1 * 1024 * 1024
 	maxKeysPerSlot = 5050

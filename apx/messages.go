@@ -484,7 +484,34 @@ func (m LocationInfoMessage) MarshalJSON() ([]byte, error) {
 }
 
 type LocationChecksMessage struct {
-	Locations []int64 `json:"locations"`
+	// Special decoding since the multiserver doesn't type check it, floats are acceptable :(
+	Locations []int64 `json:"-"`
+}
+
+func (m *LocationChecksMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Locations []json.Number `json:"locations"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Locations = make([]int64, len(raw.Locations))
+	for i, n := range raw.Locations {
+		i64, err := strconv.ParseInt(string(n), 10, 64)
+		if err == nil {
+			m.Locations[i] = i64
+			continue
+		}
+		f, err := strconv.ParseFloat(string(n), 64)
+		if err != nil {
+			return fmt.Errorf("locations[%d]: cannot parse %q as number", i, n)
+		}
+		if f != float64(int64(f)) {
+			return fmt.Errorf("locations[%d]: %v is not a whole number", i, f)
+		}
+		m.Locations[i] = int64(f)
+	}
+	return nil
 }
 
 func (m LocationChecksMessage) MarshalJSON() ([]byte, error) {
