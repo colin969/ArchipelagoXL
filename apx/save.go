@@ -33,8 +33,8 @@ type SaveState struct {
 	HintsUsed            map[string]int                  `json:"hints_used"`
 	Statuses             map[string]map[int]ClientStatus `json:"statuses"`
 	DataStorage          map[string]SavedDSEntry         `json:"data_storage"`
-	SlotActivityTimers   map[string]int                  `json:"slot_activity_timers"`
-	SlotConnectionTimers map[string]int                  `json:"slot_connection_timers"`
+	SlotActivityTimers   map[string]int64                `json:"slot_activity_timers"`
+	SlotConnectionTimers map[string]int64                `json:"slot_connection_timers"`
 }
 
 type SafeSaveHandler struct {
@@ -71,8 +71,8 @@ func snapshotState(s *ApState) *SaveState {
 		HintsUsed:            make(map[string]int),
 		Statuses:             make(map[string]map[int]ClientStatus),
 		DataStorage:          make(map[string]SavedDSEntry),
-		SlotActivityTimers:   make(map[string]int),
-		SlotConnectionTimers: make(map[string]int),
+		SlotActivityTimers:   make(map[string]int64),
+		SlotConnectionTimers: make(map[string]int64),
 	}
 
 	s.Checks.mu.RLock()

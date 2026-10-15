@@ -798,18 +798,41 @@ type TrackerAlias struct {
 	Alias  *string `json:"alias"`
 }
 
-type TrackerItem [4]int
 type TrackerPlayerItems struct {
 	Team   int           `json:"team"`
 	Player int           `json:"player"`
-	Items  []TrackerItem `json:"items"`
+	Items  []NetworkItem `json:"items"`
 }
 
-type TrackerLocation [2]int
+func (tp TrackerPlayerItems) MarshalJSON() ([]byte, error) {
+	b := make([]byte, 0, 40+len(tp.Items)*40)
+	b = append(b, `{"team":`...)
+	b = strconv.AppendInt(b, int64(tp.Team), 10)
+	b = append(b, `,"player":`...)
+	b = strconv.AppendInt(b, int64(tp.Player), 10)
+	b = append(b, `,"items":[`...)
+	for i, item := range tp.Items {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '[')
+		b = strconv.AppendInt(b, item.Item, 10)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, item.Location, 10)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, int64(item.Player), 10)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, int64(item.Flags), 10)
+		b = append(b, ']')
+	}
+	b = append(b, `]}`...)
+	return b, nil
+}
+
 type TrackerPlayerChecks struct {
-	Team      int               `json:"team"`
-	Player    int               `json:"player"`
-	Locations []TrackerLocation `json:"locations"`
+	Team      int     `json:"team"`
+	Player    int     `json:"player"`
+	Locations []int64 `json:"locations"`
 }
 
 type TrackerTotalChecksDone struct {
@@ -818,22 +841,53 @@ type TrackerTotalChecksDone struct {
 }
 
 type TrackerHint struct {
-	Team   int      `json:"team"`
-	Player int      `json:"player"`
-	Hints  [][8]any `json:"hints"`
+	Team   int    `json:"team"`
+	Player int    `json:"player"`
+	Hints  []Hint `json:"hints"`
+}
+
+func (th TrackerHint) MarshalJSON() ([]byte, error) {
+	b := make([]byte, 0, 40+len(th.Hints)*80)
+	b = append(b, `{"team":`...)
+	b = strconv.AppendInt(b, int64(th.Team), 10)
+	b = append(b, `,"player":`...)
+	b = strconv.AppendInt(b, int64(th.Player), 10)
+	b = append(b, `,"hints":[`...)
+	for i, h := range th.Hints {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '[')
+		b = strconv.AppendInt(b, int64(h.ReceivingPlayer), 10)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, int64(h.FindingPlayer), 10)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, h.Location, 10)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, h.Item, 10)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, int64(h.ItemFlags), 10)
+		b = append(b, ',')
+		if h.Found {
+			b = append(b, "true"...)
+		} else {
+			b = append(b, "false"...)
+		}
+		b = append(b, ',')
+		b = strconv.AppendQuote(b, h.Entrance)
+		b = append(b, ',')
+		b = strconv.AppendInt(b, int64(h.Status), 10)
+		b = append(b, ']')
+	}
+	b = append(b, `]}`...)
+	return b, nil
 }
 
 // TODO: Find out what a 'no activity' timer responds with
-type TrackerActivityTimer struct {
-	Team   int    `json:"team"`
-	Player int    `json:"player"`
-	Time   string `json:"time"`
-}
-
-type TrackerConnectionTimer struct {
-	Team   int    `json:"team"`
-	Player int    `json:"player"`
-	Time   string `json:"time"`
+type TrackerSlotTimer struct {
+	Team   int     `json:"team"`
+	Player int     `json:"player"`
+	Time   *string `json:"time"`
 }
 
 type TrackerPlayerStatus struct {
@@ -842,14 +896,14 @@ type TrackerPlayerStatus struct {
 	Status int `json:"status"`
 }
 
-type WebhostApiStaticTracker struct {
+type WebhostApiTrackerData struct {
 	Aliases             []TrackerAlias           `json:"aliases"`
 	PlayerItemsReceived []TrackerPlayerItems     `json:"player_items_received"`
 	PlayerChecksDone    []TrackerPlayerChecks    `json:"player_checks_done"`
 	TotalChecksDone     []TrackerTotalChecksDone `json:"total_checks_done"`
 	Hints               []TrackerHint            `json:"hints"`
-	ActivityTimers      []TrackerActivityTimer   `json:"activity_timers"`
-	ConnectionTimers    []TrackerConnectionTimer `json:"connection_timers"`
+	ActivityTimers      []TrackerSlotTimer       `json:"activity_timers"`
+	ConnectionTimers    []TrackerSlotTimer       `json:"connection_timers"`
 	PlayerStatus        []TrackerPlayerStatus    `json:"player_status"`
 }
 
@@ -859,15 +913,129 @@ func (rm *RoomManager) handleRoomWebhostApiTracker(w http.ResponseWriter, r *htt
 
 	w.Header().Set("Content-Type", "application/json")
 
-	_, ok := rm.registry.Get(roomId)
+	room, ok := rm.registry.Get(roomId)
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
 		return
 	}
 
-	// TODO
-	json.NewEncoder(w).Encode(WebhostApiStaticTracker{})
+	state := room.apx.state
+
+	// Aliases
+	players := state.PlayersNetwork.Get()
+	aliases := make([]TrackerAlias, 0, len(players))
+	for _, p := range players {
+		alias := p.Alias
+		aliases = append(aliases, TrackerAlias{
+			Team:   p.Team,
+			Player: p.Slot,
+			Alias:  &alias,
+		})
+	}
+
+	// Player items received
+	// Group by team+slot, emit [item, location, player, flags]
+	allItems := state.ReceivedItems.GetAll()
+	playerItemsReceived := make([]TrackerPlayerItems, 0, len(state.SlotInfo))
+	for ts := range state.SlotInfo {
+		playerItemsReceived = append(playerItemsReceived, TrackerPlayerItems{
+			Team:   ts.Team,
+			Player: ts.Slot,
+			Items:  allItems[ReceivedItemsKey{Team: ts.Team, Slot: ts.Slot, RemoteItems: true}],
+		})
+	}
+
+	// Player checks done — [locId, flags]
+	// Group checked locations by team+slot
+	teamCheckTotals := make(map[int]int) // team -> total checks
+	playerChecksDone := make([]TrackerPlayerChecks, 0, len(state.SlotInfo))
+	for ts := range state.SlotInfo {
+		checkedIds := state.Checks.GetChecked(ts)
+		playerChecksDone = append(playerChecksDone, TrackerPlayerChecks{
+			Team:      ts.Team,
+			Player:    ts.Slot,
+			Locations: checkedIds,
+		})
+		teamCheckTotals[ts.Team] += len(checkedIds)
+	}
+
+	// Total checks done per team
+	totalChecksDone := make([]TrackerTotalChecksDone, 0, len(state.SlotInfo))
+	for team, count := range teamCheckTotals {
+		totalChecksDone = append(totalChecksDone, TrackerTotalChecksDone{
+			Team:       team,
+			ChecksDone: count,
+		})
+	}
+
+	// Hints — group by receiving player's team+slot
+	// [receiving_player, finding_player, location, item, item_flags, found, entrance, status]
+	hintsMap := state.Hints.GetAllReceiverHints()
+	hints := make([]TrackerHint, 0, len(state.SlotInfo))
+	for ts := range state.SlotInfo {
+		hints = append(hints, TrackerHint{
+			Team:   ts.Team,
+			Player: ts.Slot,
+			Hints:  hintsMap[ts],
+		})
+	}
+
+	// Activity timers
+	activityTimersMap := state.SlotActivityTimers.GetAll()
+	activityTimers := make([]TrackerSlotTimer, 0, len(state.SlotInfo))
+	for ts := range state.SlotInfo {
+		var t *string
+		if v, ok := activityTimersMap[ts]; ok {
+			s := time.Unix(v, 0).UTC().Format(time.RFC3339)
+			t = &s
+		}
+		activityTimers = append(activityTimers, TrackerSlotTimer{
+			Team:   ts.Team,
+			Player: ts.Slot,
+			Time:   t,
+		})
+	}
+
+	// Connection timers
+	connectionTimersMap := state.SlotConnectionTimers.GetAll()
+	connectionTimers := make([]TrackerSlotTimer, 0, len(state.SlotInfo))
+	for ts := range state.SlotInfo {
+		var t *string
+		if v, ok := connectionTimersMap[ts]; ok {
+			s := time.Unix(v, 0).UTC().Format(time.RFC3339)
+			t = &s
+		}
+		connectionTimers = append(connectionTimers, TrackerSlotTimer{
+			Team:   ts.Team,
+			Player: ts.Slot,
+			Time:   t,
+		})
+	}
+
+	// Player statuses
+	clientStatusMap := state.ClientStatuses.GetAll()
+	playerStatus := make([]TrackerPlayerStatus, 0, len(state.SlotInfo))
+	for ts := range state.SlotInfo {
+		playerStatus = append(playerStatus, TrackerPlayerStatus{
+			Team:   ts.Team,
+			Player: ts.Slot,
+			Status: int(clientStatusMap[ts]),
+		})
+	}
+
+	// TODO Finish
+
+	json.NewEncoder(w).Encode(WebhostApiTrackerData{
+		Aliases:             aliases,
+		PlayerItemsReceived: playerItemsReceived,
+		PlayerChecksDone:    playerChecksDone,
+		TotalChecksDone:     totalChecksDone,
+		Hints:               hints,
+		ActivityTimers:      activityTimers,
+		ConnectionTimers:    connectionTimers,
+		PlayerStatus:        playerStatus,
+	})
 }
 
 func (rm *RoomManager) restoreBounceTagExclusions(room *HostedRoom) {

@@ -526,7 +526,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 		// Check done, update activity timer
 		s.lastActivity.Store(time.Now().Unix())
 		// Store for slot as well
-		s.state.SlotActivityTimers.SetSlot(teamSlot.Team, teamSlot.Slot, int(time.Now().Unix()))
+		s.state.SlotActivityTimers.SetSlot(teamSlot.Team, teamSlot.Slot, time.Now().Unix())
 
 		s.state.ReceivedItems.Add(teamSlot.Team, teamSlot.Slot, newItems)
 
@@ -697,6 +697,16 @@ func (ri *ReceivedItems) Get(key ReceivedItemsKey) []NetworkItem {
 	return ri.receivedItems[key]
 }
 
+func (ri *ReceivedItems) GetAll() map[ReceivedItemsKey][]NetworkItem {
+	ri.mu.RLock()
+	defer ri.mu.RUnlock()
+	out := make(map[ReceivedItemsKey][]NetworkItem, len(ri.receivedItems))
+	for k, v := range ri.receivedItems {
+		out[k] = v
+	}
+	return out
+}
+
 type HintsState struct {
 	mu         sync.RWMutex
 	hints      []Hint
@@ -752,6 +762,21 @@ func (h *HintsState) GetHint(findingPlayer int32, location int64) (Hint, bool) {
 		return Hint{}, false
 	}
 	return h.hints[i], true
+}
+
+func (h *HintsState) GetAllReceiverHints() map[TeamSlot][]Hint {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[TeamSlot][]Hint, len(h.byTeamSlot))
+	for ts, indices := range h.byTeamSlot {
+		for _, i := range indices {
+			hint := h.hints[i]
+			if int(hint.ReceivingPlayer) == ts.Slot {
+				out[ts] = append(out[ts], hint)
+			}
+		}
+	}
+	return out
 }
 
 func (h *HintsState) SetHintStatus(owner TeamSlot, location int64, status HintStatus, requestingPlayer TeamSlot) (changedHint Hint, allowed bool) {
@@ -933,25 +958,47 @@ func (cs *ClientStatuses) Set(team int, slot int, status ClientStatus) {
 	cs.status[team][slot] = status
 }
 
+func (cs *ClientStatuses) GetAll() map[TeamSlot]ClientStatus {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	out := make(map[TeamSlot]ClientStatus)
+	for team, slots := range cs.status {
+		for slot, status := range slots {
+			out[TeamSlot{team, slot}] = status
+		}
+	}
+	return out
+}
+
 type SlotTimers struct {
 	mu     sync.RWMutex
-	timers map[TeamSlot]int
+	timers map[TeamSlot]int64
 }
 
 func newSlotTimers() *SlotTimers {
 	return &SlotTimers{
-		timers: make(map[TeamSlot]int),
+		timers: make(map[TeamSlot]int64),
 	}
 }
 
-func (st *SlotTimers) GetSlot(team int, slot int) (int, bool) {
+func (st *SlotTimers) GetSlot(team int, slot int) (int64, bool) {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
 	val, ok := st.timers[TeamSlot{team, slot}]
 	return val, ok
 }
 
-func (st *SlotTimers) SetSlot(team int, slot int, value int) {
+func (st *SlotTimers) GetAll() map[TeamSlot]int64 {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	result := make(map[TeamSlot]int64, len(st.timers))
+	for ts, v := range st.timers {
+		result[ts] = v
+	}
+	return result
+}
+
+func (st *SlotTimers) SetSlot(team int, slot int, value int64) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.timers[TeamSlot{team, slot}] = value

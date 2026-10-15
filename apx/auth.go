@@ -153,7 +153,7 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	connState.registeredClient = &client
 
 	// Update connection timer
-	s.state.SlotConnectionTimers.SetSlot(slotInfo.Team, slotInfo.Slot, int(time.Now().Unix()))
+	s.state.SlotConnectionTimers.SetSlot(slotInfo.Team, slotInfo.Slot, time.Now().Unix())
 
 	// Send items (if they asked)
 	if msg.ItemsHandling == nil {

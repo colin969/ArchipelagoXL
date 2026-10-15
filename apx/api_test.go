@@ -1,11 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/gorilla/mux"
 )
 
 // Tests
@@ -249,5 +254,165 @@ func TestMaxRoomPlayerId(t *testing.T) {
 				t.Errorf("got %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
+	const (
+		numSlots       = 2500
+		totalRecvItems = 500_000
+		totalLocations = 1_000_000
+	)
+
+	locsPerSlot := totalLocations / numSlots
+	itemsPerSlot := totalRecvItems / numSlots
+
+	slotInfo := make(map[TeamSlot]SlotInfo, numSlots)
+	nameToSlot := make(map[string]*SlotInfo, numSlots)
+	locations := make(map[TeamSlot]map[int64]Location, numSlots)
+
+	for i := 1; i <= numSlots; i++ {
+		ts := TeamSlot{Team: 0, Slot: i}
+		si := SlotInfo{
+			Team: 0,
+			Slot: i,
+			Name: fmt.Sprintf("Player%d", i),
+			Game: "TestGame",
+			Type: SlotTypePlayer,
+		}
+		slotInfo[ts] = si
+		nameToSlot[si.Name] = &si
+
+		slotLocs := make(map[int64]Location, locsPerSlot)
+		baseLocId := int64(i) * int64(locsPerSlot)
+		for j := 0; j < locsPerSlot; j++ {
+			locId := baseLocId + int64(j)
+			slotLocs[locId] = Location{
+				Item:    int64(j % 1000),
+				Player:  int16(i),
+				Flags:   0,
+				Checked: j%3 == 0,
+			}
+		}
+		locations[ts] = slotLocs
+	}
+
+	so := defaultServerOptions()
+	clientStatuses := &ClientStatuses{status: make(map[int]map[int]ClientStatus)}
+	activityTimers := newSlotTimers()
+	connectionTimers := newSlotTimers()
+	now := time.Now().Unix()
+	for i := 1; i <= numSlots; i++ {
+		activityTimers.SetSlot(0, i, now-int64(i*10))
+		connectionTimers.SetSlot(0, i, now-int64(i*5))
+		clientStatuses.Set(0, i, ClientStatusPlaying)
+	}
+
+	state := &ApState{}
+
+	// Checks
+	state.Checks.locations = locations
+	state.Checks.checked = make(map[TeamSlot]map[int64]struct{}, numSlots)
+	for ts, locs := range locations {
+		checked := make(map[int64]struct{}, len(locs))
+		for locId, loc := range locs {
+			if loc.Checked {
+				checked[locId] = struct{}{}
+			}
+		}
+		state.Checks.checked[ts] = checked
+	}
+
+	// ReceivedItems
+	state.ReceivedItems.receivedItems = make(map[ReceivedItemsKey][]NetworkItem, numSlots)
+	for i := 1; i <= numSlots; i++ {
+		items := make([]NetworkItem, itemsPerSlot)
+		for j := 0; j < itemsPerSlot; j++ {
+			items[j] = NetworkItem{
+				Item:     int64(j % 500),
+				Location: int64(i)*int64(locsPerSlot) + int64(j%locsPerSlot),
+				Player:   int16(i),
+				Flags:    0,
+			}
+		}
+		state.ReceivedItems.receivedItems[ReceivedItemsKey{Team: 0, Slot: i, RemoteItems: true}] = items
+	}
+
+	// Hints
+	state.Hints.hints = make([]Hint, 0, numSlots*5)
+	state.Hints.byTeamSlot = make(map[TeamSlot][]int)
+	state.Hints.hintsUsed = make(map[TeamSlot]int)
+	for i := 1; i <= numSlots; i++ {
+		baseLocId := int64(i) * int64(locsPerSlot)
+		for j := range 5 {
+			idx := len(state.Hints.hints)
+			h := Hint{
+				ReceivingPlayer: int32(i),
+				FindingPlayer:   int32((i % numSlots) + 1),
+				Location:        baseLocId + int64(j),
+				Item:            int64(j),
+				Found:           j%2 == 0,
+				Status:          HintStatusPriority,
+			}
+			state.Hints.hints = append(state.Hints.hints, h)
+			state.Hints.indexHint(idx, h)
+		}
+	}
+
+	// NetworkPlayers
+	for i := 1; i <= numSlots; i++ {
+		state.PlayersNetwork.players = append(state.PlayersNetwork.players, NetworkPlayer{
+			Team:  0,
+			Slot:  i,
+			Name:  fmt.Sprintf("Player%d", i),
+			Alias: fmt.Sprintf("Player%d", i),
+		})
+	}
+	state.PlayersNetwork.invalidateCache()
+
+	state.ServerOptions = &so
+	state.DataStorage = newDataStorage()
+	state.ClientStatuses = clientStatuses
+	state.SlotActivityTimers = activityTimers
+	state.SlotConnectionTimers = connectionTimers
+	state.Locations = locations
+	state.NameToSlot = nameToSlot
+	state.SlotInfo = slotInfo
+
+	var lastActivity atomic.Int64
+	lastActivity.Store(now)
+
+	apx := &ApxRoom{
+		lastActivity: &lastActivity,
+		state:        state,
+		lobbyRoomId:  "bench-room",
+	}
+
+	room := &HostedRoom{
+		lastActivity: &lastActivity,
+		lobbyRoomId:  "bench-room",
+		apx:          apx,
+	}
+
+	registry := newRoomRegistry()
+	_ = registry.Add(room)
+
+	rm := &RoomManager{
+		registry: registry,
+		config:   &Config{},
+	}
+
+	router := mux.NewRouter()
+	router.HandleFunc("/api/tracker/{roomId}", rm.handleRoomWebhostApiTracker).Methods(http.MethodGet)
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		req := httptest.NewRequest(http.MethodGet, "/api/tracker/bench-room", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			b.Fatalf("unexpected status %d", w.Code)
+		}
 	}
 }
