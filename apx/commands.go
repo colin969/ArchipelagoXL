@@ -119,6 +119,11 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 	)
 	r.AddTopLevel(
 		chatCommand{
+			name:        "getitem",
+			description: "Cheat in an item for your game",
+			handler:     s.handleGetItemCommand,
+		},
+		chatCommand{
 			name:        "collect",
 			description: "Collect all remaining items for your game",
 			handler:     s.handleCollectCommand,
@@ -274,8 +279,8 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 	teamSlot := TeamSlot{Team: client.Team, Slot: client.Slot}
 	game := *client.game
 
-	itemID, err := s.datapackages.GetItemID(game, itemName)
-	if err != nil {
+	itemID, ok := s.datapackages.GetItemID(game, itemName)
+	if !ok {
 		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
 			fmt.Sprintf("Unknown item: %q", itemName))
 		return nil
@@ -283,7 +288,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	cost := s.state.GetSlotHintCost(teamSlot)
 	points := s.state.GetSlotRemainingPoints(teamSlot)
-	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), *itemID, &s.state.SphereLocs, cost, points)
+	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), itemID, &s.state.SphereLocs, cost, points)
 
 	// Had points to spend, never found a hint
 	if (cost <= 0 || points >= cost) && len(hints) == 0 {
@@ -349,6 +354,40 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 			formatGenericMessage(&client.Team, &client.Slot, "CommandResult", text),
 		})
 	}
+	return nil
+}
+
+func (s *ApxRoom) handleGetItemCommand(ctx context.Context, connState *connectionState, args string) error {
+	allowed := s.state.ServerOptions.ItemCheatAllowed()
+
+	if !allowed {
+		text := "Sorry, item cheating has been disabled on this server. You can ask the server admin to enable item cheating or use /send"
+		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		return nil
+	}
+
+	itemID, ok := s.datapackages.GetItemID(*connState.registeredClient.game, args)
+	if !ok {
+		text := fmt.Sprintf("Item not found for '%s'", args)
+		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		return nil
+	}
+
+	newItem := NetworkItem{itemID, -1, int16(connState.registeredClient.Slot), 0}
+	s.state.ReceivedItems.Add(connState.registeredClient.Team, connState.registeredClient.Slot, []NetworkItem{newItem})
+
+	text := fmt.Sprintf("Cheat console: sending %q to %s", args, *connState.slotName)
+
+	msg := formatGenericMessageWithItem(
+		&connState.registeredClient.Team,
+		&connState.registeredClient.Slot,
+		"ItemCheat",
+		text,
+		&newItem,
+	)
+
+	s.broadcastPrintJson(ctx, []PrintJsonMessage{msg})
+
 	return nil
 }
 

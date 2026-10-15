@@ -284,6 +284,12 @@ func (so *ServerOptions) GetReleaseMode() Permission {
 	return so.releaseMode
 }
 
+func (so *ServerOptions) ItemCheatAllowed() bool {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return !so.disableItemCheat
+}
+
 func (so *ServerOptions) PasswordCheck(password *string) bool {
 	so.mu.RLock()
 	defer so.mu.RUnlock()

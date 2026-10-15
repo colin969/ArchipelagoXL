@@ -192,16 +192,13 @@ func (ds *DataPackageStore) GetLocationID(game, name string) (int64, error) {
 	return id, nil
 }
 
-func (ds *DataPackageStore) GetItemID(game, name string) (*int64, error) {
+func (ds *DataPackageStore) GetItemID(game, name string) (int64, bool) {
 	nameToID, ok := ds.ItemNameToID[game]
 	if !ok {
-		return nil, fmt.Errorf("datapackage not found for game %q", game)
+		return 0, false
 	}
 	id, ok := nameToID[name]
-	if !ok {
-		return nil, fmt.Errorf("item %q not found in game %q", name, game)
-	}
-	return &id, nil
+	return id, ok
 }
 
 func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *DiskDataPackageStore) (*cachedGameDataPackage, error) {
