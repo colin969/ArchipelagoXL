@@ -56,6 +56,10 @@ type RoomRegistry struct {
 	datapackages *GlobalDataPackageCache
 }
 
+const (
+	RoomTimeout = time.Duration(2) * time.Hour
+)
+
 func (r *RoomRegistry) Get(roomId string) (*HostedRoom, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -272,6 +276,10 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/room/{roomId}", srv.handleRoomDelete).Methods(http.MethodDelete)
 	api.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
+	api.HandleFunc("/room/{roomId}/players", srv.handleRoomPlayers).Methods(http.MethodGet)
+	// Webhost compatible APIs
+	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
+	api.HandleFunc("/tracker/{roomId}", srv.handleRoomWebhostApiTracker).Methods(http.MethodGet)
 	room := api.PathPrefix("/{roomId}").Subrouter()
 	room.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
 	room.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
@@ -295,7 +303,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	room.HandleFunc("/alt_connect_name/{altName}", roomLoggedHandler(srv.handleAltConnectName)).Methods(http.MethodPost, http.MethodDelete)
 
 	// Check every 2m, kill after 2h
-	srv.startRoomKiller(time.Duration(2)*time.Minute, time.Duration(2)*time.Hour)
+	srv.startRoomKiller(time.Duration(2)*time.Minute, RoomTimeout)
 
 	// Start up rooms
 	records, err := srv.store.LoadAll()
@@ -720,6 +728,146 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 	rm.registry.Remove(roomId)
 
 	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "room_id": roomId})
+}
+
+type ApiPlayer [2]int
+type ApiPlayersResponse map[string]ApiPlayer
+
+func (rm *RoomManager) handleRoomPlayers(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	room, ok := rm.registry.Get(roomId)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	players := make(ApiPlayersResponse, len(room.apx.state.NameToSlot))
+	for name, slotInfo := range room.apx.state.NameToSlot {
+		players[name] = [2]int{slotInfo.Team, slotInfo.Slot}
+	}
+
+	json.NewEncoder(w).Encode(players)
+}
+
+type WebhostApiRoomStatusResponse struct {
+	Downloads    []any       `json:"downloads"` // Stubbed
+	LastActivity string      `json:"last_activity"`
+	LastPort     int         `json:"last_port"`
+	Players      [][2]string `json:"players"`
+	Timeout      int         `json:"timeout"`
+	Tracker      string      `json:"tracker"`
+}
+
+func (rm *RoomManager) handleRoomWebhostApiStatus(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	room, ok := rm.registry.Get(roomId)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	lastActivity := room.lastActivity.Load()
+	players := make([][2]string, len(room.apx.state.SlotInfo))
+	for _, player := range room.apx.state.SlotInfo {
+		players = append(players, [2]string{player.Name, player.Game})
+	}
+
+	json.NewEncoder(w).Encode(WebhostApiRoomStatusResponse{
+		Downloads:    []any{},
+		Players:      players,
+		LastActivity: time.Unix(lastActivity, 0).UTC().Format(http.TimeFormat),
+		LastPort:     rm.config.WsPort,
+		Timeout:      int(RoomTimeout.Seconds()),
+		Tracker:      room.lobbyRoomId, // Just use the same
+	})
+}
+
+type TrackerAlias struct {
+	Team   int     `json:"team"`
+	Player int     `json:"player"`
+	Alias  *string `json:"alias"`
+}
+
+type TrackerItem [4]int
+type TrackerPlayerItems struct {
+	Team   int           `json:"team"`
+	Player int           `json:"player"`
+	Items  []TrackerItem `json:"items"`
+}
+
+type TrackerLocation [2]int
+type TrackerPlayerChecks struct {
+	Team      int               `json:"team"`
+	Player    int               `json:"player"`
+	Locations []TrackerLocation `json:"locations"`
+}
+
+type TrackerTotalChecksDone struct {
+	Team       int `json:"team"`
+	ChecksDone int `json:"checks_done"`
+}
+
+type TrackerHint struct {
+	Team   int      `json:"team"`
+	Player int      `json:"player"`
+	Hints  [][8]any `json:"hints"`
+}
+
+// TODO: Find out what a 'no activity' timer responds with
+type TrackerActivityTimer struct {
+	Team   int    `json:"team"`
+	Player int    `json:"player"`
+	Time   string `json:"time"`
+}
+
+type TrackerConnectionTimer struct {
+	Team   int    `json:"team"`
+	Player int    `json:"player"`
+	Time   string `json:"time"`
+}
+
+type TrackerPlayerStatus struct {
+	Team   int `json:"team"`
+	Player int `json:"player"`
+	Status int `json:"status"`
+}
+
+type WebhostApiStaticTracker struct {
+	Aliases             []TrackerAlias           `json:"aliases"`
+	PlayerItemsReceived []TrackerPlayerItems     `json:"player_items_received"`
+	PlayerChecksDone    []TrackerPlayerChecks    `json:"player_checks_done"`
+	TotalChecksDone     []TrackerTotalChecksDone `json:"total_checks_done"`
+	Hints               []TrackerHint            `json:"hints"`
+	ActivityTimers      []TrackerActivityTimer   `json:"activity_timers"`
+	ConnectionTimers    []TrackerConnectionTimer `json:"connection_timers"`
+	PlayerStatus        []TrackerPlayerStatus    `json:"player_status"`
+}
+
+func (rm *RoomManager) handleRoomWebhostApiTracker(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	_, ok := rm.registry.Get(roomId)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	// TODO
+	json.NewEncoder(w).Encode(WebhostApiStaticTracker{})
 }
 
 func (rm *RoomManager) restoreBounceTagExclusions(room *HostedRoom) {

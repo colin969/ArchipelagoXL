@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -150,6 +151,9 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	s.connections.Register(slotInfo.Slot, &client, slotInfo.Game, msg.Tags)
 	connState.authenticated = true
 	connState.registeredClient = &client
+
+	// Update connection timer
+	s.state.SlotConnectionTimers.SetSlot(slotInfo.Team, slotInfo.Slot, int(time.Now().Unix()))
 
 	// Send items (if they asked)
 	if msg.ItemsHandling == nil {

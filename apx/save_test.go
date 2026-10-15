@@ -135,6 +135,8 @@ func TestSave(t *testing.T) {
 			ClientStatuses: &ClientStatuses{
 				status: make(map[int]map[int]ClientStatus),
 			},
+			SlotActivityTimers:   newSlotTimers(),
+			SlotConnectionTimers: newSlotTimers(),
 		}
 
 		if err := applySnapshot(state, ss); err != nil {
@@ -216,6 +218,8 @@ func TestSave(t *testing.T) {
 			ClientStatuses: &ClientStatuses{
 				status: make(map[int]map[int]ClientStatus),
 			},
+			SlotActivityTimers:   newSlotTimers(),
+			SlotConnectionTimers: newSlotTimers(),
 		}
 
 		if err := applySnapshot(state, loaded); err != nil {
@@ -224,6 +228,29 @@ func TestSave(t *testing.T) {
 
 		if !state.Hints.HintExists(2, 100) {
 			t.Error("hint index not rebuilt: HintExists(2, 100) returned false")
+		}
+	})
+
+	t.Run("SlotTimers", func(t *testing.T) {
+		timers := newSlotTimers()
+
+		// empty get
+		if val, ok := timers.GetSlot(0, 1); ok || val != 0 {
+			t.Errorf("expected (0, false) for missing slot, got (%d, %v)", val, ok)
+		}
+
+		// set and get
+		timers.SetSlot(0, 1, 42)
+		if val, ok := timers.GetSlot(0, 1); !ok || val != 42 {
+			t.Errorf("expected (42, true), got (%d, %v)", val, ok)
+		}
+
+		// different team/slot doesn't collide
+		if _, ok := timers.GetSlot(0, 2); ok {
+			t.Error("slot 2 should not exist")
+		}
+		if _, ok := timers.GetSlot(1, 1); ok {
+			t.Error("team 1 slot 1 should not exist")
 		}
 	})
 }

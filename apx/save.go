@@ -26,13 +26,15 @@ type SavedDSEntry struct {
 }
 
 type SaveState struct {
-	SeedName      string                          `json:"seed_name"`
-	Checked       map[string][]int64              `json:"checked"`
-	ReceivedItems map[string][]NetworkItem        `json:"received_items"`
-	Hints         []Hint                          `json:"hints"`
-	HintsUsed     map[string]int                  `json:"hints_used"`
-	Statuses      map[string]map[int]ClientStatus `json:"statuses"`
-	DataStorage   map[string]SavedDSEntry         `json:"data_storage"`
+	SeedName             string                          `json:"seed_name"`
+	Checked              map[string][]int64              `json:"checked"`
+	ReceivedItems        map[string][]NetworkItem        `json:"received_items"`
+	Hints                []Hint                          `json:"hints"`
+	HintsUsed            map[string]int                  `json:"hints_used"`
+	Statuses             map[string]map[int]ClientStatus `json:"statuses"`
+	DataStorage          map[string]SavedDSEntry         `json:"data_storage"`
+	SlotActivityTimers   map[string]int                  `json:"slot_activity_timers"`
+	SlotConnectionTimers map[string]int                  `json:"slot_connection_timers"`
 }
 
 type SafeSaveHandler struct {
@@ -63,12 +65,14 @@ type SaveStateHandler interface {
 
 func snapshotState(s *ApState) *SaveState {
 	ss := &SaveState{
-		SeedName:      s.Seed,
-		Checked:       make(map[string][]int64),
-		ReceivedItems: make(map[string][]NetworkItem),
-		HintsUsed:     make(map[string]int),
-		Statuses:      make(map[string]map[int]ClientStatus),
-		DataStorage:   make(map[string]SavedDSEntry),
+		SeedName:             s.Seed,
+		Checked:              make(map[string][]int64),
+		ReceivedItems:        make(map[string][]NetworkItem),
+		HintsUsed:            make(map[string]int),
+		Statuses:             make(map[string]map[int]ClientStatus),
+		DataStorage:          make(map[string]SavedDSEntry),
+		SlotActivityTimers:   make(map[string]int),
+		SlotConnectionTimers: make(map[string]int),
 	}
 
 	s.Checks.mu.RLock()
@@ -119,6 +123,18 @@ func snapshotState(s *ApState) *SaveState {
 		ss.DataStorage[k] = SavedDSEntry{Value: raw, SlotWriters: writers}
 	}
 	s.DataStorage.mu.RUnlock()
+
+	s.SlotActivityTimers.mu.RLock()
+	for ts, entry := range s.SlotActivityTimers.timers {
+		ss.SlotActivityTimers[teamSlotKey(ts)] = entry
+	}
+	s.SlotActivityTimers.mu.RUnlock()
+
+	s.SlotConnectionTimers.mu.RLock()
+	for ts, entry := range s.SlotConnectionTimers.timers {
+		ss.SlotConnectionTimers[teamSlotKey(ts)] = entry
+	}
+	s.SlotConnectionTimers.mu.RUnlock()
 
 	return ss
 }
@@ -343,6 +359,18 @@ func applySnapshot(s *ApState, ss *SaveState) error {
 		}
 	}
 	s.DataStorage.mu.Unlock()
+
+	s.SlotActivityTimers.mu.Lock()
+	for key, entry := range ss.SlotActivityTimers {
+		s.SlotActivityTimers.timers[teamSlotFromKey(key)] = entry
+	}
+	s.SlotActivityTimers.mu.Unlock()
+
+	s.SlotConnectionTimers.mu.Lock()
+	for key, entry := range ss.SlotConnectionTimers {
+		s.SlotConnectionTimers.timers[teamSlotFromKey(key)] = entry
+	}
+	s.SlotConnectionTimers.mu.Unlock()
 
 	return nil
 }
@@ -662,27 +690,29 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 	}
 
 	apState := &ApState{
-		Checks:              newChecksState(locations),
-		ReceivedItems:       newReceivedItems(),
-		Hints:               newHintsState(),
-		DataStorage:         newDataStorage(),
-		ClientStatuses:      &clientStatuses,
-		Locations:           locations,
-		Spheres:             spheres,
-		SphereLocs:          sphereLocs,
-		NameToSlot:          nameToSlot,
-		SlotInfo:            slotInfoMap,
-		SlotData:            slotData,
-		SlotMinVersions:     slotMinVersions,
-		SlotStartInventory:  startInv,
-		Version:             Version{Major: def.Version[0], Minor: def.Version[1], Build: def.Version[2]},
-		ServerOptions:       parseEmbeddedServerOptions(def.ServerOptions),
-		Tags:                def.Tags,
-		Seed:                def.SeedName,
-		RaceMode:            def.RaceMode,
-		PlayersNetwork:      NetworkPlayers{players: playersNetwork, rawJson: networkPlayersJson},
-		SlotInfoNetwork:     slotInfoNetwork,
-		SlotInfoNetworkJson: slotInfoNetworkJson,
+		Checks:               newChecksState(locations),
+		ReceivedItems:        newReceivedItems(),
+		Hints:                newHintsState(),
+		DataStorage:          newDataStorage(),
+		ClientStatuses:       &clientStatuses,
+		SlotActivityTimers:   newSlotTimers(),
+		SlotConnectionTimers: newSlotTimers(),
+		Locations:            locations,
+		Spheres:              spheres,
+		SphereLocs:           sphereLocs,
+		NameToSlot:           nameToSlot,
+		SlotInfo:             slotInfoMap,
+		SlotData:             slotData,
+		SlotMinVersions:      slotMinVersions,
+		SlotStartInventory:   startInv,
+		Version:              Version{Major: def.Version[0], Minor: def.Version[1], Build: def.Version[2]},
+		ServerOptions:        parseEmbeddedServerOptions(def.ServerOptions),
+		Tags:                 def.Tags,
+		Seed:                 def.SeedName,
+		RaceMode:             def.RaceMode,
+		PlayersNetwork:       NetworkPlayers{players: playersNetwork, rawJson: networkPlayersJson},
+		SlotInfoNetwork:      slotInfoNetwork,
+		SlotInfoNetworkJson:  slotInfoNetworkJson,
 	}
 	for _, hint := range def.PrecollectedHints {
 		apState.Hints.AddSlotHint(hint)

@@ -523,6 +523,11 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 
 	// Send items out to relevant clients
 	if len(newItems) > 0 {
+		// Check done, update activity timer
+		s.lastActivity.Store(time.Now().Unix())
+		// Store for slot as well
+		s.state.SlotActivityTimers.SetSlot(teamSlot.Team, teamSlot.Slot, int(time.Now().Unix()))
+
 		s.state.ReceivedItems.Add(teamSlot.Team, teamSlot.Slot, newItems)
 
 		affectedHintSlots := make(map[TeamSlot]struct{})
@@ -928,13 +933,39 @@ func (cs *ClientStatuses) Set(team int, slot int, status ClientStatus) {
 	cs.status[team][slot] = status
 }
 
+type SlotTimers struct {
+	mu     sync.RWMutex
+	timers map[TeamSlot]int
+}
+
+func newSlotTimers() *SlotTimers {
+	return &SlotTimers{
+		timers: make(map[TeamSlot]int),
+	}
+}
+
+func (st *SlotTimers) GetSlot(team int, slot int) (int, bool) {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	val, ok := st.timers[TeamSlot{team, slot}]
+	return val, ok
+}
+
+func (st *SlotTimers) SetSlot(team int, slot int, value int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.timers[TeamSlot{team, slot}] = value
+}
+
 type ApState struct {
-	Checks         Checks
-	ReceivedItems  ReceivedItems
-	Hints          HintsState
-	ServerOptions  *ServerOptions
-	DataStorage    *DataStorage
-	ClientStatuses *ClientStatuses
+	Checks               Checks
+	ReceivedItems        ReceivedItems
+	Hints                HintsState
+	ServerOptions        *ServerOptions
+	DataStorage          *DataStorage
+	ClientStatuses       *ClientStatuses
+	SlotActivityTimers   *SlotTimers
+	SlotConnectionTimers *SlotTimers
 	// Immutable
 	Locations          map[TeamSlot]map[int64]Location
 	Spheres            Spheres
