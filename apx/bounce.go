@@ -16,16 +16,12 @@ import (
 const deathlinkThrottle = 2 * time.Second
 
 type bounceInfoStore struct {
-	mu sync.RWMutex
-	// Maps slot name to deathlink count
-	counts map[int]int
-	// Probability to accept a deathlink message
+	lastDeathlink        time.Time
+	counts               map[int]int
+	excludedByTag        map[int]map[string]struct{}
+	ownSlotOnly          map[int]struct{}
 	deathlinkProbability float64
-	// Slots that aren't allowed to send certain tags
-	// Absurd typing, but should be O(1) because it's all keys in a map, fite me
-	excludedByTag map[int]map[string]struct{}
-	ownSlotOnly   map[int]struct{}
-	lastDeathlink time.Time
+	mu                   sync.RWMutex
 }
 
 func newBounceInfoStore() *bounceInfoStore {

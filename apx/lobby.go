@@ -9,9 +9,9 @@ import (
 // Anything relevant to accessing the Ionium lobby should be in here
 
 type SlotPasswordInfo struct {
-	SlotNumber int     `json:"slot_number"`
-	PlayerName string  `json:"player_name"`
 	Password   *string `json:"password"`
+	PlayerName string  `json:"player_name"`
+	SlotNumber int     `json:"slot_number"`
 }
 
 func fetchSlotPasswords(cfg *Config, roomId string) ([]SlotPasswordInfo, error) {

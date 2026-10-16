@@ -18,16 +18,16 @@ type RoomStore struct {
 }
 
 type RoomRecord struct {
+	CreatedAt            time.Time
+	Definition           *RoomDefinition
 	LobbyRoomId          string
 	NormalId             int
 	ReducedId            int
-	CreatedAt            time.Time
+	DeathlinkProbability float64
 	Disabled             bool
 	PerSlotPasswords     bool
 	DeathlinkDisabled    bool
 	ReducedAccess        bool
-	DeathlinkProbability float64
-	Definition           *RoomDefinition
 }
 
 func NewRoomStore(connString string) (*RoomStore, error) {

@@ -106,17 +106,17 @@ func permissionFromString(mode string) (Permission, bool) {
 }
 
 type RoomInfoMessage struct {
-	Version              NetworkVersion        `json:"version"`
-	GeneratorVersion     NetworkVersion        `json:"generator_version"`
-	Tags                 []string              `json:"tags"`
-	Password             bool                  `json:"password"`
 	Permissions          map[string]Permission `json:"permissions"`
-	HintCost             int                   `json:"hint_cost"`
-	LocationCheckPoints  int                   `json:"location_check_points"`
-	Games                []string              `json:"games"`
 	DatapackageChecksums map[string]string     `json:"datapackage_checksums"`
 	SeedName             string                `json:"seed_name"`
+	Tags                 []string              `json:"tags"`
+	Games                []string              `json:"games"`
+	Version              NetworkVersion        `json:"version"`
+	GeneratorVersion     NetworkVersion        `json:"generator_version"`
+	HintCost             int                   `json:"hint_cost"`
+	LocationCheckPoints  int                   `json:"location_check_points"`
 	Time                 float64               `json:"time"`
+	Password             bool                  `json:"password"`
 }
 
 func (m RoomInfoMessage) MarshalJSON() ([]byte, error) {
@@ -177,20 +177,20 @@ func (f *IntOrString) UnmarshalJSON(data []byte) error {
 
 type ConnectMessage struct {
 	Password      *string        `json:"password"`
+	ItemsHandling *int           `json:"items_handling"`
+	SlotData      *bool          `json:"slot_data"`
 	Game          string         `json:"game"`
 	Name          string         `json:"name"`
 	UUID          StringOrBigInt `json:"uuid"`
-	Version       NetworkVersion `json:"version"`
-	ItemsHandling *int           `json:"items_handling"`
 	Tags          []string       `json:"tags"`
-	SlotData      *bool          `json:"slot_data"`
+	Version       NetworkVersion `json:"version"`
 }
 
 func (m ConnectMessage) MarshalJSON() ([]byte, error) {
 	type Alias ConnectMessage
 	return json.Marshal(struct {
-		Cmd MessageType `json:"cmd"`
 		Alias
+		Cmd MessageType `json:"cmd"`
 	}{Cmd: MessageTypeConnect, Alias: Alias(m)})
 }
 
@@ -219,13 +219,13 @@ type ConnectUpdateMessage struct {
 }
 
 type ConnectedMessage struct {
-	Team             int             `json:"team"`
-	Slot             int             `json:"slot"`
+	SlotData         map[string]any  `json:"slot_data,omitempty"`
 	Players          json.RawMessage `json:"players"`
 	MissingLocations []int64         `json:"missing_locations"`
 	CheckedLocations []int64         `json:"checked_locations"`
-	SlotData         map[string]any  `json:"slot_data,omitempty"`
 	SlotInfo         json.RawMessage `json:"slot_info"`
+	Team             int             `json:"team"`
+	Slot             int             `json:"slot"`
 	HintPoints       int             `json:"hint_points"`
 }
 
@@ -264,19 +264,19 @@ func (m ConnectedMessage) MarshalJSON() ([]byte, error) {
 }
 
 type RoomUpdateMessage struct {
-	Players             []NetworkPlayer       `json:"players,omitempty"`
-	CheckedLocations    []int64               `json:"checked_locations,omitempty"`
 	HintPoints          *int                  `json:"hint_points,omitempty"`
 	HintCost            *int                  `json:"hint_cost,omitempty"`
 	LocationCheckPoints *int                  `json:"location_check_points,omitempty"`
 	Permissions         map[string]Permission `json:"permissions,omitempty"`
+	Players             []NetworkPlayer       `json:"players,omitempty"`
+	CheckedLocations    []int64               `json:"checked_locations,omitempty"`
 }
 
 func (m RoomUpdateMessage) MarshalJSON() ([]byte, error) {
 	type Alias RoomUpdateMessage
 	return json.Marshal(struct {
-		Cmd MessageType `json:"cmd"`
 		Alias
+		Cmd MessageType `json:"cmd"`
 	}{Cmd: MessageTypeRoomUpdate, Alias: Alias(m)})
 }
 
@@ -293,22 +293,22 @@ func (m SayMessage) MarshalJSON() ([]byte, error) {
 }
 
 type PrintJsonMessage struct {
-	Data      []JsonMessagePart `json:"data"`
-	Type      string            `json:"type"`
 	Receiving *int              `json:"receiving,omitempty"`
 	Item      *NetworkItem      `json:"item,omitempty"`
 	Found     *bool             `json:"found,omitempty"`
 	Team      *int              `json:"team,omitempty"`
 	Slot      *int              `json:"slot,omitempty"`
-	Tags      []string          `json:"tags,omitempty"`
 	Message   *string           `json:"message,omitempty"`
+	Type      string            `json:"type"`
+	Data      []JsonMessagePart `json:"data"`
+	Tags      []string          `json:"tags,omitempty"`
 }
 
 func (m PrintJsonMessage) MarshalJSON() ([]byte, error) {
 	type Alias PrintJsonMessage
 	return json.Marshal(struct {
-		Cmd MessageType `json:"cmd"`
 		Alias
+		Cmd MessageType `json:"cmd"`
 	}{Cmd: MessageTypePrintJSON, Alias: Alias(m)})
 }
 
@@ -323,33 +323,33 @@ const (
 )
 
 type JsonMessagePart struct {
+	HintStatus *HintStatus `json:"hint_status,omitempty"`
 	Type       string      `json:"type,omitempty"`
 	Text       string      `json:"text,omitempty"`
 	Color      string      `json:"color,omitempty"`
 	Flags      int         `json:"flags,omitempty"`
 	Player     int         `json:"player,omitempty"`
-	HintStatus *HintStatus `json:"hint_status,omitempty"`
 }
 
 type BounceMessage struct {
-	Cmd   MessageType     `json:"cmd"`
 	Games *[]string       `json:"games,omitempty"`
 	Slots *[]int          `json:"slots,omitempty"`
 	Tags  *[]string       `json:"tags,omitempty"`
 	Data  *map[string]any `json:"data,omitempty"`
+	Cmd   MessageType     `json:"cmd"`
 }
 
 type BounceDataDeathlink struct {
-	Time   float64 `json:"time"`
 	Source *string `json:"source"`
 	Cause  *string `json:"cause,omitempty"`
+	Time   float64 `json:"time"`
 }
 
 type NetworkPlayer struct {
-	Team  int    `json:"team"`
-	Slot  int    `json:"slot"`
 	Alias string `json:"alias"`
 	Name  string `json:"name"`
+	Team  int    `json:"team"`
+	Slot  int    `json:"slot"`
 }
 
 func (np NetworkPlayer) MarshalJSON() ([]byte, error) {
@@ -366,15 +366,15 @@ func (np NetworkPlayer) MarshalJSON() ([]byte, error) {
 type NetworkSlot struct {
 	Name         string `json:"name"`
 	Game         string `json:"game"`
-	Type         int    `json:"type"`
 	GroupMembers []int  `json:"group_members"`
+	Type         int    `json:"type"`
 }
 
 func (ns NetworkSlot) MarshalJSON() ([]byte, error) {
 	type Alias NetworkSlot
 	return json.Marshal(struct {
-		Alias
 		Class string `json:"class"`
+		Alias
 	}{
 		Alias: Alias(ns),
 		Class: "NetworkSlot",
@@ -384,8 +384,8 @@ func (ns NetworkSlot) MarshalJSON() ([]byte, error) {
 type NetworkSlotArray struct {
 	Name         string `json:"name"`
 	Game         string `json:"game"`
-	Type         int    `json:"type"`
 	GroupMembers []int  `json:"group_members"`
+	Type         int    `json:"type"`
 }
 
 func (ns *NetworkSlotArray) UnmarshalJSON(data []byte) error {
@@ -441,8 +441,8 @@ type NetworkVersion struct {
 func (np NetworkVersion) MarshalJSON() ([]byte, error) {
 	type Alias NetworkVersion
 	return json.Marshal(struct {
-		Alias
 		Class string `json:"class"`
+		Alias
 	}{
 		Alias: Alias(np),
 		Class: "Version",
@@ -544,8 +544,8 @@ func (m LocationChecksMessage) MarshalJSON() ([]byte, error) {
 }
 
 type ReceivedItemsMessage struct {
-	Index int           `json:"index"`
 	Items []NetworkItem `json:"items"`
+	Index int           `json:"index"`
 }
 
 func (m ReceivedItemsMessage) MarshalJSON() ([]byte, error) {
@@ -557,17 +557,17 @@ func (m ReceivedItemsMessage) MarshalJSON() ([]byte, error) {
 }
 
 type CreateHintsMessage struct {
-	Locations []int64 `json:"locations"`
 	Player    *int    `json:"player"`
 	Status    *int    `json:"status"`
+	Locations []int64 `json:"locations"`
 }
 
 // Multiserver behaviour
 func (m *CreateHintsMessage) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Locations []json.Number `json:"locations"`
 		Player    *int          `json:"player"`
 		Status    *int          `json:"status"`
+		Locations []json.Number `json:"locations"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -582,23 +582,23 @@ func (m *CreateHintsMessage) UnmarshalJSON(data []byte) error {
 func (m CreateHintsMessage) MarshalJSON() ([]byte, error) {
 	type Alias CreateHintsMessage
 	return json.Marshal(struct {
-		Cmd MessageType `json:"cmd"`
 		Alias
+		Cmd MessageType `json:"cmd"`
 	}{Cmd: MessageTypeCreateHints, Alias: Alias(m)})
 }
 
 type UpdateHintMessage struct {
+	Status   *HintStatus `json:"status"`
 	Player   int         `json:"player"`
 	Location int64       `json:"location"`
-	Status   *HintStatus `json:"status"`
 }
 
 // Multiserver behaviours
 func (m *UpdateHintMessage) UnmarshalJSON(data []byte) error {
 	var raw struct {
+		Status   *HintStatus `json:"status"`
 		Player   json.Number `json:"player"`
 		Location json.Number `json:"location"`
-		Status   *HintStatus `json:"status"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -616,8 +616,8 @@ func (m *UpdateHintMessage) UnmarshalJSON(data []byte) error {
 func (m UpdateHintMessage) MarshalJSON() ([]byte, error) {
 	type Alias UpdateHintMessage
 	return json.Marshal(struct {
-		Cmd MessageType `json:"cmd"`
 		Alias
+		Cmd MessageType `json:"cmd"`
 	}{Cmd: MessageTypeUpdateHint, Alias: Alias(m)})
 }
 
@@ -626,10 +626,10 @@ type GetMessage struct {
 }
 
 type SetMessage struct {
-	Key        string                 `json:"key"`
 	Default    any                    `json:"default"`
-	WantReply  bool                   `json:"want_reply"`
+	Key        string                 `json:"key"`
 	Operations []DataStorageOperation `json:"operations"`
+	WantReply  bool                   `json:"want_reply"`
 }
 
 type SetNotifyMessage struct {
@@ -637,9 +637,9 @@ type SetNotifyMessage struct {
 }
 
 type SetReplyMessage struct {
-	Key           string `json:"key"`
 	Value         any    `json:"value"`
 	OriginalValue any    `json:"original_value,omitempty"`
+	Key           string `json:"key"`
 	Slot          int    `json:"slot"`
 }
 
@@ -658,8 +658,8 @@ type RetrievedMessage struct {
 func (m RetrievedMessage) MarshalJSON() ([]byte, error) {
 	type Alias RetrievedMessage
 	return json.Marshal(struct {
-		Cmd MessageType `json:"cmd"`
 		Alias
+		Cmd MessageType `json:"cmd"`
 	}{Cmd: MessageTypeRetrieved, Alias: Alias(m)})
 }
 

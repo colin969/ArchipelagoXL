@@ -34,19 +34,19 @@ const (
 type NetworkSlot struct {
 	Name         string
 	Game         string
-	Type         SlotType
 	GroupMembers []int
+	Type         SlotType
 }
 
 type Hint struct {
+	Entrance        string
 	ReceivingPlayer int
 	FindingPlayer   int
 	Location        int64
 	Item            int64
-	Found           bool
-	Entrance        string
 	ItemFlags       int
 	Status          HintStatus
+	Found           bool
 }
 
 // toInt converts int or int64 to int.
@@ -207,8 +207,8 @@ func buildHint(args ...any) (*Hint, error) {
 }
 
 type MinimumVersions struct {
-	Server  [3]int
 	Clients map[int][3]int
+	Server  [3]int
 }
 
 type GamesPackage struct {
@@ -220,20 +220,20 @@ type GamesPackage struct {
 }
 
 type MultiData struct {
-	SlotData          map[int]map[string]any
+	MinimumVersions   MinimumVersions
+	PrecollectedItems map[int][]int64
 	SlotInfo          map[int]NetworkSlot
-	ConnectNames      map[string][2]int
 	Locations         map[int]map[int64][3]int64
 	ServerOptions     map[string]any
 	ErHintData        map[int]map[int]string
-	PrecollectedItems map[int][]int64
-	PrecollectedHints map[int][]Hint // set -> slice
-	Version           [3]int
-	Tags              []string
-	MinimumVersions   MinimumVersions
-	SeedName          string
-	Spheres           []map[int][]int64 // set -> slice
+	SlotData          map[int]map[string]any
+	PrecollectedHints map[int][]Hint
 	DataPackage       map[string]GamesPackage
+	ConnectNames      map[string][2]int
+	SeedName          string
+	Tags              []string
+	Spheres           []map[int][]int64
+	Version           [3]int
 	RaceMode          int
 }
 

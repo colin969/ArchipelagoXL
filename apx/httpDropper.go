@@ -28,8 +28,8 @@ func (hd *httpDropper) Addr() net.Addr { return hd.listener.Addr() }
 
 type peekedConn struct {
 	net.Conn
-	once   sync.Once
 	r      io.Reader
+	once   sync.Once
 	dropMe bool
 }
 

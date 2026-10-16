@@ -50,10 +50,10 @@ type RoomManager struct {
 }
 
 type RoomRegistry struct {
-	mu           sync.RWMutex
 	rooms        map[string]*HostedRoom
 	idToHandler  map[int]*apxHandler
 	datapackages *GlobalDataPackageCache
+	mu           sync.RWMutex
 }
 
 const (
@@ -110,8 +110,8 @@ func (r *RoomRegistry) Remove(roomId string) {
 }
 
 type CheckedLocations struct {
-	checkedLocationsMu sync.RWMutex
 	checkedLocations   map[int]map[int64]bool
+	checkedLocationsMu sync.RWMutex
 }
 
 func (cl *CheckedLocations) Get() map[int]map[int64]bool {
@@ -140,38 +140,38 @@ func newCheckedLocations() CheckedLocations {
 
 type ApxRoomInfo struct {
 	LobbyRoomId       string `json:"lobby_room_id"`
+	ServerPassword    string `json:"server_password,omitempty"`
 	NormalId          int    `json:"normal_id"`
 	ReducedId         int    `json:"reduced_id"`
 	Disabled          bool   `json:"disabled"`
 	PerSlotPasswords  bool   `json:"per_slot_passwords"`
 	DeathlinkDisabled bool   `json:"deathlink_disabled"`
 	ReducedAccess     bool   `json:"reduced_access"`
-	ServerPassword    string `json:"server_password,omitempty"`
 }
 
 // e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
 type HostedRoom struct {
-	lastActivity         *atomic.Int64
-	lobbyRoomId          string
+	ctx                  context.Context
+	reducedHandler       *apxHandler
 	apx                  *ApxRoom
 	locationIdToName     map[string]map[int]string
 	checkedLocations     *CheckedLocations
 	sphereCache          *slotSphereCache
-	completeSphere1Mu    sync.Mutex
 	completeSphere1Slots map[int]struct{}
 	normalHandler        *apxHandler
-	reducedHandler       *apxHandler
-	ctx                  context.Context
+	lastActivity         *atomic.Int64
 	cancel               context.CancelFunc
+	lobbyRoomId          string
+	completeSphere1Mu    sync.Mutex
 	deathlinkDisabled    bool
 	reducedAccess        bool
 }
 
 type RoomState struct {
 	BounceTagExclusions  map[int][]string `json:"bounce_tag_exclusions"`
+	Deaths               map[int]int      `json:"deaths"`
 	SlotBounceExclusions []int            `json:"slot_bounce_exclusions"`
 	FullFeedSlots        []int            `json:"full_feed_slots"`
-	Deaths               map[int]int      `json:"deaths"`
 }
 
 type Deathlink struct {
@@ -182,8 +182,8 @@ type Deathlink struct {
 }
 
 type LocationEntry struct {
-	ID      int64
 	Name    string
+	ID      int64
 	Checked bool
 }
 
@@ -193,9 +193,9 @@ func (l LocationEntry) MarshalJSON() ([]byte, error) {
 
 // Cache sphere responses to save compute
 type slotSphereCache struct {
+	data  map[int][]byte
+	dirty map[int]bool
 	mu    sync.RWMutex
-	data  map[int][]byte // slotId -> pre-encoded JSON
-	dirty map[int]bool   // slotId -> needs rebuild
 }
 
 func newSlotSphereCache() *slotSphereCache {
@@ -755,12 +755,12 @@ func (rm *RoomManager) handleRoomPlayers(w http.ResponseWriter, r *http.Request)
 }
 
 type WebhostApiRoomStatusResponse struct {
-	Downloads    []any       `json:"downloads"` // Stubbed
 	LastActivity string      `json:"last_activity"`
-	LastPort     int         `json:"last_port"`
-	Players      [][2]string `json:"players"`
-	Timeout      int         `json:"timeout"`
 	Tracker      string      `json:"tracker"`
+	Downloads    []any       `json:"downloads"`
+	Players      [][2]string `json:"players"`
+	LastPort     int         `json:"last_port"`
+	Timeout      int         `json:"timeout"`
 }
 
 func (rm *RoomManager) handleRoomWebhostApiStatus(w http.ResponseWriter, r *http.Request) {
@@ -793,15 +793,15 @@ func (rm *RoomManager) handleRoomWebhostApiStatus(w http.ResponseWriter, r *http
 }
 
 type TrackerAlias struct {
+	Alias  *string `json:"alias"`
 	Team   int     `json:"team"`
 	Player int     `json:"player"`
-	Alias  *string `json:"alias"`
 }
 
 type TrackerPlayerItems struct {
+	Items  []NetworkItem `json:"items"`
 	Team   int           `json:"team"`
 	Player int           `json:"player"`
-	Items  []NetworkItem `json:"items"`
 }
 
 func (tp TrackerPlayerItems) MarshalJSON() ([]byte, error) {
@@ -830,9 +830,9 @@ func (tp TrackerPlayerItems) MarshalJSON() ([]byte, error) {
 }
 
 type TrackerPlayerChecks struct {
+	Locations []int64 `json:"locations"`
 	Team      int     `json:"team"`
 	Player    int     `json:"player"`
-	Locations []int64 `json:"locations"`
 }
 
 type TrackerTotalChecksDone struct {
@@ -841,9 +841,9 @@ type TrackerTotalChecksDone struct {
 }
 
 type TrackerHint struct {
+	Hints  []Hint `json:"hints"`
 	Team   int    `json:"team"`
 	Player int    `json:"player"`
-	Hints  []Hint `json:"hints"`
 }
 
 func (th TrackerHint) MarshalJSON() ([]byte, error) {
@@ -885,9 +885,9 @@ func (th TrackerHint) MarshalJSON() ([]byte, error) {
 
 // TODO: Find out what a 'no activity' timer responds with
 type TrackerSlotTimer struct {
+	Time   *string `json:"time"`
 	Team   int     `json:"team"`
 	Player int     `json:"player"`
-	Time   *string `json:"time"`
 }
 
 type TrackerPlayerStatus struct {

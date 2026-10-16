@@ -12,9 +12,9 @@ import (
 type chatHandler func(ctx context.Context, connState *connectionState, args string) error
 
 type chatCommand struct {
+	handler     chatHandler
 	name        string
 	description string
-	handler     chatHandler
 }
 
 type chatCommandGroup struct {

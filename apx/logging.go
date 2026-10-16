@@ -34,20 +34,20 @@ var levelBytes = map[LogLevel][]byte{
 }
 
 type lokiEntry struct {
+	timestamp time.Time
 	source    LogSource
 	line      []byte
-	timestamp time.Time
 }
 
 type LokiLogger struct {
+	ch            chan lokiEntry
+	client        *http.Client
+	metrics       *metrics
 	endpoint      string
 	roomId        string
-	ch            chan lokiEntry
+	wg            sync.WaitGroup
 	batchSize     int
 	flushInterval time.Duration
-	client        *http.Client
-	wg            sync.WaitGroup
-	metrics       *metrics
 }
 
 func NewLokiLogger(endpoint, roomId string, metrics *metrics) *LokiLogger {

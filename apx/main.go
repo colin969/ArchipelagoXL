@@ -20,27 +20,27 @@ import (
 )
 
 type Config struct {
-	WsPort                 int    `json:"ws_port"`
-	NormalPort             int    `json:"normal_port"`
-	ReducedPort            int    `json:"reduced_port"`
+	TLSKeyFile             string `json:"tls_key_file"`
+	ApRoomId               string `json:"ap_room_id"`
+	DatabaseURL            string `json:"database_url"`
 	APHost                 string `json:"ap_room_host"`
 	APPassword             string `json:"ap_room_password"`
-	LobbyEnabled           bool   `json:"lobby_enabled"`
+	SavesPath              string `json:"saves_path"`
 	LobbyRootUrl           string `json:"lobby_root_url"`
 	LobbyRoomId            string `json:"lobby_room_id"`
 	LobbyApiKey            string `json:"lobby_api_key"`
 	ApiListenAddr          string `json:"apx_api_listen"`
-	ApiKey                 string `json:"apx_api_key"`
-	ApRoomId               string `json:"ap_room_id"`
+	DataPackageStoragePath string `json:"datapackage_storage_path"`
 	ApApiRoot              string `json:"ap_api_root"`
+	ApiKey                 string `json:"apx_api_key"`
 	ApApiKey               string `json:"ap_admin_api_key"`
 	TLSCertFile            string `json:"tls_cert_file"`
-	TLSKeyFile             string `json:"tls_key_file"`
-	PerSlotPasswords       bool   `json:"per_slot_passwords"`
 	LokiEndpoint           string `json:"loki_endpoint"`
-	DataPackageStoragePath string `json:"datapackage_storage_path"`
-	SavesPath              string `json:"saves_path"`
-	DatabaseURL            string `json:"database_url"`
+	WsPort                 int    `json:"ws_port"`
+	NormalPort             int    `json:"normal_port"`
+	ReducedPort            int    `json:"reduced_port"`
+	PerSlotPasswords       bool   `json:"per_slot_passwords"`
+	LobbyEnabled           bool   `json:"lobby_enabled"`
 }
 
 type ApxArgs struct {

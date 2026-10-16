@@ -13,11 +13,10 @@ import (
 )
 
 type DiskDataPackageStore struct {
-	// Should prevent reading and deleting race? Should it even happen? Unsure
-	mu      sync.RWMutex
-	dir     string
 	encoder *zstd.Encoder
 	decoder *zstd.Decoder
+	dir     string
+	mu      sync.RWMutex
 }
 
 func NewDiskDataPackageStore(dir string) (*DiskDataPackageStore, error) {
@@ -82,13 +81,12 @@ func (d *DiskDataPackageStore) Delete(checksum string) error {
 }
 
 type cachedDataPackage struct {
-	encoded          json.RawMessage
 	itemIDToName     map[int64]string
 	locationIDToName map[int64]string
 	itemNameToID     map[string]int64
 	locationNameToID map[string]int64
-	// Number of cachedGameDataPackage wrappers holding this as a reference
-	refCount int
+	encoded          json.RawMessage
+	refCount         int
 }
 
 // Wrapper for a datapackage, keyed by game name
@@ -102,9 +100,9 @@ type cachedGameDataPackage struct {
 }
 
 type GlobalDataPackageCache struct {
-	mu         sync.RWMutex
 	byChecksum map[string]*cachedDataPackage
 	byGameKey  map[string]*cachedGameDataPackage
+	mu         sync.RWMutex
 }
 
 func newGlobalDataPackageCache() *GlobalDataPackageCache {
@@ -139,13 +137,13 @@ func (m GetDataPackageMessage) MarshalJSON() ([]byte, error) {
 }
 
 type EncodedDataPackageMessage struct {
-	Cmd  MessageType              `json:"cmd"`
 	Data EncodedDataPackageObject `json:"data"`
+	Cmd  MessageType              `json:"cmd"`
 }
 
 type DataPackageMessage struct {
-	Cmd  MessageType       `json:"cmd"`
 	Data DataPackageObject `json:"data"`
+	Cmd  MessageType       `json:"cmd"`
 }
 
 type DataPackageObject struct {
@@ -158,17 +156,17 @@ type EncodedDataPackageObject struct {
 
 // Immutable
 type DataPackageStore struct {
-	fullGameResponseOptimization bool // Whether to duplicate allocations for full-game responses as a cpu optimization
 	globalCache                  *GlobalDataPackageCache
-	packages                     map[string]json.RawMessage  // Raw encoded datapackages keyed by game name
-	singleResponses              map[string]json.RawMessage  // Pre-built response for single-game requests
-	fullGameResponse             json.RawMessage             // Response for all games at once to avoid allocations
-	encodedGameNameKeys          map[string][]byte           // pre-encoded JSON keys for game names
-	ItemIDToName                 map[string]map[int64]string // game -> id -> name
-	LocationIDToName             map[string]map[int64]string // game -> id -> name
+	packages                     map[string]json.RawMessage
+	singleResponses              map[string]json.RawMessage
+	encodedGameNameKeys          map[string][]byte
+	ItemIDToName                 map[string]map[int64]string
+	LocationIDToName             map[string]map[int64]string
 	ItemNameToID                 map[string]map[string]int64
 	LocationNameToID             map[string]map[string]int64
+	fullGameResponse             json.RawMessage
 	gameKeys                     []string
+	fullGameResponseOptimization bool
 }
 
 func newDataPackageStore(fullGameResponseOptimization bool, globalCache *GlobalDataPackageCache) *DataPackageStore {

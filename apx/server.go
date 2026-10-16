@@ -22,8 +22,8 @@ import (
 )
 
 type fullFeedStore struct {
-	mu            sync.RWMutex
 	fullFeedSlots map[int]struct{}
+	mu            sync.RWMutex
 }
 
 func newFullFeedStore() *fullFeedStore {
@@ -58,8 +58,8 @@ func (ffs *fullFeedStore) Delete(slotId int) {
 }
 
 type passwordStore struct {
-	mu        sync.RWMutex
 	passwords map[int]string
+	mu        sync.RWMutex
 }
 
 func newPasswordStore() *passwordStore {
@@ -90,8 +90,8 @@ type debugTap struct {
 }
 
 type debugTapSlot struct {
-	mu        sync.RWMutex
 	listeners []chan []byte
+	mu        sync.RWMutex
 }
 
 func newDebugTap(slotCount int) *debugTap {
@@ -100,8 +100,8 @@ func newDebugTap(slotCount int) *debugTap {
 }
 
 type ConnectNames struct {
-	mu    sync.RWMutex
 	names map[string]string
+	mu    sync.RWMutex
 }
 
 func newAltConnectNames() *ConnectNames {
@@ -145,10 +145,9 @@ func (cn *ConnectNames) GetAltNamesBySlot(realName string) []string {
 }
 
 type RoomInfoStore struct {
-	mu  sync.RWMutex
-	msg RoomInfoMessage
-	// immutable
 	DatapackageChecksums map[string]string
+	msg                  RoomInfoMessage
+	mu                   sync.RWMutex
 }
 
 func newRoomInfoStore(dpChecksums map[string]string) *RoomInfoStore {
@@ -190,8 +189,8 @@ func (ris *RoomInfoStore) HasPassword() bool {
 }
 
 type ApxRoom struct {
-	perSlotPasswords  bool
-	lastActivity      *atomic.Int64
+	datapackages      *DataPackageStore
+	metrics           *metrics
 	logf              func(f string, v ...any)
 	config            *Config
 	roomInfo          *RoomInfoStore
@@ -199,10 +198,10 @@ type ApxRoom struct {
 	passwords         *passwordStore
 	fullFeed          *fullFeedStore
 	bounceInfo        *bounceInfoStore
+	saveHandler       *SafeSaveHandler
+	lastActivity      *atomic.Int64
+	state             *ApState
 	connections       *connectionRegistry
-	datapackages      *DataPackageStore
-	metrics           *metrics
-	lobbyRoomId       string
 	debugTap          *debugTap
 	lokiLogger        *LokiLogger
 	logDeath          func(slotId int)
@@ -210,8 +209,8 @@ type ApxRoom struct {
 	chatCommandRouter *chatCommandRouter
 	bcUnorderedCh     chan func()
 	bcOrderedCh       chan func()
-	state             *ApState
-	saveHandler       *SafeSaveHandler
+	lobbyRoomId       string
+	perSlotPasswords  bool
 }
 
 type Location struct {
@@ -241,17 +240,17 @@ type SphereLocGroup map[TeamSlot]map[int64]*Location
 type SphereLocs []SphereLocGroup
 
 type ServerOptions struct {
+	password            string
+	adminPassword       string
+	countdownMode       string
+	hintCost            int
+	locationCheckPoints int
+	releaseMode         Permission
+	collectMode         Permission
+	remainingMode       Permission
+	compatibility       int
 	mu                  sync.RWMutex
-	password            string     // "password" - default ""
-	adminPassword       string     // "server_password" - default ""
-	hintCost            int        // "hint_cost" - default 10
-	locationCheckPoints int        // "location_check_points" - default 1
-	releaseMode         Permission // "release_mode" - default "auto"
-	collectMode         Permission // "collect_mode" - default "auto"
-	remainingMode       Permission // "remaining_mode" - default "goal"
-	countdownMode       string     // "countdown_mode" - default "auto"
-	disableItemCheat    bool       // "disable_item_cheat" - default false
-	compatibility       int        // "compatibility" - default 2
+	disableItemCheat    bool
 }
 
 func (so *ServerOptions) SetPassword(password string) {
@@ -374,14 +373,14 @@ type TeamSlot struct {
 }
 
 type Hint struct {
-	ReceivingPlayer int32      `json:"receiving_player"`
-	FindingPlayer   int32      `json:"finding_player"`
+	Entrance        string     `json:"entrance"`
 	Location        int64      `json:"location"`
 	Item            int64      `json:"item"`
-	ItemFlags       int16      `json:"item_flags"`
 	Status          HintStatus `json:"status"`
+	ReceivingPlayer int32      `json:"receiving_player"`
+	FindingPlayer   int32      `json:"finding_player"`
+	ItemFlags       int16      `json:"item_flags"`
 	Found           bool       `json:"found"`
-	Entrance        string     `json:"entrance"`
 }
 
 func (m Hint) MarshalJSON() ([]byte, error) {
@@ -401,12 +400,12 @@ const (
 )
 
 type SlotInfo struct {
-	Team         int
-	Slot         int
 	Name         string
 	Game         string
-	Type         SlotType
 	GroupMembers []int
+	Team         int
+	Slot         int
+	Type         SlotType
 }
 
 type cachedSlotInfo struct {
@@ -414,9 +413,9 @@ type cachedSlotInfo struct {
 }
 
 type NetworkPlayers struct {
-	mu      sync.RWMutex
 	players []NetworkPlayer
 	rawJson json.RawMessage
+	mu      sync.RWMutex
 }
 
 func (np *NetworkPlayers) invalidateCache() {
@@ -458,9 +457,9 @@ func (np *NetworkPlayers) GetJson() json.RawMessage {
 }
 
 type Checks struct {
-	mu        sync.RWMutex
-	locations map[TeamSlot]map[int64]Location // ref to immutable
+	locations map[TeamSlot]map[int64]Location
 	checked   map[TeamSlot]map[int64]struct{}
+	mu        sync.RWMutex
 }
 
 func newChecksState(locations map[TeamSlot]map[int64]Location) Checks {
@@ -788,8 +787,8 @@ type ReceivedItemsKey struct {
 }
 
 type ReceivedItems struct {
-	mu            sync.RWMutex
 	receivedItems map[ReceivedItemsKey][]NetworkItem
+	mu            sync.RWMutex
 }
 
 func newReceivedItems() ReceivedItems {
@@ -828,10 +827,10 @@ func (ri *ReceivedItems) GetAll() map[ReceivedItemsKey][]NetworkItem {
 }
 
 type HintsState struct {
-	mu         sync.RWMutex
-	hints      []Hint
 	byTeamSlot map[TeamSlot][]int
 	hintsUsed  map[TeamSlot]int
+	hints      []Hint
+	mu         sync.RWMutex
 }
 
 func newHintsState() HintsState {
@@ -1059,8 +1058,8 @@ func (h *HintsState) GetHintsUsed(ts TeamSlot) int {
 }
 
 type ClientStatuses struct {
-	mu     sync.RWMutex
 	status map[int]map[int]ClientStatus
+	mu     sync.RWMutex
 }
 
 func (cs *ClientStatuses) Get(team int, slot int) ClientStatus {
@@ -1091,8 +1090,8 @@ func (cs *ClientStatuses) GetAll() map[TeamSlot]ClientStatus {
 }
 
 type SlotTimers struct {
-	mu     sync.RWMutex
 	timers map[TeamSlot]int64
+	mu     sync.RWMutex
 }
 
 func newSlotTimers() *SlotTimers {
@@ -1125,31 +1124,29 @@ func (st *SlotTimers) SetSlot(team int, slot int, value int64) {
 }
 
 type ApState struct {
+	Hints                HintsState
 	Checks               Checks
 	ReceivedItems        ReceivedItems
-	Hints                HintsState
-	ServerOptions        *ServerOptions
-	DataStorage          *DataStorage
+	SlotStartInventory   map[TeamSlot][]NetworkItem
+	SlotInfo             map[TeamSlot]SlotInfo
 	ClientStatuses       *ClientStatuses
 	SlotActivityTimers   *SlotTimers
 	SlotConnectionTimers *SlotTimers
-	// Immutable
-	Locations          map[TeamSlot]map[int64]Location
-	Spheres            Spheres
-	SphereLocs         SphereLocs
-	NameToSlot         map[string]*SlotInfo
-	SlotInfo           map[TeamSlot]SlotInfo
-	SlotData           map[TeamSlot]map[string]any
-	SlotMinVersions    map[TeamSlot]Version
-	SlotStartInventory map[TeamSlot][]NetworkItem
-	Version            Version
-	Tags               []string
-	Seed               string
-	RaceMode           int
-	// Immutable for v3 Network Sending
-	PlayersNetwork      NetworkPlayers
-	SlotInfoNetwork     map[int]NetworkSlot
-	SlotInfoNetworkJson json.RawMessage
+	Locations            map[TeamSlot]map[int64]Location
+	SlotInfoNetwork      map[int]NetworkSlot
+	ServerOptions        *ServerOptions
+	NameToSlot           map[string]*SlotInfo
+	DataStorage          *DataStorage
+	SlotData             map[TeamSlot]map[string]any
+	SlotMinVersions      map[TeamSlot]Version
+	Seed                 string
+	PlayersNetwork       NetworkPlayers
+	SphereLocs           SphereLocs
+	Tags                 []string
+	Spheres              Spheres
+	SlotInfoNetworkJson  json.RawMessage
+	Version              Version
+	RaceMode             int
 }
 
 func (s *ApState) GetSlotHintCost(teamSlot TeamSlot) int {
@@ -1173,8 +1170,8 @@ func (s *ApState) GetSlotRemainingPoints(teamSlot TeamSlot) int {
 
 // Simple per-ip rate limiter for the WS rooms
 type IPRateLimiter struct {
-	mu      sync.Mutex
 	clients map[string]*rate.Limiter
+	mu      sync.Mutex
 }
 
 func (rl *IPRateLimiter) Allow(ip string) bool {
@@ -1196,18 +1193,18 @@ func newIPRateLimiter() *IPRateLimiter {
 
 // Fields are immutable, but individual fields within may have their own callable functions to handle a mutable state
 type RegisteredClient struct {
-	Team                   int
-	Slot                   int
 	slotName               *string
 	game                   *string
 	cancel                 context.CancelFunc
 	clientConn             *websocket.Conn
+	notifyKeys             []string
+	Team                   int
+	Slot                   int
+	sendIndex              atomic.Int32
+	itemsHandling          atomic.Int32
 	textConcernsSelf       bool
 	forcedTextConcernsSelf bool
 	noText                 bool
-	notifyKeys             []string
-	sendIndex              atomic.Int32
-	itemsHandling          atomic.Int32
 }
 
 func (c *RegisteredClient) GetItemsHandling() int {
@@ -1228,18 +1225,16 @@ func removeClient(clients []*RegisteredClient, target *RegisteredClient) []*Regi
 
 // Stores data from all connected clients which is needed globally
 type connectionRegistry struct {
-	mu         sync.RWMutex
-	allClients []*RegisteredClient
-	clients    map[int][]*RegisteredClient
-	// Tags being covered here means registeredClient can stay immutable
+	clients             map[int][]*RegisteredClient
 	tags                map[*RegisteredClient][]string
 	clientsByGame       map[string][]*RegisteredClient
 	clientsByTag        map[string][]*RegisteredClient
-	fullClients         []*RegisteredClient
 	concernsSelfClients map[int][]*RegisteredClient
-	// Just a copy of the static data so we can use it during register / unregister etc
-	lobbyRoomId *string
-	metrics     *metrics
+	lobbyRoomId         *string
+	metrics             *metrics
+	allClients          []*RegisteredClient
+	fullClients         []*RegisteredClient
+	mu                  sync.RWMutex
 }
 
 func newConnectionRegistry(lobbyRoomId *string, metrics *metrics) *connectionRegistry {
@@ -1604,17 +1599,30 @@ func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId 
 }
 
 type connectionState struct {
-	authenticated           bool
 	slotName                *string
 	cancel                  context.CancelFunc
 	clientConn              *websocket.Conn
-	pendingDatapackGames    []string
 	registeredClient        *RegisteredClient
-	authFailCount           int
 	prevDatapackageGamesReq string
 	remoteAddr              string
-	fromReducedPort         bool
+	pendingDatapackGames    []string
+	authFailCount           int
 	adminAuthed             atomic.Bool
+	fromReducedPort         bool
+	authenticated           bool
+}
+
+type testate struct {
+	slotName                *string
+	cancel                  context.CancelFunc
+	clientConn              *websocket.Conn
+	registeredClient        *RegisteredClient
+	prevDatapackageGamesReq string
+	remoteAddr              string
+	pendingDatapackGames    []string
+	authFailCount           int
+	fromReducedPort         bool
+	authenticated           bool
 }
 
 func (cs *connectionState) SendMessage(ctx context.Context, msg []any) error {

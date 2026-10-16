@@ -23,11 +23,11 @@ const (
 )
 
 type DataStorage struct {
-	mu              sync.RWMutex
 	data            map[string]*StorageEntry
 	keyCount        map[TeamSlot]int
-	readData        map[string]func() StorageValue // for _read_ keys
+	readData        map[string]func() StorageValue
 	notifiedClients map[string][]*RegisteredClient
+	mu              sync.RWMutex
 }
 
 func newDataStorage() *DataStorage {
@@ -46,8 +46,8 @@ type StorageEntry struct {
 }
 
 type DataStorageOperation struct {
-	Operation string       `json:"operation"`
 	Value     StorageValue `json:"value"`
+	Operation string       `json:"operation"`
 }
 
 func (ds *DataStorage) RegisterReadKey(key string, fn func() StorageValue) {

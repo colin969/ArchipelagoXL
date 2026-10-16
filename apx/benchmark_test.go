@@ -43,7 +43,7 @@ var defaultBenchConfig = RoomBenchConfig{
 	LargeActive:      4,
 	ExtraLargeIdle:   0,
 	ExtraLargeActive: 1,
-	DatapackageMulti: 0.5,
+	DatapackageMulti: 0.4,
 	ConnMultiplier:   2,
 	CompletionFrac:   0.5,
 }

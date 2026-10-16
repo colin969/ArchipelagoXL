@@ -26,20 +26,20 @@ type SavedDSEntry struct {
 }
 
 type SaveState struct {
-	SeedName             string                          `json:"seed_name"`
 	Checked              map[string][]int64              `json:"checked"`
 	ReceivedItems        map[string][]NetworkItem        `json:"received_items"`
-	Hints                []Hint                          `json:"hints"`
 	HintsUsed            map[string]int                  `json:"hints_used"`
 	Statuses             map[string]map[int]ClientStatus `json:"statuses"`
 	DataStorage          map[string]SavedDSEntry         `json:"data_storage"`
 	SlotActivityTimers   map[string]int64                `json:"slot_activity_timers"`
 	SlotConnectionTimers map[string]int64                `json:"slot_connection_timers"`
+	SeedName             string                          `json:"seed_name"`
+	Hints                []Hint                          `json:"hints"`
 }
 
 type SafeSaveHandler struct {
-	mu      sync.Mutex
 	handler SaveStateHandler
+	mu      sync.Mutex
 }
 
 func newSafeSaveHandler(h SaveStateHandler) *SafeSaveHandler {
@@ -442,27 +442,27 @@ func copyFile(src, dst string) error {
 // Immutable
 
 type RoomDefinition struct {
-	SeedName          string                        `json:"seed_name"`
-	Version           [3]int                        `json:"version"`
-	Tags              []string                      `json:"tags"`
-	RaceMode          int                           `json:"race_mode"`
-	ServerOptions     map[string]any                `json:"server_options"`
-	Locations         map[string]map[int64][3]int64 `json:"locations"` // "team:slot" -> locID -> [item,player,flags]
-	SlotInfo          map[string]SlotInfoDef        `json:"slot_info"`
-	SlotData          map[string]map[string]any     `json:"slot_data"`
-	SlotMinVersions   map[string][3]int             `json:"slot_min_versions"`
 	ConnectNames      map[string][2]int             `json:"connect_names"`
 	PrecollectedItems map[string][]int64            `json:"precollected_items"`
-	PrecollectedHints []Hint                        `json:"precollected_hints"`
-	Spheres           []map[string][]int64          `json:"spheres"`
 	DatapackChecksums map[string]string             `json:"datapack_checksums"`
+	SlotData          map[string]map[string]any     `json:"slot_data"`
+	ServerOptions     map[string]any                `json:"server_options"`
+	Locations         map[string]map[int64][3]int64 `json:"locations"`
+	SlotMinVersions   map[string][3]int             `json:"slot_min_versions"`
+	SlotInfo          map[string]SlotInfoDef        `json:"slot_info"`
+	SeedName          string                        `json:"seed_name"`
+	Spheres           []map[string][]int64          `json:"spheres"`
+	PrecollectedHints []Hint                        `json:"precollected_hints"`
+	Tags              []string                      `json:"tags"`
+	Version           [3]int                        `json:"version"`
+	RaceMode          int                           `json:"race_mode"`
 }
 
 type SlotInfoDef struct {
 	Name         string `json:"name"`
 	Game         string `json:"game"`
-	Type         int    `json:"type"`
 	GroupMembers []int  `json:"group_members"`
+	Type         int    `json:"type"`
 }
 
 func roomDefinitionFromMultidata(md *multidata.MultiData) *RoomDefinition {
