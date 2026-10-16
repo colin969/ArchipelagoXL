@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestRoomManager(t *testing.T) *RoomManager {
+func newTestRoomManager(t testing.TB) *RoomManager {
 	t.Helper()
 	store := newTestStore(t) // in-memory SQLite
 	rm := &RoomManager{
@@ -27,7 +29,9 @@ func newTestRoomManager(t *testing.T) *RoomManager {
 	return rm
 }
 
-func startRoomFromFile(t *testing.T, rm *RoomManager, path string) *HostedRoom {
+var testRoomCounter atomic.Int64
+
+func startRoomFromFile(t testing.TB, rm *RoomManager, path string) *HostedRoom {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -36,7 +40,7 @@ func startRoomFromFile(t *testing.T, rm *RoomManager, path string) *HostedRoom {
 	require.NoError(t, err)
 
 	room, err := rm.startRoomFromMultiData(
-		"test-room-"+t.Name(),
+		fmt.Sprintf("test-room-%d", testRoomCounter.Add(1)),
 		md, nil,
 		nil,
 		false, // perSlotPasswords
@@ -50,14 +54,54 @@ func startRoomFromFile(t *testing.T, rm *RoomManager, path string) *HostedRoom {
 	return room
 }
 
-func newTestStore(t *testing.T) *RoomStore {
+func startRoomFromFileWithBadDatapackages(t testing.TB, rm *RoomManager, path string, badPackagePercent float64) *HostedRoom {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	md, err := multidata.ParseMultidata(data)
+	require.NoError(t, err)
+
+	// Corrupt a percentage of datapackage checksums before the room is created
+	// so clients see unknown checksums and can't use their cache
+	if badPackagePercent > 0 && badPackagePercent <= 1.0 {
+		games := make([]string, 0, len(md.DataPackage))
+		for game := range md.DataPackage {
+			games = append(games, game)
+		}
+		rand.Shuffle(len(games), func(i, j int) {
+			games[i], games[j] = games[j], games[i]
+		})
+		numBad := max(1, int(float64(len(games))*badPackagePercent))
+		for _, game := range games[:numBad] {
+			pkg := md.DataPackage[game]
+			pkg.Checksum = fmt.Sprintf("bench-bad-%s-%d", game, rand.Int64())
+			md.DataPackage[game] = pkg
+		}
+	}
+	room, err := rm.startRoomFromMultiData(
+		fmt.Sprintf("test-room-%d", testRoomCounter.Add(1)),
+		md, nil,
+		nil,
+		false, // perSlotPasswords
+		false, // deathlinkDisabled
+		false, // reducedAccess
+		1.0,   // deathlinkProbability
+		false, // save — skip DB persistence
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { room.Close() })
+	return room
+}
+
+func newTestStore(t testing.TB) *RoomStore {
 	t.Helper()
 	store, err := NewRoomStore("")
 	require.NoError(t, err)
 	return store
 }
 
-func newTestDiskDataPackages(t *testing.T) *DiskDataPackageStore {
+func newTestDiskDataPackages(t testing.TB) *DiskDataPackageStore {
 	t.Helper()
 	store, err := NewDiskDataPackageStore(t.TempDir())
 	require.NoError(t, err)

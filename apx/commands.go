@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/coder/websocket/wsjson"
@@ -490,6 +491,82 @@ func (s *ApxRoom) handleAdminLogoutCommand(ctx context.Context, connState *conne
 	return nil
 }
 
+func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *connectionState, args string) error {
+	argsList := splitArgs(args)
+	if len(argsList) < 2 {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			"Usage: !admin option <option> <value>")
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			"Options list: password, server_password, hint_cost")
+		return nil
+	}
+
+	option := argsList[0]
+	value := strings.Join(argsList[1:], " ")
+
+	switch option {
+	case "password":
+		newPassword := processNewPassword(value)
+		s.state.ServerOptions.SetPassword(newPassword)
+		s.buildRoomInfoFromState()
+	case "server_password", "admin_password":
+		newPassword := processNewPassword(value)
+		s.state.ServerOptions.SetAdminPassword(newPassword)
+	case "hint_cost":
+		hintCost, err := strconv.Atoi(value)
+		if err != nil || hintCost < 0 || hintCost > 100 {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option hint_cost <0-100>")
+			return nil
+		}
+		s.state.ServerOptions.SetHintCost(hintCost)
+		s.buildRoomInfoFromState()
+		s.BroadcastRoomUpdateHintCost()
+	case "location_check_points":
+		locationCheckPoints, err := strconv.Atoi(value)
+		if err != nil || locationCheckPoints < 0 || locationCheckPoints > 100 {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option location_check_points <0-100>")
+			return nil
+		}
+		s.state.ServerOptions.SetLocationCheckPoints(locationCheckPoints)
+		s.buildRoomInfoFromState()
+		s.BroadcastRoomUpdateLocationCheckPoints()
+	case "release_mode":
+		mode, valid := permissionFromString(value)
+		if !valid {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option release_mode <enabled|goal|auto|auto-enabled|disabled>")
+			return nil
+		}
+		s.state.ServerOptions.SetReleaseMode(mode)
+		s.buildRoomInfoFromState()
+		s.BroadcastRoomUpdatePermissions()
+	case "collect_mode":
+		mode, valid := permissionFromString(value)
+		if !valid {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option collect_mode <enabled|goal|auto|auto-enabled|disabled>")
+			return nil
+		}
+		s.state.ServerOptions.SetReleaseMode(mode)
+		s.buildRoomInfoFromState()
+		s.BroadcastRoomUpdatePermissions()
+	case "remaining_mode":
+		mode, valid := permissionFromString(value)
+		if !valid || mode == PermissionAuto || mode == PermissionAutoEnabled {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option remaining_mode <enabled|goal|disabled>")
+			return nil
+		}
+		s.state.ServerOptions.SetRemainingMode(mode)
+		s.buildRoomInfoFromState()
+		s.BroadcastRoomUpdatePermissions()
+	}
+
+	return nil
+}
+
 func (s *ApxRoom) handleAdminReleaseCommand(ctx context.Context, connState *connectionState, args string) error {
 	slotInfo, ok := s.state.NameToSlot[args]
 	if !ok {
@@ -615,4 +692,22 @@ func splitArgs(args string) []string {
 	}
 
 	return argsList
+}
+
+func valueToBool(s string) bool {
+	switch strings.ToLower(s) {
+	case "off", "0", "false", "none", "null", "no":
+		return false
+	default:
+		return true
+	}
+}
+
+func processNewPassword(s string) string {
+	switch s {
+	case "null", "none", "", "''", `""`:
+		return ""
+	default:
+		return s
+	}
 }

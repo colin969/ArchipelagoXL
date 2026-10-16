@@ -747,6 +747,69 @@ func TestConnectionRegistry(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("allClients tracking", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		game := "TestGame"
+		c1 := &RegisteredClient{Slot: 1, game: &game}
+		c2 := &RegisteredClient{Slot: 2, game: &game}
+
+		t.Run("empty on start", func(t *testing.T) {
+			if len(cr.allClients) != 0 {
+				t.Errorf("expected 0 allClients, got %d", len(cr.allClients))
+			}
+		})
+
+		cr.Register(1, c1, game, []string{})
+		cr.Register(2, c2, game, []string{})
+
+		t.Run("both clients in allClients", func(t *testing.T) {
+			if len(cr.allClients) != 2 {
+				t.Errorf("expected 2 allClients, got %d", len(cr.allClients))
+			}
+		})
+
+		cr.Unregister(c1)
+
+		t.Run("one client remains in allClients after unregister", func(t *testing.T) {
+			if len(cr.allClients) != 1 {
+				t.Errorf("expected 1 allClient, got %d", len(cr.allClients))
+			}
+			if cr.allClients[0] != c2 {
+				t.Error("expected c2 to remain in allClients")
+			}
+		})
+
+		cr.Unregister(c2)
+
+		t.Run("empty after all unregistered", func(t *testing.T) {
+			if len(cr.allClients) != 0 {
+				t.Errorf("expected 0 allClients, got %d", len(cr.allClients))
+			}
+		})
+	})
+
+	t.Run("KickClearsAllClients", func(t *testing.T) {
+		cr := newConnectionRegistry(nil, nil)
+		game := "TestGame"
+		cancel := func() {}
+		c1 := &RegisteredClient{Slot: 1, game: &game, cancel: cancel}
+		c2 := &RegisteredClient{Slot: 1, game: &game, cancel: cancel}
+
+		cr.Register(1, c1, game, []string{})
+		cr.Register(1, c2, game, []string{})
+
+		if len(cr.allClients) != 2 {
+			t.Fatalf("expected 2 allClients before kick, got %d", len(cr.allClients))
+		}
+
+		cr.Kick(1)
+
+		if len(cr.allClients) != 0 {
+			t.Errorf("expected 0 allClients after kick, got %d", len(cr.allClients))
+		}
+	})
+
 }
 
 func TestConnectionRegistryTextIndices(t *testing.T) {

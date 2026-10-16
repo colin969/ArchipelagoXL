@@ -88,18 +88,20 @@ func (perm Permission) Valid() bool {
 	return false
 }
 
-func permissionFromString(mode string) Permission {
+func permissionFromString(mode string) (Permission, bool) {
 	switch mode {
 	case "enabled":
-		return PermissionEnabled
+		return PermissionEnabled, true
 	case "goal":
-		return PermissionGoal
+		return PermissionGoal, true
 	case "auto":
-		return PermissionAuto
+		return PermissionAuto, true
 	case "auto-enabled":
-		return PermissionAutoEnabled
+		return PermissionAutoEnabled, true
+	case "disabled":
+		return PermissionDisabled, true
 	default:
-		return PermissionDisabled
+		return PermissionDisabled, false
 	}
 }
 
@@ -262,9 +264,12 @@ func (m ConnectedMessage) MarshalJSON() ([]byte, error) {
 }
 
 type RoomUpdateMessage struct {
-	Players          []NetworkPlayer `json:"players,omitempty"`
-	CheckedLocations []int64         `json:"checked_locations,omitempty"`
-	HintPoints       *int            `json:"hint_points,omitempty"`
+	Players             []NetworkPlayer       `json:"players,omitempty"`
+	CheckedLocations    []int64               `json:"checked_locations,omitempty"`
+	HintPoints          *int                  `json:"hint_points,omitempty"`
+	HintCost            *int                  `json:"hint_cost,omitempty"`
+	LocationCheckPoints *int                  `json:"location_check_points,omitempty"`
+	Permissions         map[string]Permission `json:"permissions,omitempty"`
 }
 
 func (m RoomUpdateMessage) MarshalJSON() ([]byte, error) {

@@ -114,6 +114,12 @@ func newGlobalDataPackageCache() *GlobalDataPackageCache {
 	}
 }
 
+func (gdpc *GlobalDataPackageCache) Count() int {
+	gdpc.mu.RLock()
+	defer gdpc.mu.RUnlock()
+	return len(gdpc.byChecksum)
+}
+
 type GameData struct {
 	ItemNameToID     map[string]int64 `json:"ItemNameToID"`
 	LocationNameToID map[string]int64 `json:"LocationNameToID"`

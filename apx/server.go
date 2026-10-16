@@ -254,10 +254,40 @@ type ServerOptions struct {
 	compatibility       int        // "compatibility" - default 2
 }
 
+func (so *ServerOptions) SetPassword(password string) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.password = password
+}
+
 func (so *ServerOptions) GetPassword() string {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
 	return so.password
+}
+
+func (so *ServerOptions) SetAdminPassword(password string) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.adminPassword = password
+}
+
+func (so *ServerOptions) GetAdminPassword() string {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.adminPassword
+}
+
+func (so *ServerOptions) GetLocationCheckPoints() int {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.locationCheckPoints
+}
+
+func (so *ServerOptions) SetLocationCheckPoints(locationCheckPoints int) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.locationCheckPoints = locationCheckPoints
 }
 
 func (so *ServerOptions) GetHintCost() int {
@@ -272,16 +302,40 @@ func (so *ServerOptions) SetHintCost(hintCost int) {
 	so.hintCost = hintCost
 }
 
+func (so *ServerOptions) SetCollectMode(mode Permission) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.collectMode = mode
+}
+
 func (so *ServerOptions) GetCollectMode() Permission {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
 	return so.collectMode
 }
 
+func (so *ServerOptions) SetReleaseMode(mode Permission) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.releaseMode = mode
+}
+
 func (so *ServerOptions) GetReleaseMode() Permission {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
 	return so.releaseMode
+}
+
+func (so *ServerOptions) SetRemainingMode(mode Permission) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.remainingMode = mode
+}
+
+func (so *ServerOptions) GetRemainingMode() Permission {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.remainingMode
 }
 
 func (so *ServerOptions) ItemCheatAllowed() bool {
@@ -495,6 +549,66 @@ func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[Team
 			}
 		})
 	}
+}
+
+func (s *ApxRoom) BroadcastRoomUpdateHintCost() {
+	s.submitOrdered(func() {
+		ctx := context.Background()
+		points := s.state.ServerOptions.GetHintCost()
+		msg := RoomUpdateMessage{
+			HintCost: &points,
+		}
+
+		s.connections.mu.RLock()
+		allTargets := make([]*RegisteredClient, len(s.connections.allClients))
+		copy(allTargets, s.connections.allClients)
+		s.connections.mu.RUnlock()
+
+		for _, c := range allTargets {
+			wsjson.Write(ctx, c.clientConn, []any{msg})
+		}
+	})
+}
+
+func (s *ApxRoom) BroadcastRoomUpdateLocationCheckPoints() {
+	s.submitOrdered(func() {
+		ctx := context.Background()
+		points := s.state.ServerOptions.GetLocationCheckPoints()
+		msg := RoomUpdateMessage{
+			LocationCheckPoints: &points,
+		}
+
+		s.connections.mu.RLock()
+		allTargets := make([]*RegisteredClient, len(s.connections.allClients))
+		copy(allTargets, s.connections.allClients)
+		s.connections.mu.RUnlock()
+
+		for _, c := range allTargets {
+			wsjson.Write(ctx, c.clientConn, []any{msg})
+		}
+	})
+}
+
+func (s *ApxRoom) BroadcastRoomUpdatePermissions() {
+	s.submitOrdered(func() {
+		ctx := context.Background()
+		msg := RoomUpdateMessage{
+			Permissions: map[string]Permission{
+				"release":   s.state.ServerOptions.GetReleaseMode(),
+				"collect":   s.state.ServerOptions.GetCollectMode(),
+				"remaining": s.state.ServerOptions.GetRemainingMode(),
+			},
+		}
+
+		s.connections.mu.RLock()
+		allTargets := make([]*RegisteredClient, len(s.connections.allClients))
+		copy(allTargets, s.connections.allClients)
+		s.connections.mu.RUnlock()
+
+		for _, c := range allTargets {
+			wsjson.Write(ctx, c.clientConn, []any{msg})
+		}
+	})
 }
 
 func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locations []int64) error {
@@ -1054,7 +1168,7 @@ func (s *ApState) GetSlotHintCost(teamSlot TeamSlot) int {
 func (s *ApState) GetSlotRemainingPoints(teamSlot TeamSlot) int {
 	checked := len(s.Checks.GetChecked(teamSlot))
 	used := s.Hints.GetHintsUsed(teamSlot)
-	return s.ServerOptions.locationCheckPoints*checked - s.GetSlotHintCost(teamSlot)*used
+	return (s.ServerOptions.locationCheckPoints * checked) - (s.GetSlotHintCost(teamSlot) * used)
 }
 
 // Simple per-ip rate limiter for the WS rooms
@@ -1114,8 +1228,9 @@ func removeClient(clients []*RegisteredClient, target *RegisteredClient) []*Regi
 
 // Stores data from all connected clients which is needed globally
 type connectionRegistry struct {
-	mu      sync.RWMutex
-	clients map[int][]*RegisteredClient
+	mu         sync.RWMutex
+	allClients []*RegisteredClient
+	clients    map[int][]*RegisteredClient
 	// Tags being covered here means registeredClient can stay immutable
 	tags                map[*RegisteredClient][]string
 	clientsByGame       map[string][]*RegisteredClient
@@ -1141,6 +1256,7 @@ func newConnectionRegistry(lobbyRoomId *string, metrics *metrics) *connectionReg
 
 func (cr *connectionRegistry) Register(slotId int, client *RegisteredClient, game string, tags []string) {
 	cr.mu.Lock()
+	cr.allClients = append(cr.allClients, client)
 	cr.clients[slotId] = append(cr.clients[slotId], client)
 	cr.tags[client] = tags
 	cr.clientsByGame[game] = append(cr.clientsByGame[game], client)
@@ -1222,6 +1338,7 @@ func (cr *connectionRegistry) Kick(slotId int) {
 	cr.mu.Lock()
 	for _, client := range cr.clients[slotId] {
 		client.cancel()
+		cr.allClients = removeClient(cr.allClients, client)
 		cr.removeFromAllIndices(client)
 	}
 	delete(cr.clients, slotId)
@@ -1236,8 +1353,15 @@ func (cr *connectionRegistry) Kick(slotId int) {
 func (cr *connectionRegistry) Unregister(client *RegisteredClient) {
 	cr.mu.Lock()
 
+	i := slices.Index(cr.allClients, client)
+	if i < 0 {
+		cr.mu.Unlock()
+		return
+	}
+	cr.allClients = slices.Delete(cr.allClients, i, i+1)
+
 	clients := cr.clients[client.Slot]
-	i := slices.Index(clients, client)
+	i = slices.Index(clients, client)
 	if i < 0 {
 		cr.mu.Unlock()
 		return
@@ -2411,17 +2535,17 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 	}
 	if v, ok := raw["release_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.releaseMode = permissionFromString(s)
+			opts.releaseMode, _ = permissionFromString(s)
 		}
 	}
 	if v, ok := raw["collect_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.collectMode = permissionFromString(s)
+			opts.collectMode, _ = permissionFromString(s)
 		}
 	}
 	if v, ok := raw["remaining_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.remainingMode = permissionFromString(s)
+			opts.remainingMode, _ = permissionFromString(s)
 		}
 	}
 	if v, ok := raw["countdown_mode"]; ok {
