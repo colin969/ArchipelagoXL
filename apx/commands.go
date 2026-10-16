@@ -222,7 +222,7 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	for _, h := range existing {
 		if int(h.FindingPlayer) == client.Slot && h.Location == locID {
 			hint := formatHintMessage(h)
-			s.broadcastPrintJson(ctx, []PrintJsonMessage{hint})
+			s.broadcastPrintJson([]PrintJsonMessage{hint})
 			return nil
 		}
 	}
@@ -251,18 +251,19 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	// Store bidirectionally
 	hint, allowed := s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, client, cost, points)
 	if allowed {
-		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatHintMessage(hint)})
+		s.broadcastPrintJson([]PrintJsonMessage{formatHintMessage(hint)})
 	}
 
 	// Send own clients hint points update
 	newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
 	clients := s.connections.GetSlotClients(teamSlot)
 
-	s.submitOrdered(func() {
-		BroadcastJSON(ctx, clients, []any{RoomUpdateMessage{
-			HintPoints: &newPoints,
-		}})
-	})
+	err = enqueueMessage([]any{RoomUpdateMessage{
+		HintPoints: &newPoints,
+	}}, clients...)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -307,17 +308,18 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 				affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
 			}
 		}
-		s.notifyHintsChanged(ctx, affectedSlots)
+		s.notifyHintsChanged(affectedSlots)
 
 		// Send own clients hint points update
 		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
 		clients := s.connections.GetSlotClients(teamSlot)
 
-		s.submitOrdered(func() {
-			BroadcastJSON(ctx, clients, []any{RoomUpdateMessage{
-				HintPoints: &newPoints,
-			}})
-		})
+		err := enqueueMessage([]any{RoomUpdateMessage{
+			HintPoints: &newPoints,
+		}}, clients...)
+		if err != nil {
+			return err
+		}
 	}
 
 	var msgs []PrintJsonMessage
@@ -341,7 +343,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 	}
 
 	if len(msgs) > 0 {
-		s.broadcastPrintJson(ctx, msgs)
+		s.broadcastPrintJson(msgs)
 	}
 
 	if cost > 0 && points < cost {
@@ -363,14 +365,14 @@ func (s *ApxRoom) handleGetItemCommand(ctx context.Context, connState *connectio
 
 	if !allowed {
 		text := "Sorry, item cheating has been disabled on this server. You can ask the server admin to enable item cheating or use /send"
-		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
 		return nil
 	}
 
 	itemID, ok := s.datapackages.GetItemID(*connState.registeredClient.game, args)
 	if !ok {
 		text := fmt.Sprintf("Item not found for '%s'", args)
-		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
 		return nil
 	}
 
@@ -387,7 +389,7 @@ func (s *ApxRoom) handleGetItemCommand(ctx context.Context, connState *connectio
 		&newItem,
 	)
 
-	s.broadcastPrintJson(ctx, []PrintJsonMessage{msg})
+	s.broadcastPrintJson([]PrintJsonMessage{msg})
 
 	return nil
 }
@@ -402,7 +404,7 @@ func (s *ApxRoom) handleCollectCommand(ctx context.Context, connState *connectio
 	}
 	if cm == PermissionDisabled {
 		text := "Sorry, client item collecting has been disabled on this server. You can ask the server admin for a /collect"
-		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
 		return nil
 	}
 	if cm == PermissionGoal && status == ClientStatusGoal {
@@ -423,7 +425,7 @@ func (s *ApxRoom) handleReleaseCommand(ctx context.Context, connState *connectio
 	}
 	if rm == PermissionDisabled {
 		text := "Sorry, client item releasing has been disabled on this server. You can ask the server admin for a /release"
-		s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
+		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
 		return nil
 	}
 	if rm == PermissionGoal && status == ClientStatusGoal {
@@ -633,7 +635,7 @@ func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connect
 		&networkItem,
 	)
 
-	s.broadcastPrintJson(ctx, []PrintJsonMessage{msg})
+	s.broadcastPrintJson([]PrintJsonMessage{msg})
 
 	// Make sure requester always gets the feedback too
 	if connState.registeredClient.textConcernsSelf && slotInfo.Slot != connState.registeredClient.Slot {

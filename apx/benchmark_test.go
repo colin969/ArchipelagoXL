@@ -455,7 +455,7 @@ func testPopulateDataStorage(room *HostedRoom, rng *rand.Rand) {
 			}
 
 			defaultVal, _ := json.Marshal(val)
-			state.DataStorage.Set(owner, key, defaultVal, nil, ts.Slot, nil, func(fn func()) { fn() })
+			state.DataStorage.Set(owner, key, defaultVal, nil, ts.Slot, nil)
 		}
 	}
 }

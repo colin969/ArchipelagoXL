@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"maps"
 	"math"
@@ -10,8 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-
-	"github.com/coder/websocket/wsjson"
 )
 
 const (
@@ -118,7 +115,7 @@ func (ds *DataStorage) Get(key string) (StorageValue, bool) {
 	return entry.value, true
 }
 
-func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, ops []DataStorageOperation, senderSlot int, replyClient *RegisteredClient, submitOrdered func(func())) (original StorageValue, result StorageValue, err error) {
+func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, ops []DataStorageOperation, senderSlot int, replyClient *RegisteredClient) (original StorageValue, result StorageValue, err error) {
 	if strings.HasPrefix(key, "_read_") {
 		return nil, nil, fmt.Errorf("key %q is read-only", key)
 	}
@@ -172,33 +169,27 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 	valueCopy := value
 	originalCopy := original
 
-	if submitOrdered != nil {
-		// Get list of clients that want to be notified on change
-		// Add sender if wantReply is true
-		if clients := ds.notifiedClients[key]; len(clients) > 0 {
-			notify = make([]*RegisteredClient, len(clients))
-			copy(notify, clients)
-		}
-		if replyClient != nil && !slices.Contains(notify, replyClient) {
-			notify = append(notify, replyClient)
-		}
+	// Get list of clients that want to be notified on change
+	// Add sender if wantReply is true
+	if clients := ds.notifiedClients[key]; len(clients) > 0 {
+		notify = make([]*RegisteredClient, len(clients))
+		copy(notify, clients)
+	}
+	if replyClient != nil && !slices.Contains(notify, replyClient) {
+		notify = append(notify, replyClient)
 	}
 
 	ds.mu.Unlock()
 
 	if len(notify) > 0 {
-		submitOrdered(func() {
-			reply := SetReplyMessage{
-				Key:           key,
-				OriginalValue: originalCopy,
-				Value:         valueCopy,
-				Slot:          senderSlot,
-			}
+		reply := SetReplyMessage{
+			Key:           key,
+			OriginalValue: originalCopy,
+			Value:         valueCopy,
+			Slot:          senderSlot,
+		}
 
-			for _, c := range notify {
-				wsjson.Write(context.Background(), c.clientConn, []any{reply})
-			}
-		})
+		enqueueMessage([]any{reply}, notify...)
 	}
 
 	return original, value, nil

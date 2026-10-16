@@ -147,7 +147,9 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		clientConn:             connState.clientConn,
 		forcedTextConcernsSelf: connState.fromReducedPort,
 		notifyKeys:             make([]string, 0),
+		messageQueue:           newMessageQueue(),
 	}
+	client.messageQueue.startSender(ctx, client.clientConn)
 	s.connections.Register(slotInfo.Slot, &client, slotInfo.Game, msg.Tags)
 	connState.authenticated = true
 	connState.registeredClient = &client
@@ -161,17 +163,11 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		msg.ItemsHandling = &itemsHandling
 	}
 	client.itemsHandling.Store(int32(*msg.ItemsHandling))
-	err = s.SyncReceivedItems(ctx, &client, *msg.ItemsHandling)
-	if err != nil {
-		return err
-	}
+	s.SyncReceivedItems(ctx, &client, *msg.ItemsHandling)
 
 	// Send initial connection messages
 	printMsg := simplePrintJsonMessage("Tutorial", "You are connected :)")
-	err = wsjson.Write(ctx, client.clientConn, []any{printMsg})
-	if err != nil {
-		return err
-	}
+	enqueueMessage([]any{printMsg}, &client)
 
 	log.Printf("[WS] Connected to %s", msg.Name)
 
@@ -204,7 +200,7 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 	slot := connState.registeredClient.Slot
 	team := connState.registeredClient.Team
 	text = fmt.Sprintf("%s: %s", *connState.slotName, text)
-	s.broadcastPrintJson(ctx, []PrintJsonMessage{formatGenericMessage(&team, &slot, "Chat", text)})
+	s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&team, &slot, "Chat", text)})
 
 	return nil
 }

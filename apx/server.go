@@ -207,8 +207,6 @@ type ApxRoom struct {
 	logDeath          func(slotId int)
 	ipLimiter         *IPRateLimiter
 	chatCommandRouter *chatCommandRouter
-	bcUnorderedCh     chan func()
-	bcOrderedCh       chan func()
 	lobbyRoomId       string
 	perSlotPasswords  bool
 }
@@ -518,19 +516,7 @@ func (ls *Checks) GetCollectLocIds(team int, slot int) map[TeamSlot][]int64 {
 	return locIdMaps
 }
 
-func (s *ApxRoom) submitBroadcast(fn func()) {
-	select {
-	case s.bcUnorderedCh <- fn:
-	default:
-		go fn()
-	}
-}
-
-func (s *ApxRoom) submitOrdered(fn func()) {
-	s.bcOrderedCh <- fn
-}
-
-func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[TeamSlot]struct{}) {
+func (s *ApxRoom) notifyHintsChanged(affectedSlots map[TeamSlot]struct{}) {
 	for ts := range affectedSlots {
 		key := fmt.Sprintf("_read_hints_%d_%d", ts.Team, ts.Slot)
 		val, _ := s.state.DataStorage.Get(key)
@@ -542,72 +528,54 @@ func (s *ApxRoom) notifyHintsChanged(ctx context.Context, affectedSlots map[Team
 			Key:   key,
 			Value: val,
 		}
-		s.submitOrdered(func() {
-			for _, c := range clients {
-				wsjson.Write(ctx, c.clientConn, []any{reply})
-			}
-		})
+
+		enqueueMessage([]any{reply}, clients...)
 	}
 }
 
 func (s *ApxRoom) BroadcastRoomUpdateHintCost() {
-	s.submitOrdered(func() {
-		ctx := context.Background()
-		points := s.state.ServerOptions.GetHintCost()
-		msg := RoomUpdateMessage{
-			HintCost: &points,
-		}
+	points := s.state.ServerOptions.GetHintCost()
+	msg := RoomUpdateMessage{
+		HintCost: &points,
+	}
 
-		s.connections.mu.RLock()
-		allTargets := make([]*RegisteredClient, len(s.connections.allClients))
-		copy(allTargets, s.connections.allClients)
-		s.connections.mu.RUnlock()
+	s.connections.mu.RLock()
+	allTargets := make([]*RegisteredClient, len(s.connections.allClients))
+	copy(allTargets, s.connections.allClients)
+	s.connections.mu.RUnlock()
 
-		for _, c := range allTargets {
-			wsjson.Write(ctx, c.clientConn, []any{msg})
-		}
-	})
+	enqueueMessage([]any{msg}, allTargets...)
 }
 
 func (s *ApxRoom) BroadcastRoomUpdateLocationCheckPoints() {
-	s.submitOrdered(func() {
-		ctx := context.Background()
-		points := s.state.ServerOptions.GetLocationCheckPoints()
-		msg := RoomUpdateMessage{
-			LocationCheckPoints: &points,
-		}
+	points := s.state.ServerOptions.GetLocationCheckPoints()
+	msg := RoomUpdateMessage{
+		LocationCheckPoints: &points,
+	}
 
-		s.connections.mu.RLock()
-		allTargets := make([]*RegisteredClient, len(s.connections.allClients))
-		copy(allTargets, s.connections.allClients)
-		s.connections.mu.RUnlock()
+	s.connections.mu.RLock()
+	allTargets := make([]*RegisteredClient, len(s.connections.allClients))
+	copy(allTargets, s.connections.allClients)
+	s.connections.mu.RUnlock()
 
-		for _, c := range allTargets {
-			wsjson.Write(ctx, c.clientConn, []any{msg})
-		}
-	})
+	enqueueMessage([]any{msg}, allTargets...)
 }
 
 func (s *ApxRoom) BroadcastRoomUpdatePermissions() {
-	s.submitOrdered(func() {
-		ctx := context.Background()
-		msg := RoomUpdateMessage{
-			Permissions: map[string]Permission{
-				"release":   s.state.ServerOptions.GetReleaseMode(),
-				"collect":   s.state.ServerOptions.GetCollectMode(),
-				"remaining": s.state.ServerOptions.GetRemainingMode(),
-			},
-		}
+	msg := RoomUpdateMessage{
+		Permissions: map[string]Permission{
+			"release":   s.state.ServerOptions.GetReleaseMode(),
+			"collect":   s.state.ServerOptions.GetCollectMode(),
+			"remaining": s.state.ServerOptions.GetRemainingMode(),
+		},
+	}
 
-		s.connections.mu.RLock()
-		allTargets := make([]*RegisteredClient, len(s.connections.allClients))
-		copy(allTargets, s.connections.allClients)
-		s.connections.mu.RUnlock()
+	s.connections.mu.RLock()
+	allTargets := make([]*RegisteredClient, len(s.connections.allClients))
+	copy(allTargets, s.connections.allClients)
+	s.connections.mu.RUnlock()
 
-		for _, c := range allTargets {
-			wsjson.Write(ctx, c.clientConn, []any{msg})
-		}
-	})
+	enqueueMessage([]any{msg}, allTargets...)
 }
 
 func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locations []int64) error {
@@ -657,7 +625,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 			}
 		}
 		if len(affectedHintSlots) > 0 {
-			s.notifyHintsChanged(ctx, affectedHintSlots)
+			s.notifyHintsChanged(affectedHintSlots)
 		}
 
 		var printJsonMsgs []PrintJsonMessage
@@ -666,9 +634,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 		}
 
 		if len(printJsonMsgs) > 0 {
-			s.submitBroadcast(func() {
-				s.broadcastPrintJson(ctx, printJsonMsgs)
-			})
+			s.broadcastPrintJson(printJsonMsgs)
 		}
 
 		affectedSlots := make(map[TeamSlot]struct{})
@@ -688,14 +654,10 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 		for locID := range newChecks {
 			checkedList = append(checkedList, locID)
 		}
-		s.submitOrdered(func() {
-			for _, c := range slotClients {
-				wsjson.Write(ctx, c.clientConn, []any{RoomUpdateMessage{
-					CheckedLocations: checkedList,
-					HintPoints:       new(100),
-				}})
-			}
-		})
+		enqueueMessage([]any{RoomUpdateMessage{
+			CheckedLocations: checkedList,
+			HintPoints:       new(100),
+		}}, slotClients...)
 	}
 
 	return nil
@@ -735,12 +697,6 @@ func formatSendItemMessage(item NetworkItem, findingPlayer int, receivingPlayer 
 }
 
 func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]struct{}) {
-	type pendingSend struct {
-		conn *websocket.Conn
-		msg  ReceivedItemsMessage
-	}
-	var sends []pendingSend
-
 	for teamSlot := range affectedSlots {
 		for _, client := range s.connections.GetSlotClients(teamSlot) {
 			clientItemsHandling := int(client.itemsHandling.Load())
@@ -762,20 +718,11 @@ func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]s
 					startInvSlice = startInv[sendIndex:]
 				}
 				items := append(startInvSlice, receivedItems[firstNewItem:]...)
-				sends = append(sends, pendingSend{
-					conn: client.clientConn,
-					msg:  ReceivedItemsMessage{Index: sendIndex, Items: items},
-				})
+				enqueueMessage([]any{ReceivedItemsMessage{Index: sendIndex, Items: items}}, client)
 				client.sendIndex.Store(int32(len(startInv) + len(receivedItems)))
 			}
 		}
 	}
-
-	s.submitOrdered(func() {
-		for _, s := range sends {
-			wsjson.Write(ctx, s.conn, []any{s.msg})
-		}
-	})
 }
 
 type ReceivedItemsKey struct {
@@ -1189,6 +1136,61 @@ func newIPRateLimiter() *IPRateLimiter {
 	}
 }
 
+type MessageQueue struct {
+	mu        sync.Mutex
+	sendQueue [][]byte
+	sending   [][]byte
+	// Tells worker there's something to send
+	notify chan struct{}
+}
+
+func newMessageQueue() *MessageQueue {
+	return &MessageQueue{
+		notify: make(chan struct{}, 1),
+	}
+}
+
+func (q *MessageQueue) Enqueue(msg []byte) bool {
+	q.mu.Lock()
+	q.sendQueue = append(q.sendQueue, msg)
+	q.mu.Unlock()
+
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
+
+	return true
+}
+
+func (q *MessageQueue) swapWithSender() [][]byte {
+	q.mu.Lock()
+	q.sending, q.sendQueue = q.sendQueue, q.sending[:0]
+	// If queue has exploded, shrink again to save space. Probably never even reached.
+	if cap(q.sendQueue) > 2048 {
+		q.sendQueue = make([][]byte, 0, 64)
+	}
+	q.mu.Unlock()
+	return q.sending
+}
+
+func (q *MessageQueue) startSender(ctx context.Context, conn *websocket.Conn) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-q.notify:
+				for _, msg := range q.swapWithSender() {
+					if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+						return
+					}
+				}
+			}
+		}
+	}()
+}
+
 // Fields are immutable, but individual fields within may have their own callable functions to handle a mutable state
 type RegisteredClient struct {
 	slotName               *string
@@ -1203,6 +1205,7 @@ type RegisteredClient struct {
 	textConcernsSelf       bool
 	forcedTextConcernsSelf bool
 	noText                 bool
+	messageQueue           *MessageQueue
 }
 
 func (c *RegisteredClient) GetItemsHandling() int {
@@ -1944,7 +1947,7 @@ func (s *ApxRoom) SetClientStatus(ctx context.Context, team int, slot int, slotN
 
 	if status == ClientStatusGoal {
 		// Trigger goal checks
-		s.broadcastPrintJson(ctx, []PrintJsonMessage{
+		s.broadcastPrintJson([]PrintJsonMessage{
 			// TODO: Decide to add slot info if this needs to be slot specific?
 			formatGenericMessage(nil, nil, "Goal", fmt.Sprintf("%s (Team #%d) has completed their goal", slotName, team)),
 		})
@@ -2047,7 +2050,7 @@ func (s *ApxRoom) handleLocationScouts(ctx context.Context, connState *connectio
 		}
 
 		if len(affectedSlots) > 0 {
-			s.notifyHintsChanged(ctx, affectedSlots)
+			s.notifyHintsChanged(affectedSlots)
 		}
 	}
 
@@ -2143,13 +2146,13 @@ func (s *ApxRoom) handleCreateHints(ctx context.Context, connState *connectionSt
 			affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
 		}
 
-		s.notifyHintsChanged(ctx, affectedSlots)
+		s.notifyHintsChanged(affectedSlots)
 
 		var msgs []PrintJsonMessage
 		for _, hint := range newHints {
 			msgs = append(msgs, formatHintMessage(hint))
 		}
-		s.broadcastPrintJson(ctx, msgs)
+		s.broadcastPrintJson(msgs)
 	}
 
 	return nil
@@ -2182,7 +2185,7 @@ func (s *ApxRoom) handleUpdateHint(ctx context.Context, connState *connectionSta
 	if updatedHint.FindingPlayer != int32(connState.registeredClient.Slot) {
 		affectedHintSlots[TeamSlot{0, int(updatedHint.FindingPlayer)}] = struct{}{}
 	}
-	s.notifyHintsChanged(ctx, affectedHintSlots)
+	s.notifyHintsChanged(affectedHintSlots)
 
 	return nil
 }
@@ -2300,7 +2303,7 @@ func (s *ApxRoom) handleSet(ctx context.Context, connState *connectionState, raw
 	if msg.WantReply {
 		replyClient = client
 	}
-	_, _, err := s.state.DataStorage.Set(owner, msg.Key, msg.Default, msg.Operations, client.Slot, replyClient, s.submitOrdered)
+	_, _, err := s.state.DataStorage.Set(owner, msg.Key, msg.Default, msg.Operations, client.Slot, replyClient)
 	if err != nil {
 		cmd := MessageTypeSet
 		return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd,
@@ -2330,7 +2333,7 @@ func (s *ApxRoom) handleSetNotify(ctx context.Context, connState *connectionStat
 	return nil
 }
 
-func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessage) {
+func (s *ApxRoom) broadcastPrintJson(msgs []PrintJsonMessage) {
 	if len(msgs) == 0 {
 		return
 	}
@@ -2371,14 +2374,10 @@ func (s *ApxRoom) broadcastPrintJson(ctx context.Context, msgs []PrintJsonMessag
 	}
 	s.connections.mu.RUnlock()
 
-	s.submitBroadcast(func() {
-		if len(fullTargets) > 0 {
-			BroadcastJSON(ctx, fullTargets, anySlice(msgs))
-		}
-		for _, ss := range slotSends {
-			BroadcastJSON(ctx, ss.clients, ss.msgs)
-		}
-	})
+	enqueueMessage(anySlice(msgs), fullTargets...)
+	for _, ss := range slotSends {
+		enqueueMessage(ss.msgs, ss.clients...)
+	}
 }
 
 func anySlice(msgs []PrintJsonMessage) []any {
@@ -2502,7 +2501,7 @@ func (s ApxRoom) SyncReceivedItems(ctx context.Context, client *RegisteredClient
 		Items: items,
 	}
 	client.sendIndex.Store(int32(len(startInv) + len(recvItems)))
-	return wsjson.Write(ctx, client.clientConn, []any{msg})
+	return enqueueMessage([]any{msg}, client)
 }
 
 func defaultServerOptions() ServerOptions {
@@ -2600,24 +2599,6 @@ func startUnorderedWorkers(ctx context.Context, slotCount int) chan func() {
 			}
 		}()
 	}
-	return ch
-}
-
-func startOrderedWorker(ctx context.Context) chan func() {
-	ch := make(chan func(), 256)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case fn, ok := <-ch:
-				if !ok {
-					return
-				}
-				fn()
-			}
-		}
-	}()
 	return ch
 }
 

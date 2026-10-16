@@ -1291,8 +1291,6 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		},
 	}
 	apx.chatCommandRouter = newCommandRouter(apx)
-	apx.bcUnorderedCh = startUnorderedWorkers(ctx, len(apState.SlotInfo))
-	apx.bcOrderedCh = startOrderedWorker(ctx)
 	apx.buildRoomInfoFromState()
 
 	if save != false {

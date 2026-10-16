@@ -1124,34 +1124,7 @@ func TestBroadcastPrintJson(t *testing.T) {
 		room := &ApxRoom{connections: reg}
 
 		newReceiver := func(slot int, tags []string) (<-chan []byte, *RegisteredClient) {
-			received := make(chan []byte, 4)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				conn, err := websocket.Accept(w, r, nil)
-				if err != nil {
-					return
-				}
-				defer conn.CloseNow()
-				for {
-					_, raw, err := conn.Read(r.Context())
-					if err != nil {
-						return
-					}
-					received <- raw
-				}
-			}))
-			t.Cleanup(server.Close)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			t.Cleanup(cancel)
-
-			url := "ws" + strings.TrimPrefix(server.URL, "http")
-			conn, _, err := websocket.Dial(ctx, url, nil)
-			if err != nil {
-				t.Fatalf("dial: %v", err)
-			}
-
-			rc := &RegisteredClient{Slot: slot, game: &game, clientConn: conn, cancel: func() {}}
-			reg.Register(slot, rc, game, tags)
+			rc, received := newClientWithQueue(t, slot, game, tags, reg)
 			return received, rc
 		}
 
@@ -1163,7 +1136,7 @@ func TestBroadcastPrintJson(t *testing.T) {
 		received, _ := newReceiver(1, []string{})
 
 		receiving := 2
-		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+		room.broadcastPrintJson([]PrintJsonMessage{
 			{Type: "Chat", Receiving: &receiving},
 		})
 
@@ -1179,7 +1152,7 @@ func TestBroadcastPrintJson(t *testing.T) {
 		received, _ := newReceiver(1, []string{"NoText"})
 
 		receiving := 1
-		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+		room.broadcastPrintJson([]PrintJsonMessage{
 			{Type: "Chat", Receiving: &receiving},
 		})
 
@@ -1196,7 +1169,7 @@ func TestBroadcastPrintJson(t *testing.T) {
 
 		slotOne := 1
 		slotTwo := 2
-		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+		room.broadcastPrintJson([]PrintJsonMessage{
 			{Type: "ItemSend", Receiving: &slotOne}, // relevant
 			{Type: "ItemSend", Receiving: &slotTwo}, // not relevant
 		})
@@ -1225,7 +1198,7 @@ func TestBroadcastPrintJson(t *testing.T) {
 
 		otherSlot := 2
 		item := NetworkItem{Item: 100, Location: 50, Player: 1, Flags: 0} // Player 1 is the sender
-		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+		room.broadcastPrintJson([]PrintJsonMessage{
 			{Type: "ItemSend", Receiving: &otherSlot, Item: &item},
 		})
 
@@ -1242,7 +1215,7 @@ func TestBroadcastPrintJson(t *testing.T) {
 		selfReceived, _ := newReceiver(2, []string{"TextConcernsSelf"})
 
 		slotTwo := 2
-		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{
+		room.broadcastPrintJson([]PrintJsonMessage{
 			{Type: "ItemSend", Receiving: &slotTwo},
 		})
 
@@ -1262,7 +1235,7 @@ func TestBroadcastPrintJson(t *testing.T) {
 		room, newReceiver := makeRoom(t)
 		received, _ := newReceiver(1, []string{})
 
-		room.broadcastPrintJson(context.Background(), []PrintJsonMessage{})
+		room.broadcastPrintJson([]PrintJsonMessage{})
 
 		select {
 		case <-received:
@@ -1365,20 +1338,10 @@ func BenchmarkBroadcastPrintJson(b *testing.B) {
 		msgsPerBroadcast   = 5
 	)
 
-	ctx := context.Background()
-
 	// Build a minimal ApxRoom with fake connections
 	room := &ApxRoom{
-		connections:   newConnectionRegistry(nil, nil),
-		bcUnorderedCh: make(chan func(), 256),
+		connections: newConnectionRegistry(nil, nil),
 	}
-
-	// Drain the broadcast channel in background
-	go func() {
-		for fn := range room.bcUnorderedCh {
-			fn()
-		}
-	}()
 
 	// Register fake self-only clients across slots
 	for slot := 1; slot <= slotCount; slot++ {
@@ -1415,6 +1378,43 @@ func BenchmarkBroadcastPrintJson(b *testing.B) {
 	b.ReportAllocs()
 
 	for b.Loop() {
-		room.broadcastPrintJson(ctx, makeMsgs())
+		room.broadcastPrintJson(makeMsgs())
 	}
+}
+
+func newClientWithQueue(t *testing.T, slot int, game string, tags []string, reg *connectionRegistry) (*RegisteredClient, <-chan []byte) {
+	t.Helper()
+	received := make(chan []byte, 4)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		for {
+			_, raw, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			received <- raw
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	rc := &RegisteredClient{Slot: slot, game: &game, clientConn: conn, cancel: func() {}, messageQueue: newMessageQueue()}
+	rc.messageQueue.startSender(ctx, conn)
+	if reg != nil {
+		reg.Register(slot, rc, game, tags)
+	}
+	return rc, received
 }

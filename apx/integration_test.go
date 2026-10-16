@@ -32,6 +32,7 @@ func TestClient_RoomInfo(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	msgReader := newExpectedMessageReader(ctx, conn, t)
@@ -106,6 +107,7 @@ func TestClient_Connected_WithItems(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	msgReader := newExpectedMessageReader(ctx, conn, t)
@@ -169,6 +171,7 @@ func TestClient_LocationChecks(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	msgReader := newExpectedMessageReader(ctx, conn, t)
@@ -221,6 +224,7 @@ func TestClient_ReceivesItems(t *testing.T) {
 	// ConnectSlot 1 (receives items)
 	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn1.SetReadLimit(wsReadLimit)
 	defer conn1.CloseNow()
 
 	reader1 := newExpectedMessageReader(ctx, conn1, t)
@@ -241,6 +245,7 @@ func TestClient_ReceivesItems(t *testing.T) {
 	// Connect Slot 2 (send checks)
 	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn2.SetReadLimit(wsReadLimit)
 	defer conn2.CloseNow()
 
 	reader2 := newExpectedMessageReader(ctx, conn2, t)
@@ -303,6 +308,7 @@ func TestClient_Say_NoText(t *testing.T) {
 	// Connect client with full feed
 	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn1.SetReadLimit(wsReadLimit)
 	defer conn1.CloseNow()
 	reader1 := newExpectedMessageReader(ctx, conn1, t)
 	_ = reader1.readExpectedMessage("RoomInfo", t)
@@ -316,6 +322,7 @@ func TestClient_Say_NoText(t *testing.T) {
 	// Connect client with NoText
 	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn2.SetReadLimit(wsReadLimit)
 	defer conn2.CloseNow()
 	reader2 := newExpectedMessageReader(ctx, conn2, t)
 	_ = reader2.readExpectedMessage("RoomInfo", t)
@@ -359,6 +366,7 @@ func TestClient_Say_TextConcernsSelf(t *testing.T) {
 
 	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn1.SetReadLimit(wsReadLimit)
 	defer conn1.CloseNow()
 	reader1 := newExpectedMessageReader(ctx, conn1, t)
 	_ = reader1.readExpectedMessage("RoomInfo", t)
@@ -372,6 +380,7 @@ func TestClient_Say_TextConcernsSelf(t *testing.T) {
 
 	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn2.SetReadLimit(wsReadLimit)
 	defer conn2.CloseNow()
 	reader2 := newExpectedMessageReader(ctx, conn2, t)
 	_ = reader2.readExpectedMessage("RoomInfo", t)
@@ -412,6 +421,7 @@ func TestClient_CreateHints_OwnLocation(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	reader := newExpectedMessageReader(ctx, conn, t)
@@ -481,6 +491,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	reader := newExpectedMessageReader(ctx, conn, t)
@@ -608,6 +619,7 @@ func TestClient_Cmd_Hint(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	reader := newExpectedMessageReader(ctx, conn, t)
@@ -763,6 +775,7 @@ func TestClient_CreateHints_NotifiesSetNotify(t *testing.T) {
 	// Slot 1 — will create the hint
 	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn1.SetReadLimit(wsReadLimit)
 	defer conn1.CloseNow()
 	reader1 := newExpectedMessageReader(ctx, conn1, t)
 	_ = reader1.readExpectedMessage("RoomInfo", t)
@@ -777,6 +790,7 @@ func TestClient_CreateHints_NotifiesSetNotify(t *testing.T) {
 	// Slot 2 — subscribes to slot 1's hints via SetNotify
 	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn2.SetReadLimit(wsReadLimit)
 	defer conn2.CloseNow()
 	reader2 := newExpectedMessageReader(ctx, conn2, t)
 	_ = reader2.readExpectedMessage("RoomInfo", t)
@@ -829,6 +843,7 @@ func TestClient_UpdateHint_NotifiesSetNotify(t *testing.T) {
 	// Slot 1 — receiving player, will update the hint
 	conn1, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn1.SetReadLimit(wsReadLimit)
 	defer conn1.CloseNow()
 	reader1 := newExpectedMessageReader(ctx, conn1, t)
 	_ = reader1.readExpectedMessage("RoomInfo", t)
@@ -843,6 +858,7 @@ func TestClient_UpdateHint_NotifiesSetNotify(t *testing.T) {
 	// Slot 2 — finding player
 	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn2.SetReadLimit(wsReadLimit)
 	defer conn2.CloseNow()
 	reader2 := newExpectedMessageReader(ctx, conn2, t)
 	_ = reader2.readExpectedMessage("RoomInfo", t)
@@ -934,6 +950,7 @@ func TestClient_StatusUpdate_Goal_Release(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	reader := newExpectedMessageReader(ctx, conn, t)
@@ -1009,6 +1026,7 @@ func TestClient_AdminLogin_Release(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
 	require.NoError(t, err)
+	conn.SetReadLimit(wsReadLimit)
 	defer conn.CloseNow()
 
 	reader := newExpectedMessageReader(ctx, conn, t)
