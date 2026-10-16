@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"testing"
 )
@@ -21,11 +22,16 @@ func makeTestDiskStore(t *testing.T) *DiskDataPackageStore {
 
 func writeToDisk(t *testing.T, store *DiskDataPackageStore, checksum string, gd GameData) {
 	t.Helper()
+	encoder, err := newDataPackageEncoder()
+	if err != nil {
+		log.Panicf("Failed to open zstd encoder, skipping saving of datapackage to disk")
+	}
 	data, err := json.Marshal(gd)
+	defer encoder.Close()
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if _, err := store.WriteIfAbsent(checksum, data); err != nil {
+	if _, err := store.WriteIfAbsent(checksum, data, encoder); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 }

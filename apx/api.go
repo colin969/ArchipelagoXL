@@ -454,14 +454,19 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) saveDataPackagesToDisk(md *multidata.MultiData) {
+	encoder, err := newDataPackageEncoder()
+	if err != nil {
+		log.Printf("Failed to open zstd encoder, skipping saving of datapackage to disk")
+	}
+	defer encoder.Close()
 	for game, dp := range md.DataPackage {
 		data, err := json.Marshal(dp)
 		if err != nil {
-			log.Printf("failed to marshal datapackage for %q: %v", game, err)
+			log.Printf("failed to marshal datapackage for %q, skipping: %v", game, err)
 			continue
 		}
-		if _, err := rm.diskDataPackages.WriteIfAbsent(dp.Checksum, data); err != nil {
-			log.Printf("failed to write datapackage %q (%s) to disk: %v", game, dp.Checksum, err)
+		if _, err := rm.diskDataPackages.WriteIfAbsent(dp.Checksum, data, encoder); err != nil {
+			log.Printf("failed to write datapackage %q (%s) to disk, skipping: %v", game, dp.Checksum, err)
 		}
 	}
 }
