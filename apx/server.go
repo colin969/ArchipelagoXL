@@ -741,7 +741,6 @@ func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]s
 	}
 	var sends []pendingSend
 
-	s.connections.mu.RLock()
 	for teamSlot := range affectedSlots {
 		for _, client := range s.connections.GetSlotClients(teamSlot) {
 			clientItemsHandling := int(client.itemsHandling.Load())
@@ -771,7 +770,6 @@ func (s *ApxRoom) SendNewItems(ctx context.Context, affectedSlots map[TeamSlot]s
 			}
 		}
 	}
-	s.connections.mu.RUnlock()
 
 	s.submitOrdered(func() {
 		for _, s := range sends {
