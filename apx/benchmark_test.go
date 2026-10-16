@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -457,4 +458,16 @@ func testPopulateDataStorage(room *HostedRoom, rng *rand.Rand) {
 			state.DataStorage.Set(owner, key, defaultVal, nil, ts.Slot, nil, func(fn func()) { fn() })
 		}
 	}
+}
+
+type TestLocation struct {
+	Item    int64
+	Player  int32
+	Flags   int32
+	Checked bool
+}
+
+func TestLocationSize(t *testing.T) {
+	var l TestLocation
+	t.Logf("TestLocation size: %d bytes", unsafe.Sizeof(l))
 }

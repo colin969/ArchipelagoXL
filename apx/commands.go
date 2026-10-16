@@ -289,7 +289,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	cost := s.state.GetSlotHintCost(teamSlot)
 	points := s.state.GetSlotRemainingPoints(teamSlot)
-	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int16(client.Slot), itemID, &s.state.SphereLocs, cost, points)
+	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int32(client.Slot), itemID, &s.state.SphereLocs, cost, points)
 
 	// Had points to spend, never found a hint
 	if (cost <= 0 || points >= cost) && len(hints) == 0 {
@@ -374,7 +374,7 @@ func (s *ApxRoom) handleGetItemCommand(ctx context.Context, connState *connectio
 		return nil
 	}
 
-	newItem := NetworkItem{itemID, -1, int16(connState.registeredClient.Slot), 0}
+	newItem := NetworkItem{itemID, -1, int32(connState.registeredClient.Slot), 0}
 	s.state.ReceivedItems.Add(connState.registeredClient.Team, connState.registeredClient.Slot, []NetworkItem{newItem})
 
 	text := fmt.Sprintf("Cheat console: sending %q to %s", args, *connState.slotName)

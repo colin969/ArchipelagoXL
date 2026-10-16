@@ -153,7 +153,7 @@ func TestClient_Connected_WithItems(t *testing.T) {
 	assert.Equal(t, 0, recvItemsMsg.Index)
 	assert.Len(t, recvItemsMsg.Items, 7)
 	assert.Equal(t, int64(-2), recvItemsMsg.Items[0].Location)
-	assert.Equal(t, int16(0), recvItemsMsg.Items[0].Player)
+	assert.Equal(t, int32(0), recvItemsMsg.Items[0].Player)
 }
 
 func TestClient_LocationChecks(t *testing.T) {

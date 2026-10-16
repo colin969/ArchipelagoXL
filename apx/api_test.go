@@ -289,7 +289,7 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 			locId := baseLocId + int64(j)
 			slotLocs[locId] = Location{
 				Item:    int64(j % 1000),
-				Player:  int16(i),
+				Player:  int32(i),
 				Flags:   0,
 				Checked: j%3 == 0,
 			}
@@ -331,7 +331,7 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 			items[j] = NetworkItem{
 				Item:     int64(j % 500),
 				Location: int64(i)*int64(locsPerSlot) + int64(j%locsPerSlot),
-				Player:   int16(i),
+				Player:   int32(i),
 				Flags:    0,
 			}
 		}

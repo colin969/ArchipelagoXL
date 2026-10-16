@@ -215,7 +215,7 @@ type ApxRoom struct {
 
 type Location struct {
 	Item    int64
-	Player  int16
+	Player  int32
 	Flags   int16
 	Checked bool
 }
@@ -229,7 +229,7 @@ type Version struct {
 type NetworkItem struct {
 	Item     int64
 	Location int64
-	Player   int16
+	Player   int32
 	Flags    int16
 }
 
@@ -501,7 +501,7 @@ func (ls *Checks) GetMissing(ts TeamSlot) []int64 {
 }
 
 func (ls *Checks) GetCollectLocIds(team int, slot int) map[TeamSlot][]int64 {
-	slot16 := int16(slot)
+	slot32 := int32(slot)
 	ls.mu.RLock()
 	defer ls.mu.RUnlock()
 	locIdMaps := make(map[TeamSlot][]int64)
@@ -510,7 +510,7 @@ func (ls *Checks) GetCollectLocIds(team int, slot int) map[TeamSlot][]int64 {
 			continue
 		}
 		for locId, loc := range group {
-			if !loc.Checked && loc.Player == slot16 {
+			if !loc.Checked && loc.Player == slot32 {
 				locIdMaps[ts] = append(locIdMaps[ts], locId)
 			}
 		}
@@ -963,7 +963,7 @@ func (h *HintsState) GetItemHints(ts TeamSlot, itemId int64) []Hint {
 	return hints
 }
 
-func (h *HintsState) CollectItemHint(ts TeamSlot, player int16, itemId int64, sphereLocs *SphereLocs, cost, points int) (hints []Hint, newHints []Hint) {
+func (h *HintsState) CollectItemHint(ts TeamSlot, player int32, itemId int64, sphereLocs *SphereLocs, cost, points int) (hints []Hint, newHints []Hint) {
 	h.mu.RLock()
 	hintedLocs := make(map[int64]struct{})
 	for _, i := range h.byTeamSlot[ts] {
@@ -2195,7 +2195,7 @@ func formatHintMessage(hint Hint) PrintJsonMessage {
 	item := NetworkItem{
 		Item:     hint.Item,
 		Location: hint.Location,
-		Player:   int16(hint.FindingPlayer),
+		Player:   hint.FindingPlayer,
 		Flags:    hint.ItemFlags,
 	}
 

@@ -573,7 +573,7 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 		for locID, t := range locs {
 			inner[locID] = Location{
 				Item:    t[0],
-				Player:  int16(t[1]),
+				Player:  int32(t[1]),
 				Flags:   int16(t[2]),
 				Checked: false,
 			}

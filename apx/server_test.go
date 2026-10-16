@@ -1401,7 +1401,7 @@ func BenchmarkBroadcastPrintJson(b *testing.B) {
 		msgs := make([]PrintJsonMessage, msgsPerBroadcast)
 		for i := range msgs {
 			receiving := (i % slotCount) + 1
-			findingPlayer := int16((i+1)%slotCount + 1)
+			findingPlayer := int32((i+1)%slotCount + 1)
 			item := NetworkItem{Item: int64(i + 1), Location: int64(i + 100), Player: findingPlayer}
 			msgs[i] = PrintJsonMessage{
 				Type:      "ItemSend",
