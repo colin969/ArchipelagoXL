@@ -168,10 +168,13 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 	}
 	entry.value = value
 
+	var notify []*RegisteredClient
+	valueCopy := value
+	originalCopy := original
+
 	if submitOrdered != nil {
 		// Get list of clients that want to be notified on change
 		// Add sender if wantReply is true
-		var notify []*RegisteredClient
 		if clients := ds.notifiedClients[key]; len(clients) > 0 {
 			notify = make([]*RegisteredClient, len(clients))
 			copy(notify, clients)
@@ -179,23 +182,24 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 		if replyClient != nil && !slices.Contains(notify, replyClient) {
 			notify = append(notify, replyClient)
 		}
-		if len(notify) > 0 {
-			submitOrdered(func() {
-				reply := SetReplyMessage{
-					Key:           key,
-					OriginalValue: original,
-					Value:         value,
-					Slot:          senderSlot,
-				}
-
-				for _, c := range notify {
-					wsjson.Write(context.Background(), c.clientConn, []any{reply})
-				}
-			})
-		}
 	}
 
 	ds.mu.Unlock()
+
+	if len(notify) > 0 {
+		submitOrdered(func() {
+			reply := SetReplyMessage{
+				Key:           key,
+				OriginalValue: originalCopy,
+				Value:         valueCopy,
+				Slot:          senderSlot,
+			}
+
+			for _, c := range notify {
+				wsjson.Write(context.Background(), c.clientConn, []any{reply})
+			}
+		})
+	}
 
 	return original, value, nil
 }
@@ -724,7 +728,10 @@ func dsOperatorRemove(lhs, rhs StorageValue) (StorageValue, error) {
 	}
 	for i, v := range list {
 		if storageValEqual(v, rhs) {
-			return append(list[:i], list[i+1:]...), nil
+			out := make([]any, 0, len(list)-1)
+			out = append(out, list[:i]...)
+			out = append(out, list[i+1:]...)
+			return out, nil
 		}
 	}
 	return list, nil
@@ -738,19 +745,27 @@ func dsOperatorPop(lhs, rhs StorageValue) (StorageValue, error) {
 			return nil, fmt.Errorf("pop on list requires int64 index, got %T", rhs)
 		}
 		if idx < 0 || int(idx) >= len(container) {
-			return container, nil // out of bounds, return unchanged
+			return container, nil
 		}
-		return append(container[:idx], container[idx+1:]...), nil
+		out := make([]any, 0, len(container)-1)
+		out = append(out, container[:idx]...)
+		out = append(out, container[idx+1:]...)
+		return out, nil
 	case map[string]any:
 		key, ok := rhs.(string)
 		if !ok {
 			return nil, fmt.Errorf("pop on dict requires string key, got %T", rhs)
 		}
 		if _, exists := container[key]; !exists {
-			return container, nil // key not found, return unchanged
+			return container, nil
 		}
-		delete(container, key)
-		return container, nil
+		out := make(map[string]any, len(container)-1)
+		for k, v := range container {
+			if k != key {
+				out[k] = v
+			}
+		}
+		return out, nil
 	}
 	return nil, fmt.Errorf("pop requires list or dict, got %T", lhs)
 }
@@ -766,20 +781,24 @@ func dsOperatorUpdate(lhs, rhs StorageValue) (StorageValue, error) {
 		for _, v := range container {
 			existing[v] = struct{}{}
 		}
+		out := make([]any, len(container), len(container)+len(entries))
+		copy(out, container)
 		for _, v := range entries {
 			if _, found := existing[v]; !found {
-				container = append(container, v)
-				existing[v] = struct{}{} // prevent dupes within entries itself
+				out = append(out, v)
+				existing[v] = struct{}{}
 			}
 		}
-		return container, nil
+		return out, nil
 	case map[string]any:
 		entries, ok := rhs.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("update on dict requires map[string]any operand, got %T", rhs)
 		}
-		maps.Copy(container, entries)
-		return container, nil
+		out := make(map[string]any, len(container)+len(entries))
+		maps.Copy(out, container)
+		maps.Copy(out, entries)
+		return out, nil
 	}
 	return nil, fmt.Errorf("update requires list or dict, got %T", lhs)
 }
