@@ -35,9 +35,7 @@ type Config struct {
 	ApiListenAddr          string `json:"apx_api_listen"`
 	SlotDataStoragePath    string `json:"slot_data_storage_path"`
 	DataPackageStoragePath string `json:"datapackage_storage_path"`
-	ApApiRoot              string `json:"ap_api_root"`
 	ApiKey                 string `json:"apx_api_key"`
-	ApApiKey               string `json:"ap_admin_api_key"`
 	TLSCertFile            string `json:"tls_cert_file"`
 	LokiEndpoint           string `json:"loki_endpoint"`
 	WsPort                 int    `json:"ws_port"`
@@ -358,12 +356,6 @@ func getConfig() (*Config, error) {
 	}
 	if v := os.Getenv("AP_ROOM_ID"); v != "" {
 		cfg.ApRoomId = v
-	}
-	if v := os.Getenv("AP_API_ROOT"); v != "" {
-		cfg.ApApiRoot = v
-	}
-	if v := os.Getenv("AP_ADMIN_API_KEY"); v != "" {
-		cfg.ApApiKey = v
 	}
 	if v := os.Getenv("TLS_CERT_FILE"); v != "" {
 		cfg.TLSCertFile = v

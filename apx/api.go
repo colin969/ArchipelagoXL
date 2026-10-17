@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -300,6 +301,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	// Webhost compatible APIs
 	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}", srv.handleRoomWebhostApiTracker).Methods(http.MethodGet)
+	api.HandleFunc("/slot_data_tracker/{roomId}", srv.handleRoomWebhostApiTrackerSlotData).Methods(http.MethodGet)
 	api.HandleFunc("/datapackage/{checksum}", srv.handleDatapackageByChecksum).Methods(http.MethodGet)
 	if !cfg.StandaloneMode {
 		mgmt := api.PathPrefix("").Subrouter()
@@ -1132,6 +1134,50 @@ func (rm *RoomManager) handleRoomWebhostApiTracker(w http.ResponseWriter, r *htt
 		ConnectionTimers:    connectionTimers,
 		PlayerStatus:        playerStatus,
 	})
+}
+
+type TrackerSlotData struct {
+	Player   int32           `json:"player"`
+	SlotData json.RawMessage `json:"slot_data"`
+}
+
+func (rm *RoomManager) handleRoomWebhostApiTrackerSlotData(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+
+	w.Header().Set("Content-Type", "application/json")
+
+	room, ok := rm.registry.Get(roomId)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	response := make([]TrackerSlotData, 0, len(room.apx.state.SlotDataIndex))
+	players := make([]int, 0, len(room.apx.state.SlotDataIndex))
+	for player := range room.apx.state.SlotDataIndex {
+		players = append(players, player)
+	}
+	sort.Ints(players)
+
+	for _, player := range players {
+		slotData, err := room.apx.GetSlotData(TeamSlot{0, player})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed reading slot data for player %d", player)})
+			return
+		}
+		response = append(response, TrackerSlotData{
+			Player:   int32(player),
+			SlotData: slotData,
+		})
+	}
+
+	sort.Slice(response, func(i, j int) bool {
+		return response[i].Player < response[j].Player
+	})
+	json.NewEncoder(w).Encode(response)
 }
 
 func (rm *RoomManager) restoreBounceTagExclusions(room *HostedRoom) {
@@ -2318,34 +2364,6 @@ func maxRoomPlayerId(nameToId map[string]int) int {
 		}
 	}
 	return maxNumber
-}
-
-func fetchApxServerPassword(cfg *Config, apRoomId string) (string, error) {
-	url := fmt.Sprintf("%s/api/room_status/%s", cfg.ApApiRoot, apRoomId)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return "", fmt.Errorf("creating room_status request: %w", err)
-	}
-	req.Header.Set("X-Api-Key", cfg.ApApiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetching room_status: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status %d from /api/room_status/%s", resp.StatusCode, apRoomId)
-	}
-
-	var data struct {
-		ApxServerPassword string `json:"apx_server_password"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", fmt.Errorf("decoding room_status: %w", err)
-	}
-
-	return data.ApxServerPassword, nil
 }
 
 func (rm *RoomManager) CloseAll() {
