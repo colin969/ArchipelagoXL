@@ -106,7 +106,7 @@ func newTestStore(t testing.TB) *RoomStore {
 
 func newTestDiskDataPackages(t testing.TB) *DiskDataPackageStore {
 	t.Helper()
-	store, err := NewDiskDataPackageStore(t.TempDir())
+	store, err := NewDiskDataPackageStore(t.TempDir(), false)
 	require.NoError(t, err)
 	return store
 }

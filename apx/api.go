@@ -78,6 +78,22 @@ func (r *RoomRegistry) List() []*HostedRoom {
 	return rooms
 }
 
+func (r *RoomRegistry) Count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.rooms)
+}
+
+func (r *RoomRegistry) CountConnections() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var total int
+	for _, room := range r.rooms {
+		total += room.apx.connections.ConnectedClientCount()
+	}
+	return total
+}
+
 func (r *RoomRegistry) Add(hostedRoom *HostedRoom) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -141,13 +157,14 @@ func newCheckedLocations() CheckedLocations {
 
 type ApxRoomInfo struct {
 	LobbyRoomId       string `json:"lobby_room_id"`
-	ServerPassword    string `json:"server_password,omitempty"`
 	NormalId          int    `json:"normal_id"`
 	ReducedId         int    `json:"reduced_id"`
 	Disabled          bool   `json:"disabled"`
 	PerSlotPasswords  bool   `json:"per_slot_passwords"`
 	DeathlinkDisabled bool   `json:"deathlink_disabled"`
 	ReducedAccess     bool   `json:"reduced_access"`
+	CreatedAt         string `json:"created_at"`
+	LastActivity      string `json:"last_activity"`
 }
 
 // e.g locationIdToName["Ocarina of Time"][3] == "Song from Saria"
@@ -238,13 +255,15 @@ func newRoomRegistry() *RoomRegistry {
 }
 
 func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, tlsCfg *tls.Config, store *RoomStore) (*RoomManager, *mux.Router, error) {
-	dpDiskStorage, err := NewDiskDataPackageStore(cfg.DataPackageStoragePath)
+	dpDiskStorage, err := NewDiskDataPackageStore(cfg.DataPackageStoragePath, cfg.StandaloneMode)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if err := os.MkdirAll(cfg.SlotDataStoragePath, 0755); err != nil {
-		return nil, nil, fmt.Errorf("creating slotdata dir")
+	if !cfg.StandaloneMode {
+		if err := os.MkdirAll(cfg.SlotDataStoragePath, 0755); err != nil {
+			return nil, nil, fmt.Errorf("creating slotdata dir")
+		}
 	}
 
 	srv := &RoomManager{
@@ -271,8 +290,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 
 	r := mux.NewRouter()
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
-	if !cfg.DisableFrontend {
-		r.HandleFunc("/upload", srv.handleFrontendUpload).Methods(http.MethodGet)
+	if !(cfg.DisableAdminDashboard || cfg.StandaloneMode) {
+		srv.registerAdminRoutes(r)
 	}
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(srv.loggingMiddleware)
@@ -324,7 +343,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		}
 
 		room, err := srv.startNewHostedRoom(record.LobbyRoomId, record.Definition, &record.NormalId, &record.ReducedId,
-			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
+			record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true, nil)
 		if err != nil {
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
 			continue
@@ -452,7 +471,6 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
-			ServerPassword:    room.apx.state.ServerOptions.GetPassword(),
 		})
 	}
 
@@ -511,6 +529,33 @@ func (rm *RoomManager) saveSlotDataToDisk(lobbyRoomId string, md *multidata.Mult
 	}
 
 	return index, nil
+}
+
+func (rm *RoomManager) buildSlotDataBlob(md *multidata.MultiData) ([]byte, map[int][2]int, error) {
+	encoder, err := newZstdEncoder()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer encoder.Close()
+
+	var buf bytes.Buffer
+	index := make(map[int][2]int, len(md.SlotData))
+	var offset int
+	for slotId, slotData := range md.SlotData {
+		raw, err := json.Marshal(slotData)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal slot %d: %w", slotId, err)
+		}
+		if len(raw) <= 2 {
+			continue
+		}
+		compressed := encoder.EncodeAll(raw, nil)
+		buf.Write(compressed)
+		index[slotId] = [2]int{offset, len(compressed)}
+		offset += len(compressed)
+	}
+
+	return buf.Bytes(), index, nil
 }
 
 func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) {
@@ -620,7 +665,6 @@ func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) 
 			PerSlotPasswords:  room.apx.perSlotPasswords,
 			DeathlinkDisabled: room.deathlinkDisabled,
 			ReducedAccess:     room.reducedAccess,
-			ServerPassword:    room.apx.state.ServerOptions.GetPassword(),
 		}
 		json.NewEncoder(w).Encode(info)
 		return
@@ -724,7 +768,7 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	room, err := rm.startNewHostedRoom(record.LobbyRoomId, record.Definition, &record.NormalId, &record.ReducedId,
-		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true)
+		record.PerSlotPasswords, record.DeathlinkDisabled, record.ReducedAccess, record.DeathlinkProbability, true, nil)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("failed to start room: %v", err)})
@@ -1230,7 +1274,7 @@ type uploadRoomRequest struct {
 func uploadRoomRequestFromForm(r *http.Request) uploadRoomRequest {
 	return uploadRoomRequest{
 		LobbyRoomId:       r.FormValue("lobby_room_id"),
-		PerSlotPasswords:  r.FormValue("per_slot_passwords") != "false",
+		PerSlotPasswords:  r.FormValue("per_slot_passwords") == "true",
 		DeathlinkDisabled: r.FormValue("deathlink_disabled") == "true",
 		ReducedAccess:     r.FormValue("reduced_access") == "true",
 	}
@@ -1244,19 +1288,29 @@ func (rm *RoomManager) startRoomFromMultiData(
 	deathlinkProbability float64,
 	save bool,
 ) (*HostedRoom, error) {
-	rm.saveDataPackagesToDisk(md)
-	index, err := rm.saveSlotDataToDisk(lobbyRoomId, md)
-	if err != nil {
-		return nil, err
-	}
 	def := roomDefinitionFromMultidata(md)
-	def.SlotDataIndex = index
+	var standaloneSlotData []byte
+	if rm.config.StandaloneMode {
+		blob, index, err := rm.buildSlotDataBlob(md)
+		if err != nil {
+			return nil, err
+		}
+		def.SlotDataIndex = index
+		standaloneSlotData = blob
+	} else {
+		rm.saveDataPackagesToDisk(md)
+		index, err := rm.saveSlotDataToDisk(lobbyRoomId, md)
+		if err != nil {
+			return nil, err
+		}
+		def.SlotDataIndex = index
+	}
 	return rm.startNewHostedRoom(lobbyRoomId, def, normalIdPtr, reducedIdPtr,
-		perSlotPasswords, deathlinkDisabled, reducedAccess, deathlinkProbability, save)
+		perSlotPasswords, deathlinkDisabled, reducedAccess, deathlinkProbability, save, standaloneSlotData)
 }
 
 func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefinition, normalIdPtr, reducedIdPtr *int,
-	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, deathlinkProbability float64, save bool) (*HostedRoom, error) {
+	perSlotPasswords bool, deathlinkDisabled bool, reducedAccess bool, deathlinkProbability float64, save bool, standaloneSlotData []byte) (*HostedRoom, error) {
 
 	_, exists := rm.registry.Get(lobbyRoomId)
 	if exists {
@@ -1336,6 +1390,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 				log.Printf("failed to persist death count for room %s slot %d: %v", lobbyRoomId, slotId, err)
 			}
 		},
+		standaloneSlotData: standaloneSlotData,
 	}
 	apx.chatCommandRouter = newCommandRouter(apx)
 	apx.buildRoomInfoFromState()
@@ -1351,6 +1406,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		if err != nil {
 			log.Printf("Failed to load save state for room %s: %v", apx.lobbyRoomId, err)
 		} else {
+			log.Printf("Loaded save for %s with seed %s", apx.lobbyRoomId, apx.state.Seed)
 			if ls != nil {
 				err = applySnapshot(apx.state, ls)
 			}

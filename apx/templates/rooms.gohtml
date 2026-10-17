@@ -1,0 +1,253 @@
+{{template "base" .}}
+
+{{define "title"}}Rooms{{end}}
+
+{{define "content"}}
+<h1 class="page__title">Rooms</h1>
+
+{{if .Error}}
+<div class="flash flash--error">{{.Error}}</div>
+{{end}}
+{{if .Success}}
+<div class="flash flash--success">{{.Success}}</div>
+{{end}}
+
+{{if .Rooms}}
+<div class="card">
+    <div class="card__title">Rooms ({{len .Rooms}})</div>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Room ID</th>
+                <th>Status</th>
+                <th>Normal ID</th>
+                <th>Reduced ID</th>
+                <th>Features</th>
+                <th>Created At</th>
+                <th>Last Activity</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Rooms}}
+            <tr>
+                <td class="table__id">
+                    <span class="monospace">{{.LobbyRoomId}}</span>
+                </td>
+                <td>
+                    {{if .Disabled}}
+                    <span class="status status--stopped">Stopped</span>
+                    {{else}}
+                    <span class="status status--running">Running</span>
+                    {{end}}
+                </td>
+                <td class="monospace">{{.NormalId}}</td>
+                <td class="monospace">{{.ReducedId}}</td>
+                <td>
+                    <div class="flag-list">
+                        {{if .PerSlotPasswords}}
+                        <span class="badge">per-slot pw</span>
+                        {{end}}
+                        {{if .DeathlinkDisabled}}
+                        <span class="badge badge--warn">DL off</span>
+                        {{end}}
+                        {{if .ReducedAccess}}
+                        <span class="badge badge--info">reduced</span>
+                        {{end}}
+                    </div>
+                </td>
+                <td class="monospace">{{.CreatedAt}}</td>
+                <td class="monospace">
+                    {{if .LastActivity}}{{.LastActivity}}{{else}}&mdash;{{end}}
+                </td>
+                <td>
+                    <div class="action-row">
+                        {{if .Disabled}}
+                        <button class="btn btn--confirm btn--sm"
+                                onclick="roomAction(this, '{{.LobbyRoomId}}', 'start')">
+                            Start
+                        </button>
+                        {{else}}
+                        <button class="btn btn--sm"
+                                onclick="roomAction(this, '{{.LobbyRoomId}}', 'stop')">
+                            Stop
+                        </button>
+                        {{end}}
+                        <button class="btn btn--danger btn--sm"
+                                onclick="roomAction(this, '{{.LobbyRoomId}}', 'delete')">
+                            Delete
+                        </button>
+                    </div>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{else}}
+<div class="card">
+    <p style="color: var(--text-secondary); font-style: italic;">No rooms found.</p>
+</div>
+{{end}}
+{{end}}
+
+{{define "scripts"}}
+<script>
+async function roomAction(btn, roomId, action) {
+    const confirmMessages = {
+        stop:   `Stop room ${roomId}?`,
+        delete: `Permanently delete room ${roomId}? This cannot be undone.`,
+    };
+    if (confirmMessages[action] && !confirm(confirmMessages[action])) {
+        return;
+    }
+
+    const row = btn.closest('tr');
+    const buttons = row.querySelectorAll('button');
+    buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+
+    // Map action to method + URL
+    let method, url;
+    switch (action) {
+        case 'delete':
+            method = 'DELETE';
+            url    = `/api/room/${roomId}`;
+            break;
+        case 'stop':
+            method = 'POST';
+            url    = `/api/room/${roomId}/stop`;
+            break;
+        case 'start':
+            method = 'POST';
+            url    = `/api/room/${roomId}/start`;
+            break;
+    }
+
+    try {
+        const resp = await fetch(url, {
+            method,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key':    APX_API_KEY,
+            },
+        });
+
+        if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            alert(`Failed: ${body.error || resp.statusText}`);
+            buttons.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+            return;
+        }
+
+        window.location.reload();
+    } catch (err) {
+        alert(`Request failed: ${err}`);
+        buttons.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+    }
+}
+</script>
+{{end}}
+
+{{define "head"}}
+<style>
+    /* ── Table ── */
+    .table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+    }
+    .table thead tr {
+        border-bottom: 1px solid var(--outline);
+    }
+    .table th {
+        text-align: left;
+        padding: 0.4rem 0.75rem;
+        color: var(--text-secondary);
+        font-weight: normal;
+        white-space: nowrap;
+    }
+    .table td {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid var(--outline);
+        vertical-align: middle;
+    }
+    .table tbody tr:last-child td {
+        border-bottom: none;
+    }
+    .table tbody tr:hover td {
+        background-color: var(--bg-quaternary);
+    }
+
+    /* ── Monospace ── */
+    .monospace {
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 0.8rem;
+    }
+    .table__id .monospace {
+        color: var(--text-secondary);
+    }
+
+    /* ── Badges ── */
+    .flag-list {
+        display: flex;
+        gap: 0.3rem;
+        flex-wrap: wrap;
+    }
+    .badge {
+        font-size: 0.7rem;
+        padding: 0.1rem 0.4rem;
+        border: 1px solid var(--outline);
+        background-color: var(--bg-quaternary);
+        color: var(--text-secondary);
+        white-space: nowrap;
+    }
+    .badge--warn {
+        border-color: #731919;
+        background-color: #5a1010;
+        color: #f1a0a0;
+    }
+    .badge--info {
+        border-color: #47474d;
+        background-color: #2d2d30;
+        color: #857df3;
+    }
+
+    /* ── Status pill ── */
+    .status {
+        font-size: 0.75rem;
+        padding: 0.15rem 0.5rem;
+        border: 1px solid;
+        white-space: nowrap;
+    }
+    .status--running {
+        border-color: #559e5f;
+        background-color: #1a3d1e;
+        color: #5cb468;
+    }
+    .status--stopped {
+        border-color: #47474d;
+        background-color: var(--bg-quaternary);
+        color: var(--text-disabled);
+    }
+
+    /* ── Action row ── */
+    .action-row {
+        display: flex;
+        gap: 0.4rem;
+        align-items: center;
+    }
+    .btn--sm {
+        font-size: 0.775rem;
+        padding: 0.2rem 0.6rem;
+    }
+    .btn--danger {
+        background-color: #5a1010;
+        border-color: #731919;
+        color: #f1a0a0;
+    }
+    .btn--danger:hover {
+        background-color: #731919;
+        border-color: #a22020;
+    }
+</style>
+{{end}}

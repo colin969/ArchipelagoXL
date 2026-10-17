@@ -13,7 +13,7 @@ import (
 func makeTestDiskStore(t *testing.T) *DiskDataPackageStore {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := NewDiskDataPackageStore(dir)
+	store, err := NewDiskDataPackageStore(dir, false)
 	if err != nil {
 		t.Fatalf("NewDiskDataPackageStore: %v", err)
 	}

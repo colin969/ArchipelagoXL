@@ -457,6 +457,45 @@ func (s *RoomStore) FindFullByLobbyRoomId(lobbyRoomId string) (*RoomRecord, erro
 	return &r, nil
 }
 
+func (s *RoomStore) LoadAllSlim() ([]RoomRecord, error) {
+	if !s.enabled {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(context.Background(), `
+			SELECT lobby_room_id, normal_port, reduced_port, created_at, disabled,
+						 per_slot_passwords, deathlink_disabled, reduced_access, deathlink_probability
+			FROM rooms`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []RoomRecord
+	for rows.Next() {
+		var r RoomRecord
+		var ts int64
+		if err := rows.Scan(&r.LobbyRoomId, &r.NormalId, &r.ReducedId, &ts, &r.Disabled,
+			&r.PerSlotPasswords, &r.DeathlinkDisabled, &r.ReducedAccess, &r.DeathlinkProbability); err != nil {
+			return nil, err
+		}
+		r.CreatedAt = time.Unix(ts, 0)
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+func (s *RoomStore) CountRooms() (total int, err error) {
+	if !s.enabled {
+		return 0, nil
+	}
+	err = s.pool.QueryRow(context.Background(), `
+			SELECT
+					COUNT(*)
+			FROM rooms
+	`).Scan(&total)
+	return total, err
+}
+
 func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
 	if !s.enabled {
 		return nil, nil

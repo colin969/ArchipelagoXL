@@ -191,26 +191,27 @@ func (ris *RoomInfoStore) HasPassword() bool {
 }
 
 type ApxRoom struct {
-	datapackages      *DataPackageStore
-	metrics           *metrics
-	logf              func(f string, v ...any)
-	config            *Config
-	roomInfo          *RoomInfoStore
-	altConnectNames   *ConnectNames
-	passwords         *passwordStore
-	fullFeed          *fullFeedStore
-	bounceInfo        *bounceInfoStore
-	saveHandler       *SafeSaveHandler
-	lastActivity      *atomic.Int64
-	state             *ApState
-	connections       *connectionRegistry
-	debugTap          *debugTap
-	lokiLogger        *LokiLogger
-	logDeath          func(slotId int)
-	ipLimiter         *IPRateLimiter
-	chatCommandRouter *chatCommandRouter
-	lobbyRoomId       string
-	perSlotPasswords  bool
+	datapackages       *DataPackageStore
+	metrics            *metrics
+	logf               func(f string, v ...any)
+	config             *Config
+	roomInfo           *RoomInfoStore
+	altConnectNames    *ConnectNames
+	passwords          *passwordStore
+	fullFeed           *fullFeedStore
+	bounceInfo         *bounceInfoStore
+	saveHandler        *SafeSaveHandler
+	lastActivity       *atomic.Int64
+	state              *ApState
+	connections        *connectionRegistry
+	debugTap           *debugTap
+	lokiLogger         *LokiLogger
+	logDeath           func(slotId int)
+	ipLimiter          *IPRateLimiter
+	chatCommandRouter  *chatCommandRouter
+	lobbyRoomId        string
+	perSlotPasswords   bool
+	standaloneSlotData []byte
 }
 
 type Location struct {
@@ -1330,6 +1331,12 @@ func (cr *connectionRegistry) ConnectedSlotCount() int {
 	cr.mu.RLock()
 	defer cr.mu.RUnlock()
 	return len(cr.clients)
+}
+
+func (cr *connectionRegistry) ConnectedClientCount() int {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+	return len(cr.allClients)
 }
 
 func (cr *connectionRegistry) Kick(slotId int) {
@@ -2512,6 +2519,18 @@ func (s *ApxRoom) GetSlotData(ts TeamSlot) ([]byte, error) {
 		return nil, nil
 	}
 
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+
+	// Standalone mode, pull from memory
+	if s.standaloneSlotData != nil {
+		compressed := s.standaloneSlotData[entry[0] : entry[0]+entry[1]]
+		return decoder.DecodeAll(compressed, nil)
+	}
+
 	path := fmt.Sprintf("%s/%s.zst", s.config.SlotDataStoragePath, s.lobbyRoomId)
 	f, err := os.Open(path)
 	if err != nil {
@@ -2529,12 +2548,6 @@ func (s *ApxRoom) GetSlotData(ts TeamSlot) ([]byte, error) {
 	if _, err := io.ReadFull(f, compressed); err != nil {
 		return nil, err
 	}
-
-	decoder, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, err
-	}
-	defer decoder.Close()
 
 	return decoder.DecodeAll(compressed, nil)
 }

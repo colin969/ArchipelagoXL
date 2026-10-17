@@ -19,9 +19,11 @@ type DiskDataPackageStore struct {
 	decoder *zstd.Decoder
 }
 
-func NewDiskDataPackageStore(dir string) (*DiskDataPackageStore, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("creating datapackage dir: %w", err)
+func NewDiskDataPackageStore(dir string, disabled bool) (*DiskDataPackageStore, error) {
+	if !disabled {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("creating datapackage dir: %w", err)
+		}
 	}
 	dec, err := zstd.NewReader(nil)
 	if err != nil {

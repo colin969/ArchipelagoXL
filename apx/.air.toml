@@ -2,3 +2,4 @@
 send_interrupt = true
 kill_delay = "10s"
 rerun_delay = 2000
+args_bin = ["--webhost"]

@@ -1,0 +1,59 @@
+{{template "base" .}}
+
+{{define "title"}}Stats{{end}}
+
+{{define "content"}}
+<h1 class="page__title">Stats</h1>
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-card__value">{{.RoomCountTotal}}</div>
+        <div class="stat-card__label">Total Rooms</div>
+    </div>
+
+    <div class="card stat-card">
+        <div class="stat-card__value">{{.RoomCount}}</div>
+        <div class="stat-card__label">Active Rooms</div>
+    </div>
+
+    <div class="card stat-card">
+        <div class="stat-card__value">{{.TotalConnections}}</div>
+        <div class="stat-card__label">Connected Clients</div>
+    </div>
+
+    <div class="card stat-card">
+        <div class="stat-card__value">{{.CachedDataPackages}}</div>
+        <div class="stat-card__label">Cached DataPackages</div>
+    </div>
+</div>
+{{end}}
+
+{{define "head"}}
+<style>
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+    }
+    .stat-card {
+        text-align: center;
+        padding: 1.5rem 1rem;
+        margin-bottom: 0;
+    }
+    .stat-card__value {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: var(--text-primary);
+        line-height: 1;
+        margin-bottom: 0.4rem;
+    }
+    .stat-card__label {
+        font-size: 0.8rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+</style>
+{{end}}
+
