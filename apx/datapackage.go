@@ -61,14 +61,6 @@ func (d *DiskDataPackageStore) WriteIfAbsent(checksum string, data []byte, encod
 	return true, nil
 }
 
-func newDataPackageEncoder() (*zstd.Encoder, error) {
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
-	if err != nil {
-		return nil, err
-	}
-	return enc, nil
-}
-
 func (d *DiskDataPackageStore) Read(checksum string) ([]byte, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()

@@ -456,6 +456,7 @@ type RoomDefinition struct {
 	Tags              []string                      `json:"tags"`
 	Version           [3]int                        `json:"version"`
 	RaceMode          int                           `json:"race_mode"`
+	SlotDataIndex     map[int][2]int                `json:"slot_data_entry"` // offset, length
 }
 
 type SlotInfoDef struct {
@@ -605,13 +606,6 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 		}
 	}
 
-	slotData := make(map[TeamSlot]map[string]any, len(def.SlotData))
-	for key, data := range def.SlotData {
-		cp := make(map[string]any, len(data))
-		maps.Copy(cp, data)
-		slotData[teamSlotFromKey(key)] = cp
-	}
-
 	slotMinVersions := make(map[TeamSlot]Version, len(def.SlotMinVersions))
 	for key, v := range def.SlotMinVersions {
 		slotMinVersions[teamSlotFromKey(key)] = Version{Major: v[0], Minor: v[1], Build: v[2]}
@@ -694,6 +688,7 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 		ReceivedItems:        newReceivedItems(),
 		Hints:                newHintsState(),
 		DataStorage:          newDataStorage(),
+		SlotDataIndex:        def.SlotDataIndex,
 		ClientStatuses:       &clientStatuses,
 		SlotActivityTimers:   newSlotTimers(),
 		SlotConnectionTimers: newSlotTimers(),
@@ -702,7 +697,6 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 		SphereLocs:           sphereLocs,
 		NameToSlot:           nameToSlot,
 		SlotInfo:             slotInfoMap,
-		SlotData:             slotData,
 		SlotMinVersions:      slotMinVersions,
 		SlotStartInventory:   startInv,
 		Version:              Version{Major: def.Version[0], Minor: def.Version[1], Build: def.Version[2]},
@@ -717,11 +711,11 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 	for _, hint := range def.PrecollectedHints {
 		apState.Hints.AddSlotHint(hint)
 	}
-	populateReadData(apState)
 	return apState, nil
 }
 
-func populateReadData(state *ApState) {
+func (s *ApxRoom) populateReadData() {
+	state := s.state
 	ds := state.DataStorage
 
 	// race_mode — static scalar from multidata
@@ -731,13 +725,16 @@ func populateReadData(state *ApState) {
 	})
 
 	// Per-slot keys — all team 0 at load time
-	for ts, slotData := range state.SlotData {
-		ts := ts         // capture
-		data := slotData // capture
+	for ts := range state.SlotInfo {
+		ts := ts // capture
 		slot := ts.Slot
 
 		// slot_data_{slot} — static, captured at load
 		ds.RegisterReadKey(fmt.Sprintf("slot_data_%d", slot), func() StorageValue {
+			data, err := s.GetSlotData(ts)
+			if err != nil {
+				return []byte{}
+			}
 			return data
 		})
 

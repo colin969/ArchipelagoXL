@@ -30,6 +30,7 @@ type Config struct {
 	LobbyRoomId            string `json:"lobby_room_id"`
 	LobbyApiKey            string `json:"lobby_api_key"`
 	ApiListenAddr          string `json:"apx_api_listen"`
+	SlotDataStoragePath    string `json:"slot_data_storage_path"`
 	DataPackageStoragePath string `json:"datapackage_storage_path"`
 	ApApiRoot              string `json:"ap_api_root"`
 	ApiKey                 string `json:"apx_api_key"`
@@ -41,6 +42,7 @@ type Config struct {
 	ReducedPort            int    `json:"reduced_port"`
 	PerSlotPasswords       bool   `json:"per_slot_passwords"`
 	LobbyEnabled           bool   `json:"lobby_enabled"`
+	DisableFrontend        bool   `json:"disable_frontend"`
 }
 
 type ApxArgs struct {
@@ -242,6 +244,13 @@ func getConfig() (*Config, error) {
 		}
 		cfg.LobbyEnabled = enabled
 	}
+	if v := os.Getenv("DISABLE_FRONTEND"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid DISABLE_FRONTEND %q: %w", v, err)
+		}
+		cfg.DisableFrontend = enabled
+	}
 	if v := os.Getenv("SAVES_PATH"); v != "" {
 		cfg.SavesPath = v
 	}
@@ -284,6 +293,11 @@ func getConfig() (*Config, error) {
 	if v := os.Getenv("TLS_KEY_FILE"); v != "" {
 		cfg.TLSKeyFile = v
 	}
+	sdStoragePath := os.Getenv("SLOT_DATA_STORAGE_PATH")
+	if sdStoragePath == "" {
+		sdStoragePath = "./data/slot_data/"
+	}
+	cfg.SlotDataStoragePath = sdStoragePath
 	dpStoragePath := os.Getenv("DATAPACKAGE_STORAGE_PATH")
 	if dpStoragePath == "" {
 		dpStoragePath = "./data/datapackages/"

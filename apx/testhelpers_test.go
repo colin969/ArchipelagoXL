@@ -20,7 +20,10 @@ func newTestRoomManager(t testing.TB) *RoomManager {
 	t.Helper()
 	store := newTestStore(t) // in-memory SQLite
 	rm := &RoomManager{
-		config:           &Config{ApiKey: "test"},
+		config: &Config{
+			ApiKey:              "test",
+			SlotDataStoragePath: t.TempDir(),
+		},
 		registry:         newRoomRegistry(),
 		metrics:          nil,
 		store:            store,

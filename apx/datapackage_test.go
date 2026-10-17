@@ -22,7 +22,7 @@ func makeTestDiskStore(t *testing.T) *DiskDataPackageStore {
 
 func writeToDisk(t *testing.T, store *DiskDataPackageStore, checksum string, gd GameData) {
 	t.Helper()
-	encoder, err := newDataPackageEncoder()
+	encoder, err := newZstdEncoder()
 	if err != nil {
 		log.Panicf("Failed to open zstd encoder, skipping saving of datapackage to disk")
 	}

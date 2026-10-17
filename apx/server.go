@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	"github.com/klauspost/compress/zstd"
 	"golang.org/x/time/rate"
 )
 
@@ -1072,6 +1074,7 @@ type ApState struct {
 	Hints                HintsState
 	Checks               Checks
 	ReceivedItems        ReceivedItems
+	SlotDataIndex        map[int][2]int
 	SlotStartInventory   map[TeamSlot][]NetworkItem
 	SlotInfo             map[TeamSlot]SlotInfo
 	ClientStatuses       *ClientStatuses
@@ -1082,7 +1085,6 @@ type ApState struct {
 	ServerOptions        *ServerOptions
 	NameToSlot           map[string]*SlotInfo
 	DataStorage          *DataStorage
-	SlotData             map[TeamSlot]map[string]any
 	SlotMinVersions      map[TeamSlot]Version
 	Seed                 string
 	PlayersNetwork       NetworkPlayers
@@ -2441,7 +2443,7 @@ func (dt *debugTap) Send(slotId int, raw []byte) {
 
 func (s ApxRoom) StatusString(client *RegisteredClient) string {
 	connected := s.connections.ConnectedSlotCount()
-	total := len(s.state.SlotData)
+	total := len(s.state.SlotInfo)
 	probability := s.bounceInfo.GetProbability()
 	deaths := s.bounceInfo.Get()
 
@@ -2502,6 +2504,39 @@ func (s ApxRoom) SyncReceivedItems(ctx context.Context, client *RegisteredClient
 	}
 	client.sendIndex.Store(int32(len(startInv) + len(recvItems)))
 	return enqueueMessage([]any{msg}, client)
+}
+
+func (s *ApxRoom) GetSlotData(ts TeamSlot) ([]byte, error) {
+	entry, ok := s.state.SlotDataIndex[ts.Slot]
+	if !ok {
+		return nil, nil
+	}
+
+	path := fmt.Sprintf("%s/%s.zst", s.config.SlotDataStoragePath, s.lobbyRoomId)
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(int64(entry[0]), io.SeekStart); err != nil {
+		return nil, err
+	}
+	compressed := make([]byte, entry[1])
+	if _, err := io.ReadFull(f, compressed); err != nil {
+		return nil, err
+	}
+
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+
+	return decoder.DecodeAll(compressed, nil)
 }
 
 func defaultServerOptions() ServerOptions {

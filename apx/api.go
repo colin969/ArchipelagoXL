@@ -23,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/gorilla/mux"
+	"github.com/klauspost/compress/zstd"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -242,6 +243,10 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		return nil, nil, err
 	}
 
+	if err := os.MkdirAll(cfg.SlotDataStoragePath, 0755); err != nil {
+		return nil, nil, fmt.Errorf("creating slotdata dir")
+	}
+
 	srv := &RoomManager{
 		config:           cfg,
 		registry:         newRoomRegistry(),
@@ -266,7 +271,9 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 
 	r := mux.NewRouter()
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
-	r.HandleFunc("/upload", srv.handleFrontendUpload).Methods(http.MethodGet)
+	if !cfg.DisableFrontend {
+		r.HandleFunc("/upload", srv.handleFrontendUpload).Methods(http.MethodGet)
+	}
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(srv.loggingMiddleware)
 	api.Use(srv.authMiddleware)
@@ -454,7 +461,7 @@ func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) saveDataPackagesToDisk(md *multidata.MultiData) {
-	encoder, err := newDataPackageEncoder()
+	encoder, err := newZstdEncoder()
 	if err != nil {
 		log.Printf("Failed to open zstd encoder, skipping saving of datapackage to disk")
 	}
@@ -469,6 +476,41 @@ func (rm *RoomManager) saveDataPackagesToDisk(md *multidata.MultiData) {
 			log.Printf("failed to write datapackage %q (%s) to disk, skipping: %v", game, dp.Checksum, err)
 		}
 	}
+}
+
+func (rm *RoomManager) saveSlotDataToDisk(lobbyRoomId string, md *multidata.MultiData) (map[int][2]int, error) {
+	encoder, err := newZstdEncoder()
+	if err != nil {
+		return nil, err
+	}
+	defer encoder.Close()
+
+	path := fmt.Sprintf("%s/%s.zst", rm.config.SlotDataStoragePath, lobbyRoomId)
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	index := make(map[int][2]int, len(md.SlotData))
+	var offset int
+	for slotId, slotData := range md.SlotData {
+		raw, err := json.Marshal(slotData)
+		if err != nil {
+			return nil, fmt.Errorf("marshal slot %d: %w", slotId, err)
+		}
+		if len(raw) <= 2 {
+			continue
+		}
+		compressed := encoder.EncodeAll(raw, nil)
+		if _, err := f.Write(compressed); err != nil {
+			return nil, err
+		}
+		index[slotId] = [2]int{offset, len(compressed)}
+		offset += len(compressed)
+	}
+
+	return index, nil
 }
 
 func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) {
@@ -1203,7 +1245,12 @@ func (rm *RoomManager) startRoomFromMultiData(
 	save bool,
 ) (*HostedRoom, error) {
 	rm.saveDataPackagesToDisk(md)
+	index, err := rm.saveSlotDataToDisk(lobbyRoomId, md)
+	if err != nil {
+		return nil, err
+	}
 	def := roomDefinitionFromMultidata(md)
+	def.SlotDataIndex = index
 	return rm.startNewHostedRoom(lobbyRoomId, def, normalIdPtr, reducedIdPtr,
 		perSlotPasswords, deathlinkDisabled, reducedAccess, deathlinkProbability, save)
 }
@@ -1227,8 +1274,8 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 	fullFeedStore := newFullFeedStore()
 	connRegistry := newConnectionRegistry(&lobbyRoomId, rm.metrics)
 
-	// Only use memory costly optimizations when at least 50 datapackages in the room
-	var useDatapackageOptimization = len(roomDef.DatapackChecksums) >= 50
+	// Only use memory costly optimizations when at least 75 datapackages in the room
+	var useDatapackageOptimization = len(roomDef.DatapackChecksums) >= 5000
 	datapackageCache := newDataPackageStore(useDatapackageOptimization, rm.registry.datapackages) // TODO: Add config flag
 	bounceInfo := newBounceInfoStore()
 	bounceInfo.deathlinkProbability = deathlinkProbability
@@ -1292,6 +1339,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 	}
 	apx.chatCommandRouter = newCommandRouter(apx)
 	apx.buildRoomInfoFromState()
+	apx.populateReadData()
 
 	if save != false {
 		if rm.config.DatabaseURL != "" {
@@ -2302,4 +2350,12 @@ func uniqueChecksums(m map[string]string) []string {
 		result = append(result, checksum)
 	}
 	return result
+}
+
+func newZstdEncoder() (*zstd.Encoder, error) {
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
+	if err != nil {
+		return nil, err
+	}
+	return enc, nil
 }

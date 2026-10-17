@@ -36,15 +36,15 @@ type RoomBenchConfig struct {
 }
 
 var defaultBenchConfig = RoomBenchConfig{
-	SmallIdle:        10,
-	SmallActive:      40,
-	MediumIdle:       5,
-	MediumActive:     20,
-	LargeIdle:        1,
-	LargeActive:      4,
+	SmallIdle:        30,
+	SmallActive:      150,
+	MediumIdle:       20,
+	MediumActive:     60,
+	LargeIdle:        4,
+	LargeActive:      20,
 	ExtraLargeIdle:   0,
-	ExtraLargeActive: 1,
-	DatapackageMulti: 0.5,
+	ExtraLargeActive: 2,
+	DatapackageMulti: 0.6,
 	ConnMultiplier:   2,
 	CompletionFrac:   0.5,
 }
@@ -120,6 +120,8 @@ type roomResult struct {
 func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 	b.Helper()
 	b.ReportAllocs()
+
+	concernsSelfTags := []string{"TextConcernsSelf"}
 
 	rm := newTestRoomManager(b)
 
@@ -212,7 +214,7 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 
 		log.Printf("connecting %d slots", connTarget)
 		slotsConnectedThisRoom := make(map[int]struct{})
-		dialLimiter := rate.NewLimiter(rate.Limit(250), 20) // 250/s, burst of 20
+		dialLimiter := rate.NewLimiter(rate.Limit(400), 25) // 400/s, burst of 25
 		for j := range connTarget {
 			info := slotsToConnect[j%len(slotsToConnect)]
 
@@ -230,12 +232,16 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 			b.Cleanup(func() { conn.CloseNow() })
 
 			itemsHandling := 7
+			tags := []string{}
+			if spec.kind == kindXLActive {
+				tags = concernsSelfTags
+			}
 			_ = wsjson.Write(ctx, conn, []any{ConnectMessage{
 				Game:          info.Game,
 				Name:          info.Name,
 				UUID:          StringOrBigInt(fmt.Sprintf("bench-%d-%d-%d", i, info.Slot, j)),
 				Version:       NetworkVersion{0, 7, 0},
-				Tags:          []string{"TextConcernsSelf"},
+				Tags:          tags,
 				ItemsHandling: &itemsHandling,
 			}})
 
@@ -291,18 +297,7 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 	var memAfter runtime.MemStats
 	runtime.ReadMemStats(&memAfter)
 
-	heapDelta := int64(memAfter.HeapInuse) - int64(memBefore.HeapInuse)
 	allocDelta := int64(memAfter.TotalAlloc) - int64(memBefore.TotalAlloc)
-	perRoom := int64(0)
-	if totalRooms > 0 {
-		perRoom = heapDelta / int64(totalRooms)
-	}
-
-	dsPerActiveRoom := int64(0)
-	if activeRoomCount > 0 {
-		dsPerActiveRoom = totalDSHeap / int64(activeRoomCount)
-	}
-	dsPerAllRoom := totalDSHeap / int64(max(1, totalRooms))
 
 	// Per-kind averages
 	type kindStats struct {
@@ -321,9 +316,7 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 
 	dpCount := rm.registry.datapackages.Count()
 
-	b.ReportMetric(float64(heapDelta), "heap_inuse_bytes")
 	b.ReportMetric(float64(allocDelta), "total_alloc_bytes")
-	b.ReportMetric(float64(perRoom), "bytes/room")
 	b.ReportMetric(float64(totalRooms), "rooms")
 	b.ReportMetric(float64(totalConnections), "total_connections")
 	b.ReportMetric(float64(totalSlotsConnected), "unique_slots_connected")
@@ -349,13 +342,7 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 	b.Logf("Total connections:    %d", totalConnections)
 	b.Logf("Unique slots conn'd:  %d", totalSlotsConnected)
 	b.Logf("Cached datapackages:  %d", dpCount)
-	b.Logf("Heap delta:           %s", formatBytes(heapDelta))
-	b.Logf("Per room (avg):       %s", formatBytes(perRoom))
-	b.Logf("DataStorage heap:     total=%s avg/active-room=%s avg/all-room=%s",
-		formatBytes(totalDSHeap),
-		formatBytes(dsPerActiveRoom),
-		formatBytes(dsPerAllRoom),
-	)
+	b.Logf("Goroutines:           %d", runtime.NumGoroutine())
 	runtime.GC()
 	b.Logf("Total alloc:          %s", formatBytes(allocDelta))
 	b.Logf("--- Per room kind ---")

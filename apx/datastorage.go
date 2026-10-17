@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
 	"math"
@@ -217,6 +218,8 @@ func storageSize(v StorageValue) int {
 		return 1
 	case string:
 		return len(val)
+	case []byte:
+		return len(val)
 	case []any:
 		size := 0
 		for _, item := range val {
@@ -248,6 +251,10 @@ func shallowCopy(v StorageValue) StorageValue {
 		return c
 	case *big.Int:
 		return new(big.Int).Set(val)
+	case []byte:
+		c := make([]byte, len(val))
+		copy(c, val)
+		return c
 	default:
 		return v
 	}
@@ -838,6 +845,12 @@ func storageValEqual(a, b StorageValue) bool {
 		case *big.Int:
 			return av.Cmp(bv) == 0
 		}
+	case []byte:
+		if bv, ok := b.([]byte); ok {
+			return bytes.Equal(av, bv)
+		}
+		return false
+
 	}
 	return a == b
 }

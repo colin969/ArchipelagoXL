@@ -397,9 +397,10 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 	registry := newRoomRegistry()
 	_ = registry.Add(room)
 
+	tmpDir := b.TempDir()
 	rm := &RoomManager{
 		registry: registry,
-		config:   &Config{},
+		config:   &Config{SlotDataStoragePath: tmpDir},
 	}
 
 	router := mux.NewRouter()

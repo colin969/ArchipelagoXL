@@ -219,7 +219,7 @@ type ConnectUpdateMessage struct {
 }
 
 type ConnectedMessage struct {
-	SlotData         map[string]any  `json:"slot_data,omitempty"`
+	SlotData         json.RawMessage `json:"slot_data"`
 	Players          json.RawMessage `json:"players"`
 	MissingLocations []int64         `json:"missing_locations"`
 	CheckedLocations []int64         `json:"checked_locations"`
@@ -249,8 +249,7 @@ func (m ConnectedMessage) MarshalJSON() ([]byte, error) {
 	buf.Write(checkedJSON)
 	if m.SlotData != nil {
 		buf.WriteString(`,"slot_data":`)
-		slotDataJSON, _ := json.Marshal(m.SlotData)
-		buf.Write(slotDataJSON)
+		buf.Write(m.SlotData)
 	}
 	buf.WriteString(`,"slot_info":`)
 	buf.Write(m.SlotInfo)

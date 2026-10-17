@@ -130,7 +130,11 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		HintPoints:       s.state.ServerOptions.GetHintCost(),
 	}
 	if msg.SlotData != nil && *msg.SlotData != false {
-		connectedMsg.SlotData = s.state.SlotData[teamSlot]
+		slotData, err := s.GetSlotData(TeamSlot{slotInfo.Team, slotInfo.Slot})
+		if err != nil {
+			return err
+		}
+		connectedMsg.SlotData = slotData
 	}
 
 	err := wsjson.Write(ctx, connState.clientConn, connectedMsg)
