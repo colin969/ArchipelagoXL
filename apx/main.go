@@ -57,6 +57,7 @@ type ApxArgs struct {
 	reducedPort   int    // optional
 	initConfig    bool   // optional
 	webhost       bool   // optional
+	profiler      bool   // optional
 }
 
 func parseArgs() ApxArgs {
@@ -67,6 +68,7 @@ func parseArgs() ApxArgs {
 	flag.IntVar(&a.reducedPort, "reduced-port", 0, "reduced WS port (default normal-port + 1)")
 	flag.BoolVar(&a.initConfig, "init", false, "create a default config file and exit")
 	flag.BoolVar(&a.webhost, "webhost", false, "run in webhost mode")
+	flag.BoolVar(&a.profiler, "profiler", false, "expose pprof on local port 6060")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: apx [options] [multidata-file]\n\n")
 		fmt.Fprintf(os.Stderr, "  multidata-file  optional path to multidata file for running standalone rooms without a db\n\n")
@@ -176,7 +178,9 @@ func run() error {
 		}
 	}
 
-	runProfiler()
+	if args.profiler {
+		runProfiler()
+	}
 	reg, metrics := initMetrics()
 	roomStore, err := NewRoomStore(cfg.DatabaseURL)
 	if err != nil {
