@@ -295,38 +295,43 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	}
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(srv.loggingMiddleware)
-	api.Use(srv.authMiddleware)
-	api.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
-	api.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}", srv.handleRoomStatus).Methods(http.MethodGet)
-	api.HandleFunc("/room/{roomId}", srv.handleRoomDelete).Methods(http.MethodDelete)
-	api.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
-	api.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	api.HandleFunc("/room/{roomId}/players", srv.handleRoomPlayers).Methods(http.MethodGet)
 	// Webhost compatible APIs
 	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}", srv.handleRoomWebhostApiTracker).Methods(http.MethodGet)
-	room := api.PathPrefix("/{roomId}").Subrouter()
-	room.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
-	room.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
-	room.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
-	room.HandleFunc("/refresh_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
-	room.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
-	room.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
-	room.HandleFunc("/full_feed", srv.handleFullFeed).Methods(http.MethodGet)
-	room.HandleFunc("/full_feed/{slotId}", roomLoggedHandler(srv.handleFullFeedUser)).Methods(http.MethodPost, http.MethodDelete)
-	room.HandleFunc("/bounce_exclusions", srv.handleBounceExclusionsList).Methods(http.MethodGet)
-	room.HandleFunc("/bounce_exclusions/{slotId}/{tag}", roomLoggedHandler(srv.handleBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
-	room.HandleFunc("/slot_bounce_exclusions", srv.handleSlotBounceExclusionsList).Methods(http.MethodGet)
-	room.HandleFunc("/slot_bounce_exclusions/{slotId}", roomLoggedHandler(srv.handleSlotBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
-	room.HandleFunc("/deathlink_probability", srv.handleDeathlinkProbability).Methods(http.MethodGet, http.MethodPost)
-	room.HandleFunc("/spheres", srv.handleAllSpheres).Methods(http.MethodGet)
-	room.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
-	room.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
-	room.HandleFunc("/debug/slot/{slotId}", roomLoggedHandler(srv.handleDebugTap))
+	api.HandleFunc("/datapackage/{checksum}", srv.handleDatapackageByChecksum).Methods(http.MethodGet)
+	if !cfg.StandaloneMode {
+		mgmt := api.PathPrefix("").Subrouter()
+		mgmt.Use(srv.authMiddleware)
+		mgmt.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
+		mgmt.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
+		mgmt.HandleFunc("/room/{roomId}", srv.handleRoomDelete).Methods(http.MethodDelete)
+		mgmt.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
+		mgmt.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
+	}
+	roomAdmin := api.PathPrefix("/{roomId}").Subrouter()
+	roomAdmin.Use(srv.authMiddleware)
+	roomAdmin.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/refresh_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
+	roomAdmin.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/full_feed", srv.handleFullFeed).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/full_feed/{slotId}", roomLoggedHandler(srv.handleFullFeedUser)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/bounce_exclusions", srv.handleBounceExclusionsList).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/bounce_exclusions/{slotId}/{tag}", roomLoggedHandler(srv.handleBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/slot_bounce_exclusions", srv.handleSlotBounceExclusionsList).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/slot_bounce_exclusions/{slotId}", roomLoggedHandler(srv.handleSlotBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/deathlink_probability", srv.handleDeathlinkProbability).Methods(http.MethodGet, http.MethodPost)
+	roomAdmin.HandleFunc("/spheres", srv.handleAllSpheres).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/debug/slot/{slotId}", roomLoggedHandler(srv.handleDebugTap))
 	// Alt names need more work to be listable and deletable, will reset on restart for now
-	room.HandleFunc("/alt_connect_name/slot/{slotName}", roomLoggedHandler(srv.handleAltConnectNamesBySlot)).Methods(http.MethodGet)
-	room.HandleFunc("/alt_connect_name/{altName}", roomLoggedHandler(srv.handleAltConnectName)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/alt_connect_name/slot/{slotName}", roomLoggedHandler(srv.handleAltConnectNamesBySlot)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/alt_connect_name/{altName}", roomLoggedHandler(srv.handleAltConnectName)).Methods(http.MethodPost, http.MethodDelete)
 
 	// Check every 2m, kill after 2h
 	srv.startRoomKiller(time.Duration(2)*time.Minute, RoomTimeout)
@@ -2187,6 +2192,29 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "released", "slot": slotName})
+}
+
+func (rm *RoomManager) handleDatapackageByChecksum(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	checksum := vars["checksum"]
+	data, ok := rm.registry.datapackages.GetByChecksum(checksum)
+	if ok {
+		// Hit cache
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	} else {
+		// Try disk
+		data, err := rm.diskDataPackages.Read(checksum)
+		if err != nil || data == nil {
+			// Not on disk
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "datapackage not found"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}
 }
 
 func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {

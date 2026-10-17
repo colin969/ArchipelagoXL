@@ -309,7 +309,16 @@ func (c *GlobalDataPackageCache) GetOrAddWithData(checksum, game string, encoded
 	return wrapper
 }
 
-func (c *GlobalDataPackageCache) Get(checksum, game string) (*cachedGameDataPackage, bool) {
+func (c *GlobalDataPackageCache) GetByChecksum(checksum string) (json.RawMessage, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if wrapper, ok := c.byChecksum[checksum]; ok {
+		return wrapper.encoded, true
+	}
+	return nil, false
+}
+
+func (c *GlobalDataPackageCache) GetWrapperByGameChecksum(checksum, game string) (*cachedGameDataPackage, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	gameKey := checksum + ":" + game

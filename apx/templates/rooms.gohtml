@@ -22,7 +22,6 @@
                 <th>Status</th>
                 <th>Normal ID</th>
                 <th>Reduced ID</th>
-                <th>Features</th>
                 <th>Created At</th>
                 <th>Last Activity</th>
                 <th>Actions</th>
@@ -43,19 +42,6 @@
                 </td>
                 <td class="monospace">{{.NormalId}}</td>
                 <td class="monospace">{{.ReducedId}}</td>
-                <td>
-                    <div class="flag-list">
-                        {{if .PerSlotPasswords}}
-                        <span class="badge">per-slot pw</span>
-                        {{end}}
-                        {{if .DeathlinkDisabled}}
-                        <span class="badge badge--warn">DL off</span>
-                        {{end}}
-                        {{if .ReducedAccess}}
-                        <span class="badge badge--info">reduced</span>
-                        {{end}}
-                    </div>
-                </td>
                 <td class="monospace">{{.CreatedAt}}</td>
                 <td class="monospace">
                     {{if .LastActivity}}{{.LastActivity}}{{else}}&mdash;{{end}}

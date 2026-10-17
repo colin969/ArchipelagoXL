@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -148,11 +150,11 @@ func TestUploadRoomRequestFromForm(t *testing.T) {
 		wantDLDisabled    bool
 		wantReducedAccess bool
 	}{
-		{"defaults", url.Values{}, true, false, false},
+		{"defaults", url.Values{}, false, false, false},
 		{"per_slot_passwords false", url.Values{"per_slot_passwords": {"false"}}, false, false, false},
 		{"per_slot_passwords true", url.Values{"per_slot_passwords": {"true"}}, true, false, false},
-		{"deathlink_disabled true", url.Values{"deathlink_disabled": {"true"}}, true, true, false},
-		{"reduced_access true", url.Values{"reduced_access": {"true"}}, true, false, true},
+		{"deathlink_disabled true", url.Values{"deathlink_disabled": {"true"}}, false, true, false},
+		{"reduced_access true", url.Values{"reduced_access": {"true"}}, false, false, true},
 	}
 
 	for _, tc := range cases {
@@ -255,6 +257,146 @@ func TestMaxRoomPlayerId(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleDatapackageByChecksum(t *testing.T) {
+	newRM := func(diskDir string) *RoomManager {
+		diskStore, err := NewDiskDataPackageStore(diskDir, false)
+		if err != nil {
+			t.Fatalf("failed to create disk store: %v", err)
+		}
+		return &RoomManager{
+			registry:         newRoomRegistry(),
+			diskDataPackages: diskStore,
+		}
+	}
+
+	newRouter := func(rm *RoomManager) *mux.Router {
+		router := mux.NewRouter()
+		router.HandleFunc("/api/datapackage/{checksum}", rm.handleDatapackageByChecksum).Methods(http.MethodGet)
+		return router
+	}
+
+	t.Run("returns data from memory cache", func(t *testing.T) {
+		rm := newRM(t.TempDir())
+		router := newRouter(rm)
+
+		payload := json.RawMessage(`{"checksum":"abc123","ItemNameToID":{},"LocationNameToID":{}}`)
+		rm.registry.datapackages.GetOrAddWithData(
+			"abc123", "TestGame",
+			payload,
+			map[int64]string{},
+			map[int64]string{},
+			map[string]int64{},
+			map[string]int64{},
+		)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/datapackage/abc123", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %q", ct)
+		}
+		if !bytes.Equal(w.Body.Bytes(), []byte(payload)) {
+			t.Errorf("body mismatch: got %q, want %q", w.Body.String(), payload)
+		}
+	})
+
+	t.Run("falls back to disk when not in memory cache", func(t *testing.T) {
+		dir := t.TempDir()
+		rm := newRM(dir)
+		router := newRouter(rm)
+
+		payload := []byte(`{"checksum":"diskonly","ItemNameToID":{},"LocationNameToID":{}}`)
+		encoder, err := newZstdEncoder()
+		if err != nil {
+			t.Fatalf("encoder: %v", err)
+		}
+		defer encoder.Close()
+		_, err = rm.diskDataPackages.WriteIfAbsent("diskonly", payload, encoder)
+		if err != nil {
+			t.Fatalf("write to disk: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/api/datapackage/diskonly", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %q", ct)
+		}
+		if !bytes.Equal(w.Body.Bytes(), payload) {
+			t.Errorf("body mismatch: got %q, want %q", w.Body.String(), payload)
+		}
+	})
+
+	t.Run("returns 404 when not in cache or disk", func(t *testing.T) {
+		rm := newRM(t.TempDir())
+		router := newRouter(rm)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/datapackage/notexist", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %q", ct)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["error"] != "datapackage not found" {
+			t.Errorf("unexpected error message: %q", body["error"])
+		}
+	})
+
+	t.Run("memory cache takes priority over disk", func(t *testing.T) {
+		dir := t.TempDir()
+		rm := newRM(dir)
+		router := newRouter(rm)
+
+		diskPayload := []byte(`{"checksum":"shared","ItemNameToID":{},"LocationNameToID":{},"source":"disk"}`)
+		encoder, err := newZstdEncoder()
+		if err != nil {
+			t.Fatalf("encoder: %v", err)
+		}
+		defer encoder.Close()
+		_, err = rm.diskDataPackages.WriteIfAbsent("shared", diskPayload, encoder)
+		if err != nil {
+			t.Fatalf("write to disk: %v", err)
+		}
+
+		memPayload := json.RawMessage(`{"checksum":"shared","ItemNameToID":{},"LocationNameToID":{},"source":"memory"}`)
+		rm.registry.datapackages.GetOrAddWithData(
+			"shared", "TestGame",
+			memPayload,
+			map[int64]string{},
+			map[int64]string{},
+			map[string]int64{},
+			map[string]int64{},
+		)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/datapackage/shared", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+		if !bytes.Equal(w.Body.Bytes(), []byte(memPayload)) {
+			t.Errorf("expected memory payload, got %q", w.Body.String())
+		}
+	})
 }
 
 func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
