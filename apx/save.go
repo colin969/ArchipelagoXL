@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -567,27 +568,26 @@ func roomDefinitionFromMultidata(md *multidata.MultiData) *RoomDefinition {
 }
 
 func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
-	locations := make(map[TeamSlot]map[int64]Location, len(def.Locations))
+	locations := make(map[TeamSlot]map[int64]*Location, len(def.Locations))
 	for key, locs := range def.Locations {
 		ts := teamSlotFromKey(key)
-		inner := make(map[int64]Location, len(locs))
+		inner := make(map[int64]*Location, len(locs))
 		for locID, t := range locs {
-			inner[locID] = Location{
-				Item:    t[0],
-				Player:  int32(t[1]),
-				Flags:   int16(t[2]),
-				Checked: false,
+			inner[locID] = &Location{
+				Item:   t[0],
+				Player: int32(t[1]),
+				Flags:  int16(t[2]),
 			}
 		}
 		locations[ts] = inner
 	}
 
-	slotInfoMap := make(map[TeamSlot]SlotInfo, len(def.SlotInfo))
+	slotInfoMap := make(map[TeamSlot]*SlotInfo, len(def.SlotInfo))
 	for key, info := range def.SlotInfo {
 		ts := teamSlotFromKey(key)
 		members := make([]int, len(info.GroupMembers))
 		copy(members, info.GroupMembers)
-		slotInfoMap[ts] = SlotInfo{
+		slotInfoMap[ts] = &SlotInfo{
 			Team:         ts.Team,
 			Slot:         ts.Slot,
 			Name:         info.Name,
@@ -599,10 +599,8 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 
 	nameToSlot := make(map[string]*SlotInfo, len(def.ConnectNames))
 	for name, pair := range def.ConnectNames {
-		ts := TeamSlot{Team: pair[0], Slot: pair[1]}
-		if info, ok := slotInfoMap[TeamSlot{Team: 0, Slot: ts.Slot}]; ok {
-			infoCopy := info
-			nameToSlot[name] = &infoCopy
+		if info, ok := slotInfoMap[TeamSlot{Team: 0, Slot: pair[1]}]; ok {
+			nameToSlot[name] = info
 		}
 	}
 
@@ -627,15 +625,12 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 		group := make(SphereLocGroup, len(s))
 		for key, locIDs := range s {
 			ts := teamSlotFromKey(key)
-			cp := make([]int64, len(locIDs))
-			copy(cp, locIDs)
-			sphere[ts] = cp
+			sphere[ts] = locIDs
 			slotLocs := locations[ts]
 			locs := make(map[int64]*Location, len(locIDs))
 			for _, locID := range locIDs {
 				if loc, ok := slotLocs[locID]; ok {
-					locCopy := loc
-					locs[locID] = &locCopy
+					locs[locID] = loc
 				}
 			}
 			group[ts] = locs
@@ -752,7 +747,11 @@ func (s *ApxRoom) populateReadData() {
 }
 
 func teamSlotFromKey(key string) TeamSlot {
-	var team, slot int
-	fmt.Sscanf(key, "%d:%d", &team, &slot)
+	before, after, ok := strings.Cut(key, ":")
+	if !ok {
+		return TeamSlot{}
+	}
+	team, _ := strconv.Atoi(before)
+	slot, _ := strconv.Atoi(after)
 	return TeamSlot{Team: team, Slot: slot}
 }

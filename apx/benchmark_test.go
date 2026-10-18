@@ -199,7 +199,7 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 		activeRoomCount++
 
 		// Collect player slots
-		slotsToConnect := make([]SlotInfo, 0, len(room.apx.state.SlotInfo))
+		slotsToConnect := make([]*SlotInfo, 0, len(room.apx.state.SlotInfo))
 		for _, info := range room.apx.state.SlotInfo {
 			if info.Type == SlotTypePlayer {
 				slotsToConnect = append(slotsToConnect, info)

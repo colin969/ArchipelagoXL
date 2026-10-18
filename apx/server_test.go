@@ -1014,8 +1014,8 @@ func TestIPRateLimiter(t *testing.T) {
 	}
 }
 
-func makeTestLocations() map[TeamSlot]map[int64]Location {
-	return map[TeamSlot]map[int64]Location{
+func makeTestLocations() map[TeamSlot]map[int64]*Location {
+	return map[TeamSlot]map[int64]*Location{
 		{0, 1}: {
 			100: {Item: 999, Player: 2, Flags: 0},
 			101: {Item: 1000, Player: 1, Flags: 0},

@@ -464,9 +464,9 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 	locsPerSlot := totalLocations / numSlots
 	itemsPerSlot := totalRecvItems / numSlots
 
-	slotInfo := make(map[TeamSlot]SlotInfo, numSlots)
+	slotInfo := make(map[TeamSlot]*SlotInfo, numSlots)
 	nameToSlot := make(map[string]*SlotInfo, numSlots)
-	locations := make(map[TeamSlot]map[int64]Location, numSlots)
+	locations := make(map[TeamSlot]map[int64]*Location, numSlots)
 
 	for i := 1; i <= numSlots; i++ {
 		ts := TeamSlot{Team: 0, Slot: i}
@@ -477,18 +477,17 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 			Game: "TestGame",
 			Type: SlotTypePlayer,
 		}
-		slotInfo[ts] = si
+		slotInfo[ts] = &si
 		nameToSlot[si.Name] = &si
 
-		slotLocs := make(map[int64]Location, locsPerSlot)
+		slotLocs := make(map[int64]*Location, locsPerSlot)
 		baseLocId := int64(i) * int64(locsPerSlot)
 		for j := 0; j < locsPerSlot; j++ {
 			locId := baseLocId + int64(j)
-			slotLocs[locId] = Location{
-				Item:    int64(j % 1000),
-				Player:  int32(i),
-				Flags:   0,
-				Checked: j%3 == 0,
+			slotLocs[locId] = &Location{
+				Item:   int64(j % 1000),
+				Player: int32(i),
+				Flags:  0,
 			}
 		}
 		locations[ts] = slotLocs
@@ -512,8 +511,8 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 	state.Checks.checked = make(map[TeamSlot]map[int64]struct{}, numSlots)
 	for ts, locs := range locations {
 		checked := make(map[int64]struct{}, len(locs))
-		for locId, loc := range locs {
-			if loc.Checked {
+		for locId := range locs {
+			if locId%3 == 0 {
 				checked[locId] = struct{}{}
 			}
 		}

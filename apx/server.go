@@ -216,10 +216,9 @@ type ApxRoom struct {
 }
 
 type Location struct {
-	Item    int64
-	Player  int32
-	Flags   int16
-	Checked bool
+	Item   int64
+	Player int32
+	Flags  int16
 }
 
 type Version struct {
@@ -459,12 +458,12 @@ func (np *NetworkPlayers) GetJson() json.RawMessage {
 }
 
 type Checks struct {
-	locations map[TeamSlot]map[int64]Location
+	locations map[TeamSlot]map[int64]*Location
 	checked   map[TeamSlot]map[int64]struct{}
 	mu        sync.RWMutex
 }
 
-func newChecksState(locations map[TeamSlot]map[int64]Location) Checks {
+func newChecksState(locations map[TeamSlot]map[int64]*Location) Checks {
 	checked := make(map[TeamSlot]map[int64]struct{}, len(locations))
 	for ts := range locations {
 		checked[ts] = make(map[int64]struct{})
@@ -511,9 +510,12 @@ func (ls *Checks) GetCollectLocIds(team int, slot int) map[TeamSlot][]int64 {
 		if ts.Team != team {
 			continue
 		}
+		checkedForSlot := ls.checked[ts]
 		for locId, loc := range group {
-			if !loc.Checked && loc.Player == slot32 {
-				locIdMaps[ts] = append(locIdMaps[ts], locId)
+			if loc.Player == slot32 {
+				if _, isChecked := checkedForSlot[locId]; !isChecked {
+					locIdMaps[ts] = append(locIdMaps[ts], locId)
+				}
 			}
 		}
 	}
@@ -912,7 +914,7 @@ func (h *HintsState) GetItemHints(ts TeamSlot, itemId int64) []Hint {
 	return hints
 }
 
-func (h *HintsState) CollectItemHint(ts TeamSlot, player int32, itemId int64, sphereLocs *SphereLocs, cost, points int) (hints []Hint, newHints []Hint) {
+func (h *HintsState) CollectItemHint(ts TeamSlot, player int32, itemId int64, sphereLocs *SphereLocs, checks *Checks, cost, points int) (hints []Hint, newHints []Hint) {
 	h.mu.RLock()
 	hintedLocs := make(map[int64]struct{})
 	for _, i := range h.byTeamSlot[ts] {
@@ -938,7 +940,8 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int32, itemId int64, sp
 					continue
 				}
 				hintStatus := HintStatusPriority
-				if loc.Checked {
+				checked := checks.IsChecked(TeamSlot{Team: ts.Team, Slot: int(loc.Player)}, locID)
+				if checked {
 					hintStatus = HintStatusFound
 				}
 				hint := Hint{
@@ -947,13 +950,13 @@ func (h *HintsState) CollectItemHint(ts TeamSlot, player int32, itemId int64, sp
 					Location:        locID,
 					Item:            loc.Item,
 					ItemFlags:       loc.Flags,
-					Found:           loc.Checked,
+					Found:           checked,
 					Status:          hintStatus,
 				}
 				h.AddSlotHint(hint)
 				hints = append(hints, hint)
 				newHints = append(newHints, hint)
-				if cost > 0 && !loc.Checked {
+				if cost > 0 && !checked {
 					h.mu.Lock()
 					h.hintsUsed[ts]++
 					h.mu.Unlock()
@@ -1078,11 +1081,11 @@ type ApState struct {
 	ReceivedItems        ReceivedItems
 	SlotDataIndex        map[int][2]int
 	SlotStartInventory   map[TeamSlot][]NetworkItem
-	SlotInfo             map[TeamSlot]SlotInfo
+	SlotInfo             map[TeamSlot]*SlotInfo
 	ClientStatuses       *ClientStatuses
 	SlotActivityTimers   *SlotTimers
 	SlotConnectionTimers *SlotTimers
-	Locations            map[TeamSlot]map[int64]Location
+	Locations            map[TeamSlot]map[int64]*Location
 	SlotInfoNetwork      map[int]NetworkSlot
 	ServerOptions        *ServerOptions
 	NameToSlot           map[string]*SlotInfo
@@ -2406,7 +2409,7 @@ func (b *printJsonBatcher) flush() {
 	}
 	b.mu.Unlock()
 
-	b.room.broadcastPrintJsonDirect(msgs)
+	//b.room.broadcastPrintJsonDirect(msgs)
 
 	// If there's still data, signal another flush
 	b.mu.Lock()
@@ -2435,14 +2438,14 @@ func (b *printJsonBatcher) run(ctx context.Context) {
 	}
 }
 
-func (s *ApxRoom) broadcastPrintJson(msgs []PrintJsonMessage) {
+func (s *ApxRoom) broadcastPrintJsonUnused(msgs []PrintJsonMessage) {
 	if len(msgs) == 0 {
 		return
 	}
 	s.printJsonBatcher.Add(msgs)
 }
 
-func (s *ApxRoom) broadcastPrintJsonDirect(msgs []PrintJsonMessage) {
+func (s *ApxRoom) broadcastPrintJson(msgs []PrintJsonMessage) {
 	if len(msgs) == 0 {
 		return
 	}
@@ -2619,6 +2622,7 @@ func (s *ApxRoom) GetSlotData(ts TeamSlot) ([]byte, error) {
 		return nil, nil
 	}
 
+	// cache decoder maybeeeee?
 	decoder, err := zstd.NewReader(nil)
 	if err != nil {
 		return nil, err

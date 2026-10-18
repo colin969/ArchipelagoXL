@@ -56,6 +56,7 @@ type ApxArgs struct {
 	initConfig    bool   // optional
 	webhost       bool   // optional
 	profiler      bool   // optional
+	noSave        bool   // optional
 }
 
 func parseArgs() ApxArgs {
@@ -67,6 +68,7 @@ func parseArgs() ApxArgs {
 	flag.BoolVar(&a.initConfig, "init", false, "create a default config file and exit")
 	flag.BoolVar(&a.webhost, "webhost", false, "run in webhost mode")
 	flag.BoolVar(&a.profiler, "profiler", false, "expose pprof on local port 6060")
+	flag.BoolVar(&a.noSave, "no-save", false, "disable saving")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: apx [options] [multidata-file]\n\n")
 		fmt.Fprintf(os.Stderr, "  multidata-file  optional path to multidata file for running standalone rooms without a db\n\n")
@@ -216,7 +218,7 @@ func run() error {
 			return err
 		}
 		room, err := rm.startRoomFromMultiData(roomId, md, &cfg.NormalPort, &cfg.ReducedPort,
-			false, false, false, 1, true)
+			false, false, false, 1, !args.noSave)
 		if err != nil {
 			return fmt.Errorf("starting env defined room: %w", err)
 		}

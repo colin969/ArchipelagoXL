@@ -1353,6 +1353,8 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
 
+	log.Printf("trying delete for %s", roomId)
+
 	w.Header().Set("Content-Type", "application/json")
 
 	room, ok := rm.registry.Get(roomId)

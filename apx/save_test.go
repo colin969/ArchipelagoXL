@@ -123,7 +123,7 @@ func TestSave(t *testing.T) {
 	t.Run("ApplySnapshot", func(t *testing.T) {
 		ss := makeTestSaveState()
 
-		locations := map[TeamSlot]map[int64]Location{
+		locations := map[TeamSlot]map[int64]*Location{
 			{0, 1}: {100: {}, 200: {}, 300: {}},
 			{0, 2}: {400: {}, 500: {}},
 		}
@@ -206,7 +206,7 @@ func TestSave(t *testing.T) {
 			t.Fatalf("Load: %v", err)
 		}
 
-		locations := map[TeamSlot]map[int64]Location{
+		locations := map[TeamSlot]map[int64]*Location{
 			{0, 1}: {100: {}, 200: {}, 300: {}},
 			{0, 2}: {400: {}, 500: {}},
 		}

@@ -290,7 +290,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	cost := s.state.GetSlotHintCost(teamSlot)
 	points := s.state.GetSlotRemainingPoints(teamSlot)
-	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int32(client.Slot), itemID, &s.state.SphereLocs, cost, points)
+	hints, newHints := s.state.Hints.CollectItemHint(teamSlot, int32(client.Slot), itemID, &s.state.SphereLocs, &s.state.Checks, cost, points)
 
 	// Had points to spend, never found a hint
 	if (cost <= 0 || points >= cost) && len(hints) == 0 {
