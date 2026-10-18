@@ -261,12 +261,12 @@ func TestMaxRoomPlayerId(t *testing.T) {
 
 func TestHandleDatapackageByChecksum(t *testing.T) {
 	newRM := func(diskDir string) *RoomManager {
-		diskStore, err := NewDiskDataPackageStore(diskDir, false)
+		diskStore, err := NewDiskDataPackageStore(diskDir, false, nil)
 		if err != nil {
 			t.Fatalf("failed to create disk store: %v", err)
 		}
 		return &RoomManager{
-			registry:         newRoomRegistry(),
+			registry:         newRoomRegistry(nil),
 			diskDataPackages: diskStore,
 		}
 	}
@@ -536,7 +536,7 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 		apx:          apx,
 	}
 
-	registry := newRoomRegistry()
+	registry := newRoomRegistry(nil)
 	_ = registry.Add(room)
 
 	tmpDir := b.TempDir()

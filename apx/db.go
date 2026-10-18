@@ -496,7 +496,7 @@ func (s *RoomStore) CountRooms() (total int, err error) {
 	return total, err
 }
 
-func (s *RoomStore) LoadAll() ([]RoomRecord, error) {
+func (s *RoomStore) LoadAllActive() ([]RoomRecord, error) {
 	if !s.enabled {
 		return nil, nil
 	}

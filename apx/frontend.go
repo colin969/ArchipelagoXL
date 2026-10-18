@@ -106,6 +106,10 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
+		if rm.metrics != nil {
+			rm.metrics.activeRooms.Inc()
+		}
+
 		http.Redirect(w, r, "/admin/rooms", http.StatusSeeOther)
 		return
 	}

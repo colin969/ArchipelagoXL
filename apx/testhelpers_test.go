@@ -24,7 +24,7 @@ func newTestRoomManager(t testing.TB) *RoomManager {
 			ApiKey:              "test",
 			SlotDataStoragePath: t.TempDir(),
 		},
-		registry:         newRoomRegistry(),
+		registry:         newRoomRegistry(nil),
 		metrics:          nil,
 		store:            store,
 		diskDataPackages: newTestDiskDataPackages(t),
@@ -106,7 +106,7 @@ func newTestStore(t testing.TB) *RoomStore {
 
 func newTestDiskDataPackages(t testing.TB) *DiskDataPackageStore {
 	t.Helper()
-	store, err := NewDiskDataPackageStore(t.TempDir(), false)
+	store, err := NewDiskDataPackageStore(t.TempDir(), false, nil)
 	require.NoError(t, err)
 	return store
 }

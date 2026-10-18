@@ -13,7 +13,7 @@ import (
 func makeTestDiskStore(t *testing.T) *DiskDataPackageStore {
 	t.Helper()
 	dir := t.TempDir()
-	store, err := NewDiskDataPackageStore(dir, false)
+	store, err := NewDiskDataPackageStore(dir, false, nil)
 	if err != nil {
 		t.Fatalf("NewDiskDataPackageStore: %v", err)
 	}
@@ -40,7 +40,7 @@ func writeToDisk(t *testing.T, store *DiskDataPackageStore, checksum string, gd 
 
 func TestDatapackage(t *testing.T) {
 	t.Run("GlobalCacheGetOrAdd", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		disk := makeTestDiskStore(t)
 
 		gd := GameData{
@@ -80,7 +80,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("GlobalCacheSharedDataPackage", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		disk := makeTestDiskStore(t)
 
 		gd := GameData{Checksum: "shared"}
@@ -101,7 +101,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("GlobalCacheMissingFromDisk", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		disk := makeTestDiskStore(t)
 
 		_, err := cache.GetOrAdd("nonexistent", "TestGame", disk)
@@ -111,7 +111,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("ReleaseEvictsWrapper", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		disk := makeTestDiskStore(t)
 		writeToDisk(t, disk, "abc", GameData{Checksum: "abc"})
 
@@ -132,7 +132,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("ReleaseSharedDataPackageNotEvictedEarly", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		disk := makeTestDiskStore(t)
 		writeToDisk(t, disk, "shared", GameData{Checksum: "shared"})
 
@@ -168,7 +168,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("ReleaseMultipleRoomsHoldingWrapper", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		disk := makeTestDiskStore(t)
 		writeToDisk(t, disk, "abc", GameData{Checksum: "abc"})
 
@@ -199,7 +199,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("StoreAttachWrapper", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		ds := newDataPackageStore(true, cache)
 
 		gd := GameData{
@@ -233,7 +233,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("StoreRelease", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		ds := newDataPackageStore(true, cache)
 
 		ds.AddDataPackage("TestGame", GameData{Checksum: "abc"})
@@ -253,7 +253,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("StoreTwoRoomsSharedRelease", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 
 		gd := GameData{
 			Checksum:         "abc",
@@ -300,7 +300,7 @@ func TestDatapackage(t *testing.T) {
 	})
 
 	t.Run("DiskNotReadTwiceForSameChecksum", func(t *testing.T) {
-		cache := newGlobalDataPackageCache()
+		cache := newGlobalDataPackageCache(nil)
 		disk := makeTestDiskStore(t)
 		writeToDisk(t, disk, "abc", GameData{Checksum: "abc"})
 
@@ -324,7 +324,7 @@ func BenchmarkBuildResponse(b *testing.B) {
 		panic(err)
 	}
 
-	globalCache := newGlobalDataPackageCache()
+	globalCache := newGlobalDataPackageCache(nil)
 	ds := newDataPackageStore(false, globalCache)
 	games := make([]string, 20)
 	for i := range 20 {

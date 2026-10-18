@@ -247,18 +247,23 @@ func (c *slotSphereCache) Set(slotId int, b []byte) {
 	c.mu.Unlock()
 }
 
-func newRoomRegistry() *RoomRegistry {
+func newRoomRegistry(metrics *metrics) *RoomRegistry {
 	return &RoomRegistry{
 		rooms:        make(map[string]*HostedRoom),
 		idToHandler:  make(map[int]*apxHandler),
-		datapackages: newGlobalDataPackageCache(),
+		datapackages: newGlobalDataPackageCache(metrics),
 	}
 }
 
 func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, tlsCfg *tls.Config, store *RoomStore) (*RoomManager, *mux.Router, error) {
-	dpDiskStorage, err := NewDiskDataPackageStore(cfg.DataPackageStoragePath, cfg.StandaloneMode)
+	dpDiskStorage, err := NewDiskDataPackageStore(cfg.DataPackageStoragePath, cfg.StandaloneMode, metrics)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	if metrics != nil {
+		savedCount := dpDiskStorage.SavedCount()
+		metrics.totalDatapackages.Set(float64(savedCount))
 	}
 
 	if !cfg.StandaloneMode {
@@ -269,7 +274,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 
 	srv := &RoomManager{
 		config:           cfg,
-		registry:         newRoomRegistry(),
+		registry:         newRoomRegistry(metrics),
 		reg:              reg,
 		metrics:          metrics,
 		tlsCfg:           tlsCfg,
@@ -319,7 +324,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	roomAdmin.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/refresh_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
+	roomAdmin.HandleFunc("/refresh_slot_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
 	roomAdmin.HandleFunc("/server_password", srv.handleAdminPassword).Methods(http.MethodGet, http.MethodDelete, http.MethodPost)
 	roomAdmin.HandleFunc("/slot_password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
@@ -342,10 +347,18 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	srv.startRoomKiller(time.Duration(2)*time.Minute, RoomTimeout)
 
 	// Start up rooms
-	records, err := srv.store.LoadAll()
+	records, err := srv.store.LoadAllActive()
 	if err != nil {
 		return nil, nil, err
 	}
+	totalRooms, err := srv.store.CountRooms()
+	if err != nil {
+		return nil, nil, err
+	}
+	if metrics != nil {
+		metrics.totalRooms.Set(float64(totalRooms))
+	}
+	started := 0
 	for _, record := range records {
 		if record.Definition == nil {
 			log.Printf("skipping room %s: no definition stored", record.LobbyRoomId)
@@ -358,12 +371,16 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 			log.Printf("failed to restart room %s: %v", record.LobbyRoomId, err)
 			continue
 		}
+		started += 1
 		// Restore persistent data
 		srv.restoreBounceTagExclusions(room)
 		srv.restoreSlotBounceExclusions(room)
 		srv.restoreFullFeedSlots(room)
 		srv.restoreSlotDeaths(room)
 		srv.restoreAltConnectNames(room)
+	}
+	if metrics != nil {
+		metrics.activeRooms.Set(float64(started))
 	}
 
 	return srv, r, nil
@@ -629,6 +646,11 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if rm.metrics != nil {
+		rm.metrics.totalRooms.Inc()
+		rm.metrics.activeRooms.Inc()
+	}
+
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: room.lobbyRoomId,
@@ -791,6 +813,10 @@ func (rm *RoomManager) handleRoomStart(w http.ResponseWriter, r *http.Request) {
 	rm.restoreFullFeedSlots(room)
 	rm.restoreSlotDeaths(room)
 	rm.restoreAltConnectNames(room)
+
+	if rm.metrics != nil {
+		rm.metrics.activeRooms.Inc()
+	}
 
 	json.NewEncoder(w).Encode(ApxRoomInfo{
 		LobbyRoomId: room.lobbyRoomId,
@@ -1310,6 +1336,10 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to delete room from store"})
 		return
+	}
+
+	if rm.metrics != nil {
+		rm.metrics.totalRooms.Dec()
 	}
 
 	// Remove from active rooms list
@@ -2459,6 +2489,9 @@ func (rm *RoomManager) cleanOrphanedDataPackagesOnStartup() error {
 }
 
 func (hs *HostedRoom) Close() bool {
+	if hs.apx.metrics != nil {
+		hs.apx.metrics.activeRooms.Dec()
+	}
 	hs.cancel()
 
 	if hs.apx != nil && hs.apx.saveHandler != nil {

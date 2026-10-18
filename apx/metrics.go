@@ -15,6 +15,10 @@ type metrics struct {
 	bytesSent            prometheus.CounterVec
 	datapackageBytesSent prometheus.CounterVec
 	droppedLogs          prometheus.CounterVec
+	totalRooms           prometheus.Gauge
+	activeRooms          prometheus.Gauge
+	totalDatapackages    prometheus.Gauge
+	cachedDatapackages   prometheus.Gauge
 }
 
 func initMetrics() (*prometheus.Registry, *metrics) {
@@ -83,6 +87,30 @@ func initMetrics() (*prometheus.Registry, *metrics) {
 				Help: "Total number of log entries dropped due to full channel",
 			},
 			[]string{"source"},
+		),
+		totalRooms: promauto.With(reg).NewGauge(
+			prometheus.GaugeOpts{
+				Name: "apx_total_rooms",
+				Help: "Total number of total rooms including idle",
+			},
+		),
+		activeRooms: promauto.With(reg).NewGauge(
+			prometheus.GaugeOpts{
+				Name: "apx_active_rooms",
+				Help: "Total number of active rooms",
+			},
+		),
+		totalDatapackages: promauto.With(reg).NewGauge(
+			prometheus.GaugeOpts{
+				Name: "apx_total_datapackages",
+				Help: "Total number of saved datapackages",
+			},
+		),
+		cachedDatapackages: promauto.With(reg).NewGauge(
+			prometheus.GaugeOpts{
+				Name: "apx_cached_datapackages",
+				Help: "Total number of cached datapackages",
+			},
 		),
 	}
 

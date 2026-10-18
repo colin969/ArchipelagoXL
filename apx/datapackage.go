@@ -17,9 +17,10 @@ type DiskDataPackageStore struct {
 	mu      sync.RWMutex
 	dir     string
 	decoder *zstd.Decoder
+	metrics *metrics
 }
 
-func NewDiskDataPackageStore(dir string, disabled bool) (*DiskDataPackageStore, error) {
+func NewDiskDataPackageStore(dir string, disabled bool, metrics *metrics) (*DiskDataPackageStore, error) {
 	if !disabled {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("creating datapackage dir: %w", err)
@@ -29,11 +30,27 @@ func NewDiskDataPackageStore(dir string, disabled bool) (*DiskDataPackageStore, 
 	if err != nil {
 		return nil, err
 	}
-	return &DiskDataPackageStore{dir: dir, decoder: dec}, nil
+	return &DiskDataPackageStore{dir: dir, decoder: dec, metrics: metrics}, nil
 }
 
 func (d *DiskDataPackageStore) path(checksum string) string {
 	return filepath.Join(d.dir, checksum+".zst")
+}
+
+func (d *DiskDataPackageStore) SavedCount() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	entries, err := os.ReadDir(d.dir)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".zst" {
+			count++
+		}
+	}
+	return count
 }
 
 func (d *DiskDataPackageStore) Has(checksum string) bool {
@@ -59,6 +76,9 @@ func (d *DiskDataPackageStore) WriteIfAbsent(checksum string, data []byte, encod
 	}
 	if err := os.Rename(tmp, d.path(checksum)); err != nil {
 		return false, err
+	}
+	if d.metrics != nil {
+		d.metrics.totalDatapackages.Inc()
 	}
 	return true, nil
 }
@@ -101,14 +121,16 @@ type cachedGameDataPackage struct {
 
 type GlobalDataPackageCache struct {
 	mu         sync.RWMutex
+	metrics    *metrics
 	byChecksum map[string]*cachedDataPackage
 	byGameKey  map[string]*cachedGameDataPackage
 }
 
-func newGlobalDataPackageCache() *GlobalDataPackageCache {
+func newGlobalDataPackageCache(metrics *metrics) *GlobalDataPackageCache {
 	return &GlobalDataPackageCache{
 		byChecksum: make(map[string]*cachedDataPackage),
 		byGameKey:  make(map[string]*cachedGameDataPackage),
+		metrics:    metrics,
 	}
 }
 
@@ -245,6 +267,9 @@ func (c *GlobalDataPackageCache) GetOrAdd(checksum, game string, diskStorage *Di
 			locationNameToID: gd.LocationNameToID,
 		}
 		c.byChecksum[checksum] = datapackage
+		if c.metrics != nil {
+			c.metrics.cachedDatapackages.Inc()
+		}
 	}
 	datapackage.refCount++
 
@@ -343,6 +368,9 @@ func (c *GlobalDataPackageCache) Release(gameKeys []string) {
 			wrapper.datapackage.refCount--
 			if wrapper.datapackage.refCount <= 0 {
 				delete(c.byChecksum, wrapper.checksum)
+				if c.metrics != nil {
+					c.metrics.cachedDatapackages.Dec()
+				}
 			}
 		}
 	}
