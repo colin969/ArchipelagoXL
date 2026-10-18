@@ -510,7 +510,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 
 	ts := TeamSlot{0, 1}
 	game := room.apx.state.SlotInfo[ts].Game
-	missing := room.apx.state.Checks.GetMissing(ts)
+	missing := findNonHintedLocations(room, ts)
 
 	cost := room.apx.state.GetSlotHintCost(ts)
 	locationCheckPoints := room.apx.state.ServerOptions.locationCheckPoints
@@ -538,7 +538,7 @@ func TestClient_Cmd_HintLocation(t *testing.T) {
 	pointsBeforeUnfound := room.apx.state.GetSlotRemainingPoints(ts)
 
 	// Hint missing loc, spends points
-	missing = room.apx.state.Checks.GetMissing(ts)
+	missing = findNonHintedLocations(room, ts)
 	unfoundLocName, ok = room.apx.datapackages.LocationIDToName[game][missing[0]]
 	unfoundLocId := missing[0]
 	require.True(t, ok)
@@ -1068,4 +1068,25 @@ func TestClient_AdminLogin_Release(t *testing.T) {
 	reader.discardFor(200 * time.Millisecond)
 	missingAfter := room.apx.state.Checks.GetMissing(ts)
 	assert.Empty(t, missingAfter, "all locations should be checked after admin release")
+}
+
+func hintedLocSet(room *HostedRoom, ts TeamSlot) map[int64]struct{} {
+	set := make(map[int64]struct{})
+	for _, h := range room.apx.state.Hints.GetSlotHints(ts) {
+		set[h.Location] = struct{}{}
+	}
+	return set
+}
+
+// Get non-hinted loc from a set
+func findNonHintedLocations(room *HostedRoom, ts TeamSlot) []int64 {
+	hinted := hintedLocSet(room, ts)
+	all := room.apx.state.Checks.GetMissing(ts)
+	out := make([]int64, 0, len(all))
+	for _, locID := range all {
+		if _, ok := hinted[locID]; !ok {
+			out = append(out, locID)
+		}
+	}
+	return out
 }

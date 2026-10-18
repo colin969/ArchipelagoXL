@@ -251,18 +251,18 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	// Store bidirectionally
 	hint, allowed := s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, client, cost, points)
 	if allowed {
+		// Send own clients hint points update
+		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
+		clients := s.connections.GetSlotClients(teamSlot)
+
+		err = enqueueMessage([]any{RoomUpdateMessage{
+			HintPoints: &newPoints,
+		}}, clients...)
+		if err != nil {
+			return err
+		}
+
 		s.broadcastPrintJson([]PrintJsonMessage{formatHintMessage(hint)})
-	}
-
-	// Send own clients hint points update
-	newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
-	clients := s.connections.GetSlotClients(teamSlot)
-
-	err = enqueueMessage([]any{RoomUpdateMessage{
-		HintPoints: &newPoints,
-	}}, clients...)
-	if err != nil {
-		return err
 	}
 
 	return nil
@@ -300,16 +300,6 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 	}
 
 	if len(newHints) > 0 {
-		// Notify listeners of change
-		affectedSlots := make(map[TeamSlot]struct{})
-		for _, hint := range newHints {
-			affectedSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
-			if hint.ReceivingPlayer != hint.FindingPlayer {
-				affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
-			}
-		}
-		s.notifyHintsChanged(affectedSlots)
-
 		// Send own clients hint points update
 		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
 		clients := s.connections.GetSlotClients(teamSlot)
@@ -320,6 +310,16 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 		if err != nil {
 			return err
 		}
+
+		// Notify listeners of change
+		affectedSlots := make(map[TeamSlot]struct{})
+		for _, hint := range newHints {
+			affectedSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
+			if hint.ReceivingPlayer != hint.FindingPlayer {
+				affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
+			}
+		}
+		s.notifyHintsChanged(affectedSlots)
 	}
 
 	var msgs []PrintJsonMessage
