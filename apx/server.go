@@ -2351,10 +2351,16 @@ type printJsonBatcher struct {
 	flushCh chan struct{}
 }
 
+const (
+	printJsonBatcherMinCap   = 5
+	printJsonBatcherMaxSend  = 50
+	printJsonBatcherInterval = 100 * time.Millisecond
+)
+
 func newPrintJsonBatcher(ctx context.Context, room *ApxRoom) *printJsonBatcher {
 	b := &printJsonBatcher{
 		room:    room,
-		buf:     make([]PrintJsonMessage, 0, 50),
+		buf:     make([]PrintJsonMessage, 0, printJsonBatcherMinCap),
 		flushCh: make(chan struct{}, 1),
 	}
 	go b.run(ctx)
@@ -2364,7 +2370,7 @@ func newPrintJsonBatcher(ctx context.Context, room *ApxRoom) *printJsonBatcher {
 func (b *printJsonBatcher) Add(msgs []PrintJsonMessage) {
 	b.mu.Lock()
 	b.buf = append(b.buf, msgs...)
-	shouldFlush := len(b.buf) >= 50
+	shouldFlush := len(b.buf) >= printJsonBatcherMaxSend
 	b.mu.Unlock()
 
 	if shouldFlush {
@@ -2381,20 +2387,45 @@ func (b *printJsonBatcher) flush() {
 		b.mu.Unlock()
 		return
 	}
-	msgs := b.buf
-	b.buf = make([]PrintJsonMessage, 0, 50)
+
+	// Broadcast in max batches of printJsonBatcherMaxSend messages
+	// Bunch of awkward logic to try and keep buffer sizes under control whilst keeping reallocations down
+	n := min(len(b.buf), printJsonBatcherMaxSend)
+	msgs := make([]PrintJsonMessage, n)
+	copy(msgs, b.buf[:n])
+	b.buf = b.buf[n:]
+	if len(b.buf) == 0 {
+		if cap(b.buf) > printJsonBatcherMinCap {
+			b.buf = make([]PrintJsonMessage, 0, printJsonBatcherMinCap)
+		}
+	} else if cap(b.buf) > printJsonBatcherMaxSend && len(b.buf) < cap(b.buf)/4 {
+		// Burst array is much larger than current use, shrink it so contiuous small use doesn't keep the buffer too large
+		trimmed := make([]PrintJsonMessage, len(b.buf), max(len(b.buf), printJsonBatcherMaxSend))
+		copy(trimmed, b.buf)
+		b.buf = trimmed
+	}
 	b.mu.Unlock()
 
 	b.room.broadcastPrintJsonDirect(msgs)
+
+	// If there's still data, signal another flush
+	b.mu.Lock()
+	remaining := len(b.buf)
+	b.mu.Unlock()
+	if remaining > 0 {
+		select {
+		case b.flushCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (b *printJsonBatcher) run(ctx context.Context) {
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(printJsonBatcherInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			b.flush()
 			return
 		case <-ticker.C:
 			b.flush()
@@ -2601,9 +2632,6 @@ func (s *ApxRoom) GetSlotData(ts TeamSlot) ([]byte, error) {
 	}
 
 	path, err := safePathFromJoin(s.lobbyRoomId, s.config.SlotDataStoragePath)
-	if err != nil {
-		return nil, err
-	}
 	if err != nil {
 		return nil, err
 	}

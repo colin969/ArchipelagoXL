@@ -307,6 +307,16 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	// Webhost compatible APIs
 	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}", srv.handleRoomWebhostApiTracker).Methods(http.MethodGet)
+	// /tracker/.../overview
+	// /tracker/.../slot/...
+	// /tracker/.../slot/.../overview
+	// /tracker/.../slot/.../items
+	// /tracker/.../slot/.../checks
+	// /tracker/.../slot/.../hints
+	// /tracker/.../slot/.../datastorage
+	// /tracker/.../checks
+	// /tracker/.../hints
+	// /tracker/.../datastorage
 	api.HandleFunc("/slot_data_tracker/{roomId}", srv.handleRoomWebhostApiTrackerSlotData).Methods(http.MethodGet)
 	api.HandleFunc("/datapackage/{checksum}", srv.handleDatapackageByChecksum).Methods(http.MethodGet)
 	if !cfg.StandaloneMode {

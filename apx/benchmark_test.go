@@ -186,7 +186,7 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 		res := roomResult{kind: spec.kind}
 
 		if spec.idle {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			runtime.GC()
 			var heapAfter runtime.MemStats
 			runtime.ReadMemStats(&heapAfter)
@@ -289,8 +289,8 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 		results = append(results, res)
 	}
 
-	// Allow everything to settle
-	time.Sleep(100 * time.Millisecond)
+	// Allow everything to settle, especially the XL room flush buffers for 300k+ releases
+	time.Sleep(3000 * time.Millisecond)
 
 	runtime.GC()
 	runtime.GC()
