@@ -2532,7 +2532,13 @@ func (s *ApxRoom) GetSlotData(ts TeamSlot) ([]byte, error) {
 		return decoder.DecodeAll(compressed, nil)
 	}
 
-	path := fmt.Sprintf("%s/%s.zst", s.config.SlotDataStoragePath, s.lobbyRoomId)
+	path, err := safePathFromJoin(s.lobbyRoomId, s.config.SlotDataStoragePath)
+	if err != nil {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {

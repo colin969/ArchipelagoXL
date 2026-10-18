@@ -4,6 +4,7 @@ import (
 	"apx/multidata"
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -54,6 +55,16 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 		}
 
 		uploadReq := uploadRoomRequestFromForm(r)
+		if uploadReq.LobbyRoomId == "" {
+			uploadReq.LobbyRoomId = randomId(24)
+		}
+
+		if !isValidLobbyRoomId(uploadReq.LobbyRoomId) {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+			return
+		}
+
 		data.FormValues = uploadReq
 
 		file, header, err := r.FormFile("file")
@@ -94,9 +105,6 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 		}
 
 		lobbyRoomId := uploadReq.LobbyRoomId
-		if lobbyRoomId == "" {
-			lobbyRoomId = randomId(24)
-		}
 
 		_, err = rm.startRoomFromMultiData(lobbyRoomId, md, nil, nil,
 			uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)

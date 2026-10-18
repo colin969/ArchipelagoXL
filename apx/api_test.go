@@ -399,6 +399,61 @@ func TestHandleDatapackageByChecksum(t *testing.T) {
 	})
 }
 
+func TestLobbyRoomIdValidation(t *testing.T) {
+	cases := []struct {
+		name        string
+		lobbyRoomId string
+		wantErr     bool
+	}{
+		{"valid alphanumeric", "abc123", false},
+		{"valid with hyphens", "my-room-id", false},
+		{"valid random id style", "a1b2c3d4e5f6g7h8i9j0k1l2", false},
+		{"empty string", "", true},
+		{"path traversal dotdot", "../../etc/passwd", true},
+		{"path traversal with slash", "foo/bar", true},
+		{"backslash", `foo\bar`, true},
+		{"null byte", "foo\x00bar", true},
+		{"spaces", "foo bar", true},
+		{"leading dot", ".hidden", true},
+		{"just dots", "..", true},
+		{"unicode letter", "rôom", true}, // unicode.IsLetter is true but non-ASCII — decide if you want this
+	}
+
+	storagePath := t.TempDir()
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := safePathFromJoin(tc.lobbyRoomId, storagePath)
+			if tc.wantErr && err == nil {
+				t.Errorf("expected error for %q, got nil", tc.lobbyRoomId)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error for %q: %v", tc.lobbyRoomId, err)
+			}
+		})
+	}
+}
+
+func TestLobbyRoomIdValidationPathStaysInStorage(t *testing.T) {
+	storagePath := t.TempDir()
+
+	validIds := []string{"abc123", "my-room", "a1b2c3d4e5f6g7h8i9j0k1l2"}
+	for _, id := range validIds {
+		t.Run(id, func(t *testing.T) {
+			resolved, err := safePathFromJoin(id, storagePath)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !strings.HasPrefix(resolved, storagePath) {
+				t.Errorf("resolved path %q escapes storage path %q", resolved, storagePath)
+			}
+			if !strings.HasSuffix(resolved, ".zst") {
+				t.Errorf("resolved path %q missing .zst suffix", resolved)
+			}
+		})
+	}
+}
+
 func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 	const (
 		numSlots       = 2500

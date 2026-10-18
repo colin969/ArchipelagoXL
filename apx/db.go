@@ -584,6 +584,18 @@ func (s *RoomStore) RemoveDataPackageRefs(lobbyRoomId string, checksums []string
 	return orphaned, rows.Err()
 }
 
+func (s *RoomStore) LobbyRoomIdExists(lobbyRoomId string) (bool, error) {
+	if !s.enabled {
+		return false, nil
+	}
+	var exists bool
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM rooms WHERE lobby_room_id = $1)`,
+		lobbyRoomId,
+	).Scan(&exists)
+	return exists, err
+}
+
 func marshalDefinition(def *RoomDefinition) ([]byte, error) {
 	raw, err := json.Marshal(def)
 	if err != nil {

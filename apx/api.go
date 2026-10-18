@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -316,6 +317,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	}
 	roomAdmin := api.PathPrefix("/room/{roomId}").Subrouter()
 	roomAdmin.Use(srv.authMiddleware)
+	roomAdmin.Use(srv.validateRoomIdMiddleware)
 	if !cfg.StandaloneMode {
 		roomAdmin.HandleFunc("/", srv.handleRoomDelete).Methods(http.MethodDelete)
 		roomAdmin.HandleFunc("/start", srv.handleRoomStart).Methods(http.MethodPost)
@@ -530,7 +532,10 @@ func (rm *RoomManager) saveSlotDataToDisk(lobbyRoomId string, md *multidata.Mult
 	}
 	defer encoder.Close()
 
-	path := fmt.Sprintf("%s/%s.zst", rm.config.SlotDataStoragePath, lobbyRoomId)
+	path, err := safePathFromJoin(lobbyRoomId, rm.config.SlotDataStoragePath)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
@@ -589,6 +594,28 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	uploadReq := uploadRoomRequestFromForm(r)
 
+	if uploadReq.LobbyRoomId == "" {
+		uploadReq.LobbyRoomId = randomId(24)
+	}
+
+	if !isValidLobbyRoomId(uploadReq.LobbyRoomId) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return
+	}
+
+	exists, err := rm.store.LobbyRoomIdExists(uploadReq.LobbyRoomId)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to check room id"})
+		return
+	}
+	if exists {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby_room_id already in use"})
+		return
+	}
+
 	// 100mb, kinda big, needed for the stupidly large rooms. Maybe add extra auth on a frontend if you want to contain it.
 	if err := r.ParseMultipartForm(maxUploadLimit); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -634,10 +661,14 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	lobbyRoomId := uploadReq.LobbyRoomId
-	if lobbyRoomId == "" {
-		lobbyRoomId = randomId(24)
+	err = validateDataPackageChecksums(md)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid multidata: %v", err)})
+		return
 	}
+
+	lobbyRoomId := uploadReq.LobbyRoomId
 
 	room, err := rm.startRoomFromMultiData(lobbyRoomId, md, nil, nil,
 		uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
@@ -673,6 +704,12 @@ func randomId(n int) string {
 func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+
+	if !isValidLobbyRoomId(roomId) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -865,6 +902,12 @@ func (rm *RoomManager) handleRoomPlayers(w http.ResponseWriter, r *http.Request)
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
 
+	if !isValidLobbyRoomId(roomId) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	room, ok := rm.registry.Get(roomId)
@@ -894,6 +937,12 @@ type WebhostApiRoomStatusResponse struct {
 func (rm *RoomManager) handleRoomWebhostApiStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+
+	if !isValidLobbyRoomId(roomId) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -1039,6 +1088,12 @@ func (rm *RoomManager) handleRoomWebhostApiTracker(w http.ResponseWriter, r *htt
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
 
+	if !isValidLobbyRoomId(roomId) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	room, ok := rm.registry.Get(roomId)
@@ -1174,6 +1229,12 @@ type TrackerSlotData struct {
 func (rm *RoomManager) handleRoomWebhostApiTrackerSlotData(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+
+	if !isValidLobbyRoomId(roomId) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -1592,6 +1653,19 @@ func (rm *RoomManager) authMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (rm *RoomManager) validateRoomIdMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		roomId := mux.Vars(r)["roomId"]
+		if !isValidLobbyRoomId(roomId) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -2527,4 +2601,47 @@ func newZstdEncoder() (*zstd.Encoder, error) {
 		return nil, err
 	}
 	return enc, nil
+}
+
+func isValidLobbyRoomId(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func safePathFromJoin(lobbyRoomId string, storagePath string) (string, error) {
+	if !isValidLobbyRoomId(lobbyRoomId) {
+		return "", fmt.Errorf("invalid lobby_room_id: %q", lobbyRoomId)
+	}
+	resolved, err := filepath.Abs(filepath.Join(storagePath, lobbyRoomId+".zst"))
+	if err != nil {
+		return "", err
+	}
+	base, err := filepath.Abs(storagePath)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(resolved, base+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path traversal detected")
+	}
+	return resolved, nil
+}
+
+func validateDataPackageChecksums(md *multidata.MultiData) error {
+	for game, dp := range md.DataPackage {
+		sum, err := dp.ComputeChecksum()
+		if err != nil {
+			return fmt.Errorf("game %q: failed to compute checksum: %w", game, err)
+		}
+		if sum != dp.Checksum {
+			return fmt.Errorf("game %q: checksum mismatch: got %s, expected %s", game, sum, dp.Checksum)
+		}
+	}
+	return nil
 }

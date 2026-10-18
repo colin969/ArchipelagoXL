@@ -4,9 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/zlib"
+	"crypto/sha1"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/nlpodyssey/gopickle/pickle"
@@ -221,6 +225,83 @@ type GamesPackage struct {
 	LocationNameGroups map[string][]string
 	LocationNameToID   map[string]int
 	Checksum           string
+}
+
+func (gp *GamesPackage) ComputeChecksum() (string, error) {
+	data := map[string]any{
+		"item_name_groups":     gp.ItemNameGroups,
+		"item_name_to_id":      gp.ItemNameToID,
+		"location_name_groups": gp.LocationNameGroups,
+		"location_name_to_id":  gp.LocationNameToID,
+	}
+	b, err := marshalSorted(data)
+	if err != nil {
+		return "", err
+	}
+	sum := sha1.Sum(b)
+	return fmt.Sprintf("%x", sum), nil
+}
+
+func marshalSorted(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := encodeSorted(&buf, reflect.ValueOf(v)); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func encodeSorted(buf *bytes.Buffer, v reflect.Value) error {
+	switch v.Kind() {
+	case reflect.Map:
+		keys := make([]string, 0, v.Len())
+		for _, k := range v.MapKeys() {
+			keys = append(keys, k.String())
+		}
+		sort.Strings(keys)
+		buf.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			keyBytes, err := json.Marshal(k)
+			if err != nil {
+				return err
+			}
+			buf.Write(keyBytes)
+			buf.WriteByte(':')
+			if err := encodeSorted(buf, v.MapIndex(reflect.ValueOf(k))); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+
+	case reflect.Slice:
+		buf.WriteByte('[')
+		for i := 0; i < v.Len(); i++ {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := encodeSorted(buf, v.Index(i)); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+
+	case reflect.Interface, reflect.Ptr:
+		if v.IsNil() {
+			buf.WriteString("null")
+			return nil
+		}
+		return encodeSorted(buf, v.Elem())
+
+	default:
+		b, err := json.Marshal(v.Interface())
+		if err != nil {
+			return err
+		}
+		buf.Write(b)
+	}
+	return nil
 }
 
 type MultiData struct {
