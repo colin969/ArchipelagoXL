@@ -1540,6 +1540,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		},
 		standaloneSlotData: standaloneSlotData,
 	}
+	apx.printJsonBatcher = newPrintJsonBatcher(ctx, apx)
 	apx.chatCommandRouter = newCommandRouter(apx)
 	apx.buildRoomInfoFromState()
 	apx.populateReadData()

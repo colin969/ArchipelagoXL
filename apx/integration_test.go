@@ -350,7 +350,7 @@ func TestClient_Say_NoText(t *testing.T) {
 	assert.Contains(t, string(raw), "hello world")
 
 	// Expect no read on NoText client
-	reader2.assertNoCmdWithin("PrintJSON", 300*time.Millisecond, t)
+	reader2.assertNoCmdWithin("PrintJSON", 500*time.Millisecond, t)
 }
 
 func TestClient_Say_TextConcernsSelf(t *testing.T) {
@@ -405,7 +405,7 @@ func TestClient_Say_TextConcernsSelf(t *testing.T) {
 
 	// Slot 2 (TextConcernsSelf) should not receive a chat from slot 1
 	// since Chat has no Receiving or Item.Player matching slot 2
-	reader2.assertNoCmdWithin("PrintJSON", 300*time.Millisecond, t)
+	reader2.assertNoCmdWithin("PrintJSON", 500*time.Millisecond, t)
 }
 
 func TestClient_CreateHints_OwnLocation(t *testing.T) {

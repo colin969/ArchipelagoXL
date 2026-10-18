@@ -1120,11 +1120,10 @@ func TestBroadcastPrintJson(t *testing.T) {
 
 	makeRoom := func(t *testing.T) (*ApxRoom, func(slot int, tags []string) (<-chan []byte, *RegisteredClient)) {
 		t.Helper()
-		reg := newConnectionRegistry(nil, nil)
-		room := &ApxRoom{connections: reg}
+		room := newTestRoom(t)
 
 		newReceiver := func(slot int, tags []string) (<-chan []byte, *RegisteredClient) {
-			rc, received := newClientWithQueue(t, slot, game, tags, reg)
+			rc, received := newClientWithQueue(t, slot, game, tags, room.connections)
 			return received, rc
 		}
 
@@ -1339,9 +1338,13 @@ func BenchmarkBroadcastPrintJson(b *testing.B) {
 	)
 
 	// Build a minimal ApxRoom with fake connections
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	room := &ApxRoom{
 		connections: newConnectionRegistry(nil, nil),
 	}
+	room.printJsonBatcher = newPrintJsonBatcher(ctx, room)
 
 	// Register fake self-only clients across slots
 	for slot := 1; slot <= slotCount; slot++ {
@@ -1417,4 +1420,15 @@ func newClientWithQueue(t *testing.T, slot int, game string, tags []string, reg 
 		reg.Register(slot, rc, game, tags)
 	}
 	return rc, received
+}
+
+func newTestRoom(t *testing.T) *ApxRoom {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	reg := newConnectionRegistry(nil, nil)
+	room := &ApxRoom{connections: reg}
+	room.printJsonBatcher = newPrintJsonBatcher(ctx, room)
+	return room
 }

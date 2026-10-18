@@ -152,8 +152,8 @@ func run() error {
 	var stats Stats
 	startStatsPrinter(ctx, &stats, len(slots))
 
-	// Try and ramp up clients slowly over 3 minutes
-	connLimiter := rate.NewLimiter(rate.Limit(cfg.Concurrency/60), 1)
+	// Try and ramp up clients slowly over 20 seconds
+	connLimiter := rate.NewLimiter(rate.Limit(cfg.Concurrency/120), 1)
 	sem := make(chan struct{}, cfg.Concurrency)
 	var wg sync.WaitGroup
 
@@ -524,8 +524,8 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 			case <-time.After(time.Duration(rand.Int63n(int64(5 * time.Second)))):
 			}
 
-			// Generate up to 200 keys, up to 5KB total
-			const maxKeys = 200
+			// Generate up to 250 keys, up to 5KB total
+			const maxKeys = 250
 			const maxTotalBytes = 5 * 1024
 
 			type keyType int
@@ -570,6 +570,29 @@ func runTrackerClient(ctx context.Context, cfg *Config, slotEntry SlotEntry, sta
 				}
 				keys = append(keys, km)
 				totalBytes += valSize
+			}
+
+			// After keys are generated, initialize them all on the server
+			for _, km := range keys {
+				var initVal any
+				if km.keyType == keyTypeString {
+					initVal = km.value
+				} else {
+					initVal = 0
+				}
+				msg := map[string]any{
+					"cmd":        "Set",
+					"key":        km.key,
+					"default":    initVal,
+					"want_reply": false,
+					"operations": []map[string]any{
+						{"operation": "default", "value": initVal},
+					},
+				}
+				if err := wsjson.Write(ctx, conn, []any{msg}); err != nil {
+					storageErr <- fmt.Errorf("initializing storage key %s: %w", km.key, err)
+					return
+				}
 			}
 
 			ticker := time.NewTicker(time.Second)

@@ -209,6 +209,7 @@ type ApxRoom struct {
 	logDeath           func(slotId int)
 	ipLimiter          *IPRateLimiter
 	chatCommandRouter  *chatCommandRouter
+	printJsonBatcher   *printJsonBatcher
 	lobbyRoomId        string
 	perSlotPasswords   bool
 	standaloneSlotData []byte
@@ -2343,7 +2344,74 @@ func (s *ApxRoom) handleSetNotify(ctx context.Context, connState *connectionStat
 	return nil
 }
 
+type printJsonBatcher struct {
+	room    *ApxRoom
+	mu      sync.Mutex
+	buf     []PrintJsonMessage
+	flushCh chan struct{}
+}
+
+func newPrintJsonBatcher(ctx context.Context, room *ApxRoom) *printJsonBatcher {
+	b := &printJsonBatcher{
+		room:    room,
+		buf:     make([]PrintJsonMessage, 0, 50),
+		flushCh: make(chan struct{}, 1),
+	}
+	go b.run(ctx)
+	return b
+}
+
+func (b *printJsonBatcher) Add(msgs []PrintJsonMessage) {
+	b.mu.Lock()
+	b.buf = append(b.buf, msgs...)
+	shouldFlush := len(b.buf) >= 50
+	b.mu.Unlock()
+
+	if shouldFlush {
+		select {
+		case b.flushCh <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (b *printJsonBatcher) flush() {
+	b.mu.Lock()
+	if len(b.buf) == 0 {
+		b.mu.Unlock()
+		return
+	}
+	msgs := b.buf
+	b.buf = make([]PrintJsonMessage, 0, 50)
+	b.mu.Unlock()
+
+	b.room.broadcastPrintJsonDirect(msgs)
+}
+
+func (b *printJsonBatcher) run(ctx context.Context) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			b.flush()
+			return
+		case <-ticker.C:
+			b.flush()
+		case <-b.flushCh:
+			b.flush()
+		}
+	}
+}
+
 func (s *ApxRoom) broadcastPrintJson(msgs []PrintJsonMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+	s.printJsonBatcher.Add(msgs)
+}
+
+func (s *ApxRoom) broadcastPrintJsonDirect(msgs []PrintJsonMessage) {
 	if len(msgs) == 0 {
 		return
 	}

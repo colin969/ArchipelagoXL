@@ -16,6 +16,7 @@ func newTestStorage() *DataStorage {
 		data:            make(map[string]*StorageEntry),
 		keyCount:        make(map[TeamSlot]int),
 		readData:        make(map[string]func() StorageValue),
+		slotBytes:       make(map[TeamSlot]int),
 		notifiedClients: make(map[string][]*RegisteredClient),
 	}
 }
@@ -180,61 +181,114 @@ func TestDataStorage(t *testing.T) {
 		})
 	})
 
-	// t.Run("SlotSize", func(t *testing.T) {
-	// 	t.Run("NewKey_DeniedWhenSizeExceeded", func(t *testing.T) {
-	// 		ds := newTestStorage()
-	// 		// Fill up to just under the limit with a large string value
-	// 		bigVal := strings.Repeat("x", maxSlotSize-10)
-	// 		_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
-	// 		require.NoError(t, err)
+	t.Run("SlotSize", func(t *testing.T) {
+		t.Run("NewKey_DeniedWhenSizeExceeded", func(t *testing.T) {
+			ds := newDataStorage()
+			bigVal := strings.Repeat("x", maxSlotSize-10)
+			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil)
+			require.NoError(t, err)
 
-	// 		// Next key should be denied — key name + value would exceed limit
-	// 		_, _, err = ds.Set(testSlot, "overflow", "hello", nil, 0, nil, nil)
-	// 		assert.ErrorContains(t, err, "storage size quota exceeded")
-	// 	})
+			_, _, err = ds.Set(testSlot, "overflow", "hello", nil, 0, nil)
+			assert.ErrorContains(t, err, "storage size quota exceeded")
+		})
 
-	// 	t.Run("NewWriter_DeniedWhenSizeExceeded", func(t *testing.T) {
-	// 		ds := newTestStorage()
-	// 		slot2 := TeamSlot{Team: 0, Slot: 2}
+		t.Run("NewWriter_DeniedWhenSizeExceeded", func(t *testing.T) {
+			ds := newDataStorage()
+			slot2 := TeamSlot{Team: 0, Slot: 2}
 
-	// 		// slot2 fills up their own quota
-	// 		bigVal := strings.Repeat("x", maxSlotSize-10)
-	// 		_, _, err := ds.Set(slot2, "slot2key", bigVal, nil, 0, nil, nil)
-	// 		require.NoError(t, err)
+			bigVal := strings.Repeat("x", maxSlotSize-10)
+			_, _, err := ds.Set(slot2, "slot2key", bigVal, nil, 0, nil)
+			require.NoError(t, err)
 
-	// 		// testSlot creates a large key
-	// 		_, _, err = ds.Set(testSlot, "sharedkey", strings.Repeat("y", 100), nil, 0, nil, nil)
-	// 		require.NoError(t, err)
+			_, _, err = ds.Set(testSlot, "sharedkey", strings.Repeat("y", 100), nil, 0, nil)
+			require.NoError(t, err)
 
-	// 		// slot2 tries to touch testSlot's key — would push them over limit
-	// 		_, _, err = ds.Set(slot2, "sharedkey", nil, nil, 0, nil, nil)
-	// 		assert.ErrorContains(t, err, "storage size quota exceeded")
-	// 	})
+			// slot2 tries to touch testSlot's key — would push them over limit
+			_, _, err = ds.Set(slot2, "sharedkey", nil, nil, 0, nil)
+			assert.ErrorContains(t, err, "storage size quota exceeded")
+		})
 
-	// 	t.Run("SizeNotSharedBetweenSlots", func(t *testing.T) {
-	// 		ds := newTestStorage()
-	// 		slot2 := TeamSlot{Team: 0, Slot: 2}
+		t.Run("SizeNotSharedBetweenSlots", func(t *testing.T) {
+			ds := newDataStorage()
+			slot2 := TeamSlot{Team: 0, Slot: 2}
 
-	// 		bigVal := strings.Repeat("x", maxSlotSize-10)
-	// 		_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil, nil)
-	// 		require.NoError(t, err)
+			bigVal := strings.Repeat("x", maxSlotSize-10)
+			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil)
+			require.NoError(t, err)
 
-	// 		// slot2 should be unaffected by testSlot's usage
-	// 		_, _, err = ds.Set(slot2, "slot2key", "small", nil, 0, nil, nil)
-	// 		assert.NoError(t, err)
-	// 	})
+			_, _, err = ds.Set(slot2, "slot2key", "small", nil, 0, nil)
+			assert.NoError(t, err)
+		})
 
-	// 	t.Run("KeyNameCountsTowardSize", func(t *testing.T) {
-	// 		ds := newTestStorage()
-	// 		// value is tiny but key name pushes it over
-	// 		bigKey := strings.Repeat("k", maxSlotSize-3)
-	// 		_, _, err := ds.Set(testSlot, bigKey, int64(0), nil, 0, nil, nil)
-	// 		require.NoError(t, err)
+		t.Run("KeyNameCountsTowardSize", func(t *testing.T) {
+			ds := newDataStorage()
+			bigKey := strings.Repeat("k", maxSlotSize-8)
+			_, _, err := ds.Set(testSlot, bigKey, int64(0), nil, 0, nil)
+			require.NoError(t, err)
 
-	// 		_, _, err = ds.Set(testSlot, "overflow", int64(0), nil, 0, nil, nil)
-	// 		assert.ErrorContains(t, err, "storage size quota exceeded")
-	// 	})
-	// })
+			_, _, err = ds.Set(testSlot, "overflow", int64(0), nil, 0, nil)
+			assert.ErrorContains(t, err, "storage size quota exceeded")
+		})
+
+		t.Run("GrowthDeniedForWriter", func(t *testing.T) {
+			ds := newDataStorage()
+			// Fill close to limit
+			bigVal := strings.Repeat("x", maxSlotSize-20)
+			_, _, err := ds.Set(testSlot, "key", bigVal, nil, 0, nil)
+			require.NoError(t, err)
+
+			// Attempt to grow beyond limit
+			_, _, err = ds.Set(testSlot, "key", nil, []DataStorageOperation{
+				{Operation: "replace", Value: strings.Repeat("y", maxSlotSize)},
+			}, 0, nil)
+			assert.ErrorContains(t, err, "storage size quota exceeded")
+		})
+
+		t.Run("MultiWriter_DeltaAppliedToAll", func(t *testing.T) {
+			// slot1 writes small, slot2 writes big, slot1 writes small again
+			// slot2's slotBytes should reflect the shrink
+			ds := newDataStorage()
+			slot2 := TeamSlot{Team: 0, Slot: 2}
+
+			// slot1 creates key with small value
+			_, _, err := ds.Set(testSlot, "shared", strings.Repeat("a", 100), nil, 0, nil)
+			require.NoError(t, err)
+
+			// slot2 joins and grows the value significantly
+			_, _, err = ds.Set(slot2, "shared", nil, []DataStorageOperation{
+				{Operation: "replace", Value: strings.Repeat("b", 1000)},
+			}, 0, nil)
+			require.NoError(t, err)
+
+			// slot1 shrinks it back down
+			_, _, err = ds.Set(testSlot, "shared", nil, []DataStorageOperation{
+				{Operation: "replace", Value: strings.Repeat("c", 10)},
+			}, 0, nil)
+			require.NoError(t, err)
+
+			// slot2 should now have headroom again — fill close to limit with a new key
+			bigVal := strings.Repeat("x", maxSlotSize-200)
+			_, _, err = ds.Set(slot2, "slot2key", bigVal, nil, 0, nil)
+			assert.NoError(t, err, "slot2 should have headroom after shared key shrank")
+		})
+
+		t.Run("GrowthByNonOwner_NotRejectedForOwner", func(t *testing.T) {
+			// slot2 grows a shared key — slot1 (owner) is not the one being checked
+			ds := newDataStorage()
+			slot2 := TeamSlot{Team: 0, Slot: 2}
+
+			_, _, err := ds.Set(testSlot, "shared", strings.Repeat("a", 100), nil, 0, nil)
+			require.NoError(t, err)
+			_, _, err = ds.Set(slot2, "shared", nil, nil, 0, nil)
+			require.NoError(t, err)
+
+			// slot2 grows — only slot2 is checked against quota, not slot1
+			_, _, err = ds.Set(slot2, "shared", nil, []DataStorageOperation{
+				{Operation: "replace", Value: strings.Repeat("b", 500)},
+			}, 0, nil)
+			assert.NoError(t, err)
+		})
+	})
 
 	t.Run("Get", func(t *testing.T) {
 		t.Run("MissingKey", func(t *testing.T) {
