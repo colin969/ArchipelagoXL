@@ -2398,19 +2398,11 @@ func (s *ApxRoom) broadcastPrintJson(msgs []PrintJsonMessage) {
 		}
 		s.connections.mu.RUnlock()
 
-		enqueueMessage(anySlice(batch), fullTargets...)
+		enqueueMessage(batch, fullTargets...)
 		for _, ss := range slotSends {
 			enqueueMessage(ss.msgs, ss.clients...)
 		}
 	}
-}
-
-func anySlice(msgs []PrintJsonMessage) []any {
-	out := make([]any, len(msgs))
-	for i, m := range msgs {
-		out[i] = m
-	}
-	return out
 }
 
 func (dt *debugTap) HasListeners(slotId int) bool {
