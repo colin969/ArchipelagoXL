@@ -308,17 +308,20 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		mgmt.Use(srv.authMiddleware)
 		mgmt.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
 		mgmt.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
-		mgmt.HandleFunc("/room/{roomId}", srv.handleRoomDelete).Methods(http.MethodDelete)
-		mgmt.HandleFunc("/room/{roomId}/start", srv.handleRoomStart).Methods(http.MethodPost)
-		mgmt.HandleFunc("/room/{roomId}/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	}
-	roomAdmin := api.PathPrefix("/{roomId}").Subrouter()
+	roomAdmin := api.PathPrefix("/room/{roomId}").Subrouter()
 	roomAdmin.Use(srv.authMiddleware)
+	if !cfg.StandaloneMode {
+		roomAdmin.HandleFunc("/", srv.handleRoomDelete).Methods(http.MethodDelete)
+		roomAdmin.HandleFunc("/start", srv.handleRoomStart).Methods(http.MethodPost)
+		roomAdmin.HandleFunc("/stop", srv.handleRoomStop).Methods(http.MethodPost)
+	}
 	roomAdmin.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/refresh_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
-	roomAdmin.HandleFunc("/password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/server_password", srv.handleAdminPassword).Methods(http.MethodGet, http.MethodDelete, http.MethodPost)
+	roomAdmin.HandleFunc("/slot_password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/full_feed", srv.handleFullFeed).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/full_feed/{slotId}", roomLoggedHandler(srv.handleFullFeedUser)).Methods(http.MethodPost, http.MethodDelete)
@@ -1580,6 +1583,34 @@ func (rm *RoomManager) handlePasswordRefresh(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	loadPasswordsIntoStore(room.apx.connections, room.apx.passwords, room.apx.state.NameToSlot, slots)
+}
+
+type PasswordRequest struct {
+	Password string `json:"password"`
+}
+
+func (rm *RoomManager) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		var req PasswordRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		room.apx.state.ServerOptions.SetAdminPassword(req.Password)
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodDelete:
+		room.apx.state.ServerOptions.SetAdminPassword("")
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodGet:
+		password := room.apx.state.ServerOptions.GetAdminPassword()
+		json.NewEncoder(w).Encode(PasswordRequest{password})
+	}
 }
 
 func (rm *RoomManager) handlePassword(w http.ResponseWriter, r *http.Request) {
