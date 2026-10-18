@@ -120,6 +120,7 @@ type roomResult struct {
 func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 	b.Helper()
 	b.ReportAllocs()
+	start := time.Now() // add this
 
 	concernsSelfTags := []string{"TextConcernsSelf"}
 
@@ -345,6 +346,7 @@ func benchmarkRoomMemory(b *testing.B, cfg RoomBenchConfig) {
 	b.Logf("Goroutines:           %d", runtime.NumGoroutine())
 	runtime.GC()
 	b.Logf("Total alloc:          %s", formatBytes(allocDelta))
+	b.Logf("Total elapsed:        %s", time.Since(start))
 	b.Logf("--- Per room kind ---")
 	for _, k := range []roomKind{
 		kindSmallIdle, kindSmallActive,

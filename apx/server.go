@@ -209,7 +209,6 @@ type ApxRoom struct {
 	logDeath           func(slotId int)
 	ipLimiter          *IPRateLimiter
 	chatCommandRouter  *chatCommandRouter
-	printJsonBatcher   *printJsonBatcher
 	lobbyRoomId        string
 	perSlotPasswords   bool
 	standaloneSlotData []byte
@@ -2347,148 +2346,62 @@ func (s *ApxRoom) handleSetNotify(ctx context.Context, connState *connectionStat
 	return nil
 }
 
-type printJsonBatcher struct {
-	room    *ApxRoom
-	mu      sync.Mutex
-	buf     []PrintJsonMessage
-	flushCh chan struct{}
-}
-
 const (
-	printJsonBatcherMinCap   = 5
-	printJsonBatcherMaxSend  = 50
-	printJsonBatcherInterval = 100 * time.Millisecond
+	printJsonMaxSend = 50
 )
-
-func newPrintJsonBatcher(ctx context.Context, room *ApxRoom) *printJsonBatcher {
-	b := &printJsonBatcher{
-		room:    room,
-		buf:     make([]PrintJsonMessage, 0, printJsonBatcherMinCap),
-		flushCh: make(chan struct{}, 1),
-	}
-	go b.run(ctx)
-	return b
-}
-
-func (b *printJsonBatcher) Add(msgs []PrintJsonMessage) {
-	b.mu.Lock()
-	b.buf = append(b.buf, msgs...)
-	shouldFlush := len(b.buf) >= printJsonBatcherMaxSend
-	b.mu.Unlock()
-
-	if shouldFlush {
-		select {
-		case b.flushCh <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func (b *printJsonBatcher) flush() {
-	b.mu.Lock()
-	if len(b.buf) == 0 {
-		b.mu.Unlock()
-		return
-	}
-
-	// Broadcast in max batches of printJsonBatcherMaxSend messages
-	// Bunch of awkward logic to try and keep buffer sizes under control whilst keeping reallocations down
-	n := min(len(b.buf), printJsonBatcherMaxSend)
-	msgs := make([]PrintJsonMessage, n)
-	copy(msgs, b.buf[:n])
-	b.buf = b.buf[n:]
-	if len(b.buf) == 0 {
-		if cap(b.buf) > printJsonBatcherMinCap {
-			b.buf = make([]PrintJsonMessage, 0, printJsonBatcherMinCap)
-		}
-	} else if cap(b.buf) > printJsonBatcherMaxSend && len(b.buf) < cap(b.buf)/4 {
-		// Burst array is much larger than current use, shrink it so contiuous small use doesn't keep the buffer too large
-		trimmed := make([]PrintJsonMessage, len(b.buf), max(len(b.buf), printJsonBatcherMaxSend))
-		copy(trimmed, b.buf)
-		b.buf = trimmed
-	}
-	b.mu.Unlock()
-
-	//b.room.broadcastPrintJsonDirect(msgs)
-
-	// If there's still data, signal another flush
-	b.mu.Lock()
-	remaining := len(b.buf)
-	b.mu.Unlock()
-	if remaining > 0 {
-		select {
-		case b.flushCh <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func (b *printJsonBatcher) run(ctx context.Context) {
-	ticker := time.NewTicker(printJsonBatcherInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			b.flush()
-		case <-b.flushCh:
-			b.flush()
-		}
-	}
-}
-
-func (s *ApxRoom) broadcastPrintJsonUnused(msgs []PrintJsonMessage) {
-	if len(msgs) == 0 {
-		return
-	}
-	s.printJsonBatcher.Add(msgs)
-}
 
 func (s *ApxRoom) broadcastPrintJson(msgs []PrintJsonMessage) {
 	if len(msgs) == 0 {
 		return
 	}
 
-	s.connections.mu.RLock()
-	fullTargets := make([]*RegisteredClient, len(s.connections.fullClients))
-	copy(fullTargets, s.connections.fullClients)
-	type slotSend struct {
-		clients []*RegisteredClient
-		msgs    []any
-	}
-	slotSends := make(map[int]*slotSend)
-	for _, msg := range msgs {
-		slots := [2]int{-1, -1}
-		if msg.Receiving != nil {
-			slots[0] = *msg.Receiving
+	for len(msgs) > 0 {
+		batch := msgs
+		if len(batch) > printJsonMaxSend {
+			batch = msgs[:printJsonMaxSend]
 		}
-		if msg.Item != nil && (msg.Receiving == nil || int(msg.Item.Player) != *msg.Receiving) {
-			slots[1] = int(msg.Item.Player)
-		}
-		for _, slot := range slots {
-			if slot < 0 {
-				continue
-			}
-			clients, ok := s.connections.concernsSelfClients[slot]
-			if !ok {
-				continue
-			}
-			ss := slotSends[slot]
-			if ss == nil {
-				c := make([]*RegisteredClient, len(clients))
-				copy(c, clients)
-				ss = &slotSend{clients: c}
-				slotSends[slot] = ss
-			}
-			ss.msgs = append(ss.msgs, msg)
-		}
-	}
-	s.connections.mu.RUnlock()
+		msgs = msgs[len(batch):]
 
-	enqueueMessage(anySlice(msgs), fullTargets...)
-	for _, ss := range slotSends {
-		enqueueMessage(ss.msgs, ss.clients...)
+		s.connections.mu.RLock()
+		fullTargets := make([]*RegisteredClient, len(s.connections.fullClients))
+		copy(fullTargets, s.connections.fullClients)
+		type slotSend struct {
+			clients []*RegisteredClient
+			msgs    []any
+		}
+		slotSends := make(map[int]*slotSend)
+		for _, msg := range batch {
+			slots := [2]int{-1, -1}
+			if msg.Receiving != nil {
+				slots[0] = *msg.Receiving
+			}
+			if msg.Item != nil && (msg.Receiving == nil || int(msg.Item.Player) != *msg.Receiving) {
+				slots[1] = int(msg.Item.Player)
+			}
+			for _, slot := range slots {
+				if slot < 0 {
+					continue
+				}
+				clients, ok := s.connections.concernsSelfClients[slot]
+				if !ok {
+					continue
+				}
+				ss := slotSends[slot]
+				if ss == nil {
+					c := make([]*RegisteredClient, len(clients))
+					copy(c, clients)
+					ss = &slotSend{clients: c}
+					slotSends[slot] = ss
+				}
+				ss.msgs = append(ss.msgs, msg)
+			}
+		}
+		s.connections.mu.RUnlock()
+
+		enqueueMessage(anySlice(batch), fullTargets...)
+		for _, ss := range slotSends {
+			enqueueMessage(ss.msgs, ss.clients...)
+		}
 	}
 }
 
