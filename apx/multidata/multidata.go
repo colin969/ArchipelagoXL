@@ -13,6 +13,10 @@ import (
 	"github.com/nlpodyssey/gopickle/types"
 )
 
+const (
+	maxArchipelagoFileSize = 25 << 20 // 25 MB
+)
+
 type SlotType int
 
 const (
@@ -780,9 +784,12 @@ func ReadArchipelagoFromZip(r *zip.Reader) ([]byte, error) {
 				return nil, fmt.Errorf("open %s in zip: %w", f.Name, err)
 			}
 			defer rc.Close()
-			data, err := io.ReadAll(rc)
+			data, err := io.ReadAll(io.LimitReader(rc, maxArchipelagoFileSize+1))
 			if err != nil {
 				return nil, fmt.Errorf("read %s in zip: %w", f.Name, err)
+			}
+			if int64(len(data)) > maxArchipelagoFileSize {
+				return nil, fmt.Errorf(".archipelago file %s exceeds maximum allowed size", f.Name)
 			}
 			return data, nil
 		}

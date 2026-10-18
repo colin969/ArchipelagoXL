@@ -589,7 +589,8 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	uploadReq := uploadRoomRequestFromForm(r)
 
-	if err := r.ParseMultipartForm(100 << 20); err != nil {
+	// 100mb, kinda big, needed for the stupidly large rooms. Maybe add extra auth on a frontend if you want to contain it.
+	if err := r.ParseMultipartForm(maxUploadLimit); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "failed to parse multipart form"})
 		return
@@ -1301,6 +1302,8 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 
 		room.Close()
 	}
+
+	// TODO: Slot data deletion. Probably a really rare race cond that could prevent deletion?
 
 	record, err := rm.store.FindByLobbyRoomId(roomId)
 	if err != nil {

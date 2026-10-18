@@ -1651,8 +1651,9 @@ type MessageType string
 type Permission int
 
 const (
-	wsReadLimit = 1 << 24 // 16 MB
-	dpReadLimit = 1 << 26 // 64 MB
+	wsReadLimit    = 1 << 24   // 16 MB
+	dpReadLimit    = 1 << 26   // 64 MB
+	maxUploadLimit = 100 << 20 // 100 MB (with patches)
 )
 
 type apxHandler struct {
