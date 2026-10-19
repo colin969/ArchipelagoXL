@@ -3,28 +3,52 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 )
 
-type TrackerSSE struct {
+type wsEnvelope struct {
+	Event string          `json:"event"`
+	Data  json.RawMessage `json:"data"`
+}
+
+func wrapEvent(event string, data []byte) []byte {
+	msg, _ := json.Marshal(wsEnvelope{Event: event, Data: json.RawMessage(data)})
+	return msg
+}
+
+type TrackerWS struct {
 	subscribe   chan chan []byte
 	unsubscribe chan chan []byte
 	dirty       chan TeamSlot
+	interval    time.Duration
 }
 
-func newTrackerSSE() *TrackerSSE {
-	return &TrackerSSE{
+func newTrackerWS(playerCount int) *TrackerWS {
+	interval := 2
+	switch {
+	case playerCount > 300:
+		interval = 10
+	case playerCount > 200:
+		interval = 8
+	case playerCount > 100:
+		interval = 6
+	case playerCount > 50:
+		interval = 4
+	case playerCount > 20:
+		interval = 3
+	}
+	return &TrackerWS{
 		subscribe:   make(chan chan []byte, 16),
 		unsubscribe: make(chan chan []byte, 16),
 		dirty:       make(chan TeamSlot, 256),
+		interval:    time.Duration(interval) * time.Second,
 	}
 }
 
-func (h *TrackerSSE) Run(ctx context.Context, apx *ApxRoom) {
+func (h *TrackerWS) Run(ctx context.Context, apx *ApxRoom) {
 	listeners := make(map[chan []byte]struct{})
 	dirty := make(map[TeamSlot]struct{})
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
 
 	for {
@@ -58,14 +82,14 @@ func (h *TrackerSSE) Run(ctx context.Context, apx *ApxRoom) {
 	}
 }
 
-func (h *TrackerSSE) MarkDirty(ts TeamSlot) {
+func (h *TrackerWS) MarkDirty(ts TeamSlot) {
 	select {
 	case h.dirty <- ts:
 	default:
 	}
 }
 
-func (h *TrackerSSE) buildPatch(apx *ApxRoom, dirty map[TeamSlot]struct{}) []byte {
+func (h *TrackerWS) buildPatch(apx *ApxRoom, dirty map[TeamSlot]struct{}) []byte {
 	state := apx.state
 	activityTimers := state.SlotActivityTimers.GetAll()
 	connectionTimers := state.SlotConnectionTimers.GetAll()
@@ -97,10 +121,10 @@ func (h *TrackerSSE) buildPatch(apx *ApxRoom, dirty map[TeamSlot]struct{}) []byt
 	if err != nil {
 		return nil
 	}
-	return fmt.Appendf(nil, "event: patch\ndata: %s\n\n", data)
+	return wrapEvent("patch", data)
 }
 
-func (h *TrackerSSE) buildSnapshot(apx *ApxRoom) []byte {
+func (h *TrackerWS) buildSnapshot(apx *ApxRoom) []byte {
 	state := apx.state
 	activityTimers := state.SlotActivityTimers.GetAll()
 	connectionTimers := state.SlotConnectionTimers.GetAll()
@@ -128,36 +152,35 @@ func (h *TrackerSSE) buildSnapshot(apx *ApxRoom) []byte {
 		})
 	}
 
-	data, _ := json.Marshal(playerStates)
-	return fmt.Appendf(nil, "event: snapshot\ndata: %s\n\n", data)
+	data, _ := json.Marshal(TrackerOverview{PlayerChecks: playerStates})
+	return wrapEvent("snapshot", data)
 }
 
-// SlotTrackerSSE handles per-slot SSE — no batching, events are discrete.
-type SlotTrackerSSE struct {
-	subscribe   chan slotSSESub
+type SlotTrackerWS struct {
+	subscribe   chan slotWSSub
 	unsubscribe chan chan []byte
-	publish     chan slotSSEEvent
+	publish     chan slotWSEvent
 }
 
-type slotSSESub struct {
+type slotWSSub struct {
 	slot int
 	ch   chan []byte
 }
 
-type slotSSEEvent struct {
+type slotWSEvent struct {
 	slot int
 	msg  []byte
 }
 
-func newSlotTrackerSSE() *SlotTrackerSSE {
-	return &SlotTrackerSSE{
-		subscribe:   make(chan slotSSESub, 16),
+func newSlotTrackerWS() *SlotTrackerWS {
+	return &SlotTrackerWS{
+		subscribe:   make(chan slotWSSub, 16),
 		unsubscribe: make(chan chan []byte, 16),
-		publish:     make(chan slotSSEEvent, 512),
+		publish:     make(chan slotWSEvent, 512),
 	}
 }
 
-func (h *SlotTrackerSSE) Run(ctx context.Context) {
+func (h *SlotTrackerWS) Run(ctx context.Context) {
 	listeners := make(map[int]map[chan []byte]struct{})
 
 	for {
@@ -191,15 +214,14 @@ func (h *SlotTrackerSSE) Run(ctx context.Context) {
 	}
 }
 
-func (h *SlotTrackerSSE) Publish(slot int, event string, data []byte) {
-	msg := fmt.Appendf(nil, "event: %s\ndata: %s\n\n", event, data)
+func (h *SlotTrackerWS) Publish(slot int, event string, data []byte) {
 	select {
-	case h.publish <- slotSSEEvent{slot: slot, msg: msg}:
+	case h.publish <- slotWSEvent{slot: slot, msg: wrapEvent(event, data)}:
 	default:
 	}
 }
 
-func (h *SlotTrackerSSE) buildSnapshot(apx *ApxRoom, slot int) []byte {
+func (h *SlotTrackerWS) buildSnapshot(apx *ApxRoom, slot int) []byte {
 	state := apx.state
 	ts := TeamSlot{0, slot}
 
@@ -217,5 +239,5 @@ func (h *SlotTrackerSSE) buildSnapshot(apx *ApxRoom, slot int) []byte {
 		TotalLocs: len(state.Locations[ts]),
 	}
 	data, _ := json.Marshal(snap)
-	return fmt.Appendf(nil, "event: snapshot\ndata: %s\n\n", data)
+	return wrapEvent("snapshot", data)
 }

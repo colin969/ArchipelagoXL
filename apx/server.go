@@ -221,8 +221,8 @@ type ApxRoom struct {
 	logDeath           func(slotId int)
 	ipLimiter          *IPRateLimiter
 	chatCommandRouter  *chatCommandRouter
-	trackerSSE         *TrackerSSE
-	slotTrackerSSE     *SlotTrackerSSE
+	trackerWS          *TrackerWS
+	slotTrackerWS      *SlotTrackerWS
 	lobbyRoomId        string
 	perSlotPasswords   bool
 	standaloneSlotData []byte
@@ -693,18 +693,18 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 		}
 
 		// Update overview sse for sender
-		if s.trackerSSE != nil {
-			s.trackerSSE.MarkDirty(teamSlot)
+		if s.trackerWS != nil {
+			s.trackerWS.MarkDirty(teamSlot)
 		}
 
 		// Update slot sse for sender and receivers
-		if s.slotTrackerSSE != nil {
+		if s.slotTrackerWS != nil {
 			ids := make([]int64, 0, len(newChecks))
 			for id := range newChecks {
 				ids = append(ids, id)
 			}
 			data, _ := json.Marshal(ids)
-			s.slotTrackerSSE.Publish(teamSlot.Slot, "checks", data)
+			s.slotTrackerWS.Publish(teamSlot.Slot, "checks", data)
 
 			bySlot := make(map[int][]NetworkItem)
 			for _, item := range newItems {
@@ -712,7 +712,7 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 			}
 			for slot, items := range bySlot {
 				data, _ := json.Marshal(items)
-				s.slotTrackerSSE.Publish(slot, "items", data)
+				s.slotTrackerWS.Publish(slot, "items", data)
 			}
 		}
 
@@ -833,9 +833,7 @@ func (ri *ReceivedItems) GetAll() map[ReceivedItemsKey][]NetworkItem {
 	ri.mu.RLock()
 	defer ri.mu.RUnlock()
 	out := make(map[ReceivedItemsKey][]NetworkItem, len(ri.receivedItems))
-	for k, v := range ri.receivedItems {
-		out[k] = v
-	}
+	maps.Copy(out, ri.receivedItems)
 	return out
 }
 

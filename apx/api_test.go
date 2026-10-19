@@ -506,7 +506,6 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 
 	state := &ApState{}
 
-	// Checks
 	state.Checks.locations = locations
 	state.Checks.checked = make(map[TeamSlot]map[int64]struct{}, numSlots)
 	for ts, locs := range locations {
@@ -519,11 +518,10 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 		state.Checks.checked[ts] = checked
 	}
 
-	// ReceivedItems
 	state.ReceivedItems.receivedItems = make(map[ReceivedItemsKey][]NetworkItem, numSlots)
 	for i := 1; i <= numSlots; i++ {
 		items := make([]NetworkItem, itemsPerSlot)
-		for j := 0; j < itemsPerSlot; j++ {
+		for j := range itemsPerSlot {
 			items[j] = NetworkItem{
 				Item:     int64(j % 500),
 				Location: int64(i)*int64(locsPerSlot) + int64(j%locsPerSlot),
@@ -534,7 +532,6 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 		state.ReceivedItems.receivedItems[ReceivedItemsKey{Team: 0, Slot: i, RemoteItems: true}] = items
 	}
 
-	// Hints
 	state.Hints.hints = make([]Hint, 0, numSlots*5)
 	state.Hints.byTeamSlot = make(map[TeamSlot][]int)
 	state.Hints.hintsUsed = make(map[TeamSlot]int)
@@ -555,7 +552,6 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 		}
 	}
 
-	// NetworkPlayers
 	for i := 1; i <= numSlots; i++ {
 		state.PlayersNetwork.players = append(state.PlayersNetwork.players, NetworkPlayer{
 			Team:  0,
@@ -588,6 +584,7 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 		lastActivity: &lastActivity,
 		lobbyRoomId:  "bench-room",
 		apx:          apx,
+		apiCache:     newRoomApiCache(),
 	}
 
 	registry := newRoomRegistry(nil)
@@ -600,11 +597,12 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 	}
 
 	router := mux.NewRouter()
-	router.HandleFunc("/api/tracker/{roomId}", rm.handleRoomWebhostApiTracker).Methods(http.MethodGet)
+	router.HandleFunc("/api/tracker/{roomId}", cachedRoomHandler(rm, "tracker", 60*time.Second, rm.trackerSupply)).Methods(http.MethodGet)
 
 	b.ReportAllocs()
 
 	for b.Loop() {
+		room.apiCache.Invalidate("tracker")
 		req := httptest.NewRequest(http.MethodGet, "/api/tracker/bench-room", nil)
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
