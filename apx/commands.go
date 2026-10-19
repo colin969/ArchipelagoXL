@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket/wsjson"
 )
@@ -119,6 +120,11 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 		},
 	)
 	r.AddTopLevel(
+		chatCommand{
+			name:        "countdown",
+			description: "Start a countdown (default: 10 seconds)",
+			handler:     s.handleCountdownCommand,
+		},
 		chatCommand{
 			name:        "getitem",
 			description: "Cheat in an item for your game",
@@ -360,6 +366,75 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 	return nil
 }
 
+func (s *ApxRoom) handleCountdownCommand(ctx context.Context, connState *connectionState, args string) error {
+	allowed := s.state.ServerOptions.CountdownAllowed(len(s.state.SlotInfo))
+
+	if !allowed && !connState.adminAuthed.Load() {
+		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", "Not allowed."),
+		})
+		return nil
+	}
+
+	seconds := 10
+	if args != "" {
+		var err error
+		seconds, err = strconv.Atoi(args)
+		if err != nil {
+			wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
+				formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", "Invalid value for seconds"),
+			})
+			return nil
+		}
+	}
+
+	allTargets := s.connections.GetAllClients()
+
+	startingText := fmt.Sprintf("[Server]: Starting countdown of %ds", seconds)
+	startingMsg := []PrintJsonMessage{
+		{
+			Type: "Countdown",
+			Data: []JsonMessagePart{
+				{
+					Text: startingText,
+				},
+			},
+			Countdown: &seconds,
+		},
+	}
+	enqueueMessage(startingMsg, allTargets...)
+
+	go func() {
+		for second := seconds; second > 0; second-- {
+			time.Sleep(1 * time.Second)
+			s := second
+			secondText := fmt.Sprintf("[Server]: %d", s)
+			secondMsg := []PrintJsonMessage{
+				{
+					Type:      "Countdown",
+					Data:      []JsonMessagePart{{Text: secondText}},
+					Countdown: &s,
+				},
+			}
+			enqueueMessage(secondMsg, allTargets...)
+		}
+
+		time.Sleep(1 * time.Second)
+		finalText := "[Server]: GO"
+		finalSecond := 0
+		finalMsg := []PrintJsonMessage{
+			{
+				Type:      "Countdown",
+				Data:      []JsonMessagePart{{Text: finalText}},
+				Countdown: &finalSecond,
+			},
+		}
+		enqueueMessage(finalMsg, allTargets...)
+	}()
+
+	return nil
+}
+
 func (s *ApxRoom) handleGetItemCommand(ctx context.Context, connState *connectionState, args string) error {
 	allowed := s.state.ServerOptions.ItemCheatAllowed()
 
@@ -564,6 +639,34 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 		s.state.ServerOptions.SetRemainingMode(mode)
 		s.buildRoomInfoFromState()
 		s.BroadcastRoomUpdatePermissions()
+	case "countdown_mode":
+		mode, valid := permissionFromString(value)
+		if !valid || (mode != PermissionEnabled && mode != PermissionAuto && mode != PermissionDisabled) {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option countdown_mode <enabled|auto|disabled>")
+			return nil
+		}
+		s.state.ServerOptions.SetCountdownMode(mode)
+		// Weird this isn't in room info
+	case "item_cheat":
+		mode, valid := permissionFromString(value)
+		if !valid || (mode != PermissionEnabled && mode != PermissionDisabled) {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option item_cheat <enabled|disabled>")
+			return nil
+		}
+		s.state.ServerOptions.SetItemCheatAllowed(mode == PermissionEnabled)
+		// Weird this isn't in room info
+	case "disable_item_cheat":
+		// Mostly for compat
+		mode, valid := permissionFromString(value)
+		if !valid || (mode != PermissionEnabled && mode != PermissionDisabled) {
+			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+				"Usage: !admin option disable_item_cheat <enabled|disabled>")
+			return nil
+		}
+		s.state.ServerOptions.SetItemCheatAllowed(mode == PermissionDisabled)
+		// Weird this isn't in room info
 	}
 
 	return nil

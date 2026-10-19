@@ -301,6 +301,7 @@ type PrintJsonMessage struct {
 	Type      string            `json:"type"`
 	Data      []JsonMessagePart `json:"data"`
 	Tags      []string          `json:"tags,omitempty"`
+	Countdown *int              `json:"countdown,omitempty"`
 }
 
 func (m PrintJsonMessage) MarshalJSON() ([]byte, error) {
@@ -767,4 +768,3 @@ func enqueueMessage[T any](msg []T, clients ...*RegisteredClient) error {
 	}
 	return nil
 }
-

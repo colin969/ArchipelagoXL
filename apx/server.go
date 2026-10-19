@@ -254,7 +254,7 @@ type SphereLocs []SphereLocGroup
 type ServerOptions struct {
 	password            string
 	adminPassword       string
-	countdownMode       string
+	countdownMode       Permission
 	hintCost            int
 	locationCheckPoints int
 	releaseMode         Permission
@@ -262,7 +262,7 @@ type ServerOptions struct {
 	remainingMode       Permission
 	compatibility       int
 	mu                  sync.RWMutex
-	disableItemCheat    bool
+	itemCheat           bool
 }
 
 func (so *ServerOptions) SetPassword(password string) {
@@ -299,6 +299,27 @@ func (so *ServerOptions) SetLocationCheckPoints(locationCheckPoints int) {
 	so.mu.Lock()
 	defer so.mu.Unlock()
 	so.locationCheckPoints = locationCheckPoints
+}
+
+func (so *ServerOptions) GetCountdownMode() Permission {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.countdownMode
+}
+
+func (so *ServerOptions) SetCountdownMode(countdownMode Permission) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.countdownMode = countdownMode
+}
+
+func (so *ServerOptions) CountdownAllowed(playerCount int) bool {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	if so.countdownMode == PermissionAuto {
+		return playerCount <= 30
+	}
+	return so.countdownMode == PermissionEnabled
 }
 
 func (so *ServerOptions) GetHintCost() int {
@@ -349,10 +370,16 @@ func (so *ServerOptions) GetRemainingMode() Permission {
 	return so.remainingMode
 }
 
+func (so *ServerOptions) SetItemCheatAllowed(itemCheat bool) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.itemCheat = itemCheat
+}
+
 func (so *ServerOptions) ItemCheatAllowed() bool {
 	so.mu.RLock()
 	defer so.mu.RUnlock()
-	return !so.disableItemCheat
+	return so.itemCheat
 }
 
 func (so *ServerOptions) PasswordCheck(password *string) bool {
@@ -1340,6 +1367,14 @@ func (cr *connectionRegistry) GetSlotClients(teamSlot TeamSlot) []*RegisteredCli
 	clients := make([]*RegisteredClient, len(src))
 	copy(clients, src)
 	return clients
+}
+
+func (cr *connectionRegistry) GetAllClients() []*RegisteredClient {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+	out := make([]*RegisteredClient, len(cr.allClients))
+	copy(out, cr.allClients)
+	return out
 }
 
 func (cr *connectionRegistry) ConnectedSlotCount() int {
@@ -2583,7 +2618,7 @@ func defaultServerOptions() ServerOptions {
 		releaseMode:         PermissionAuto,
 		collectMode:         PermissionAuto,
 		remainingMode:       PermissionGoal,
-		countdownMode:       "auto",
+		countdownMode:       PermissionAuto,
 		compatibility:       2,
 	}
 }
@@ -2627,12 +2662,13 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 	}
 	if v, ok := raw["countdown_mode"]; ok {
 		if s, ok := v.(string); ok {
-			opts.countdownMode = s
+			opts.countdownMode, _ = permissionFromString(s)
 		}
 	}
+	opts.itemCheat = false
 	if v, ok := raw["disable_item_cheat"]; ok {
 		if b, ok := v.(bool); ok {
-			opts.disableItemCheat = b
+			opts.itemCheat = !b
 		}
 	}
 	if v, ok := raw["compatibility"]; ok {
