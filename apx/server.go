@@ -178,6 +178,18 @@ func (ris *RoomInfoStore) GetDataPackageChecksums() map[string]string {
 	return copy
 }
 
+func (ris *RoomInfoStore) GetTrackerDataPackages() map[string]TrackerDataPackage {
+	ris.mu.RLock()
+	defer ris.mu.RUnlock()
+	copy := make(map[string]TrackerDataPackage, len(ris.DatapackageChecksums))
+	for k, v := range ris.DatapackageChecksums {
+		copy[k] = TrackerDataPackage{
+			Checksum: v,
+		}
+	}
+	return copy
+}
+
 func (ris *RoomInfoStore) Store(msg RoomInfoMessage) {
 	ris.mu.Lock()
 	defer ris.mu.Unlock()

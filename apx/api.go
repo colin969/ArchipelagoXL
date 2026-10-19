@@ -317,6 +317,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	// /tracker/.../checks
 	// /tracker/.../hints
 	// /tracker/.../datastorage
+	api.HandleFunc("/static_tracker/{roomId}", srv.handleRoomWebhostApiStaticTracker).Methods(http.MethodGet)
 	api.HandleFunc("/slot_data_tracker/{roomId}", srv.handleRoomWebhostApiTrackerSlotData).Methods(http.MethodGet)
 	api.HandleFunc("/datapackage/{checksum}", srv.handleDatapackageByChecksum).Methods(http.MethodGet)
 	if !cfg.StandaloneMode {
@@ -714,14 +715,13 @@ func randomId(n int) string {
 func (rm *RoomManager) handleRoomStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+	w.Header().Set("Content-Type", "application/json")
 
 	if !isValidLobbyRoomId(roomId) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	// Check if room exists in DB (regardless of running state)
 	record, err := rm.store.FindByLobbyRoomId(roomId)
@@ -911,14 +911,13 @@ type ApiPlayersResponse map[string]ApiPlayer
 func (rm *RoomManager) handleRoomPlayers(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+	w.Header().Set("Content-Type", "application/json")
 
 	if !isValidLobbyRoomId(roomId) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	room, ok := rm.registry.Get(roomId)
 	if !ok {
@@ -947,14 +946,13 @@ type WebhostApiRoomStatusResponse struct {
 func (rm *RoomManager) handleRoomWebhostApiStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+	w.Header().Set("Content-Type", "application/json")
 
 	if !isValidLobbyRoomId(roomId) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	room, ok := rm.registry.Get(roomId)
 	if !ok {
@@ -1097,14 +1095,13 @@ type WebhostApiTrackerData struct {
 func (rm *RoomManager) handleRoomWebhostApiTracker(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+	w.Header().Set("Content-Type", "application/json")
 
 	if !isValidLobbyRoomId(roomId) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	room, ok := rm.registry.Get(roomId)
 	if !ok {
@@ -1231,6 +1228,86 @@ func (rm *RoomManager) handleRoomWebhostApiTracker(w http.ResponseWriter, r *htt
 	})
 }
 
+type TrackerItemLinkGroup struct {
+	Slot    int    `json:"slot"`
+	Name    string `json:"name"`
+	Members []int  `json:"members"`
+}
+
+type TrackerDataPackage struct {
+	Checksum string `json:"checksum"`
+}
+
+type TrackerPlayerLocationTotal struct {
+	Player         int `json:"player"`
+	Team           int `json:"team"`
+	TotalLocations int `json:"total_locations"`
+}
+
+type TrackerPlayerGame struct {
+	Player int    `json:"player"`
+	Team   int    `json:"team"`
+	Game   string `json:"game"`
+}
+
+type WebhostApiTrackerStaticData struct {
+	ItemLinkGroups       []TrackerItemLinkGroup        `json:"groups"`
+	DataPackages         map[string]TrackerDataPackage `json:"datapackage"`
+	PlayerLocationTotals []TrackerPlayerLocationTotal  `json:"player_location_total"`
+	PlayerGames          []TrackerPlayerGame           `json:"player_game"`
+}
+
+func (rm *RoomManager) handleRoomWebhostApiStaticTracker(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+	w.Header().Set("Content-Type", "application/json")
+
+	if !isValidLobbyRoomId(roomId) {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return
+	}
+
+	room, ok := rm.registry.Get(roomId)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
+		return
+	}
+
+	itemLinkGroups := make([]TrackerItemLinkGroup, 0)
+	playerGames := make([]TrackerPlayerGame, 0, len(room.apx.state.SlotInfo))
+	playerLocationTotals := make([]TrackerPlayerLocationTotal, 0, len(room.apx.state.SlotInfo))
+	for ts, player := range room.apx.state.SlotInfo {
+		playerGames = append(playerGames, TrackerPlayerGame{
+			Player: ts.Slot,
+			Team:   ts.Team,
+			Game:   player.Game,
+		})
+		playerLocationTotals = append(playerLocationTotals, TrackerPlayerLocationTotal{
+			Player:         ts.Slot,
+			Team:           ts.Team,
+			TotalLocations: len(room.apx.state.Locations[ts]),
+		})
+		if player.Type == SlotTypeGroup && len(player.GroupMembers) > 0 {
+			members := make([]int, len(player.GroupMembers))
+			copy(members, player.GroupMembers)
+			itemLinkGroups = append(itemLinkGroups, TrackerItemLinkGroup{
+				Slot:    ts.Slot,
+				Name:    player.Name,
+				Members: members,
+			})
+		}
+	}
+
+	json.NewEncoder(w).Encode(WebhostApiTrackerStaticData{
+		ItemLinkGroups:       itemLinkGroups,
+		PlayerLocationTotals: playerLocationTotals,
+		PlayerGames:          playerGames,
+		DataPackages:         room.apx.roomInfo.GetTrackerDataPackages(),
+	})
+}
+
 type TrackerSlotData struct {
 	Player   int32           `json:"player"`
 	SlotData json.RawMessage `json:"slot_data"`
@@ -1239,14 +1316,13 @@ type TrackerSlotData struct {
 func (rm *RoomManager) handleRoomWebhostApiTrackerSlotData(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+	w.Header().Set("Content-Type", "application/json")
 
 	if !isValidLobbyRoomId(roomId) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
 
 	room, ok := rm.registry.Get(roomId)
 	if !ok {
