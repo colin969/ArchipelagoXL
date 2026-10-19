@@ -23,7 +23,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/josephspurrier/goversioninfo v1.7.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
-	github.com/ncruces/zenity v0.10.15 // indirect
+	github.com/ncruces/zenity v0.10.15
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/randall77/makefat v0.0.0-20260406194835-1b91746796b7 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect

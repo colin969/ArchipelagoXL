@@ -221,6 +221,8 @@ type ApxRoom struct {
 	logDeath           func(slotId int)
 	ipLimiter          *IPRateLimiter
 	chatCommandRouter  *chatCommandRouter
+	trackerSSE         *TrackerSSE
+	slotTrackerSSE     *SlotTrackerSSE
 	lobbyRoomId        string
 	perSlotPasswords   bool
 	standaloneSlotData []byte
@@ -407,8 +409,8 @@ func (so *ServerOptions) AdminPasswordCheck(password *string) bool {
 }
 
 type TeamSlot struct {
-	Team int
-	Slot int
+	Team int `json:"team"`
+	Slot int `json:"slot"`
 }
 
 type Hint struct {
@@ -689,10 +691,32 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 		if len(affectedSlots) > 0 {
 			s.SendNewItems(ctx, affectedSlots)
 		}
-	}
 
-	// Send room update to sender
-	if len(newChecks) > 0 {
+		// Update overview sse for sender
+		if s.trackerSSE != nil {
+			s.trackerSSE.MarkDirty(teamSlot)
+		}
+
+		// Update slot sse for sender and receivers
+		if s.slotTrackerSSE != nil {
+			ids := make([]int64, 0, len(newChecks))
+			for id := range newChecks {
+				ids = append(ids, id)
+			}
+			data, _ := json.Marshal(ids)
+			s.slotTrackerSSE.Publish(teamSlot.Slot, "checks", data)
+
+			bySlot := make(map[int][]NetworkItem)
+			for _, item := range newItems {
+				bySlot[int(item.Player)] = append(bySlot[int(item.Player)], item)
+			}
+			for slot, items := range bySlot {
+				data, _ := json.Marshal(items)
+				s.slotTrackerSSE.Publish(slot, "items", data)
+			}
+		}
+
+		// Send room update to sender
 		slotClients := s.connections.GetSlotClients(teamSlot)
 		checkedList := make([]int64, 0, len(newChecks))
 		for locID := range newChecks {

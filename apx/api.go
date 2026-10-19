@@ -306,7 +306,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	// Webhost compatible APIs
 	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}", srv.handleRoomWebhostApiTracker).Methods(http.MethodGet)
-	// /tracker/.../overview
+	api.HandleFunc("/tracker/{roomId}/live", srv.handleTrackerSSE).Methods(http.MethodGet)
+	api.HandleFunc("/tracker/{roomId}/team/{teamId}/slot/{slotId}/live", srv.handleSlotTrackerSSE).Methods(http.MethodGet)
 	// /tracker/.../slot/...
 	// /tracker/.../slot/.../overview
 	// /tracker/.../slot/.../items
@@ -1198,6 +1199,106 @@ func (rm *RoomManager) handleRoomWebhostApiTracker(w http.ResponseWriter, r *htt
 	})
 }
 
+type TrackerPlayerState struct {
+	Team           int    `json:"team"`
+	Slot           int    `json:"slot"`
+	TotalLocations int    `json:"locs"`
+	ChecksDone     int    `json:"checks"`
+	Status         int    `json:"status"`
+	LastActivity   string `json:"last_activity"`
+	LastConn       string `json:"last_conn"`
+}
+
+type TrackerOverview struct {
+	PlayerChecks    []TrackerPlayerState     `json:"player_state"`
+	TotalChecksDone []TrackerTotalChecksDone `json:"total_checks_done"`
+}
+
+func (rm *RoomManager) handleTrackerSSE(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	w.Write(room.apx.trackerSSE.buildSnapshot(room.apx))
+	flusher.Flush()
+
+	ch := make(chan []byte, 8)
+	room.apx.trackerSSE.subscribe <- ch
+	defer func() { room.apx.trackerSSE.unsubscribe <- ch }()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			w.Write(msg)
+			flusher.Flush()
+		}
+	}
+}
+
+func (rm *RoomManager) handleSlotTrackerSSE(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequest(w, r)
+	if !ok {
+		return
+	}
+	vars := mux.Vars(r)
+	teamId, err := strconv.Atoi(vars["teamId"])
+	if err != nil {
+		http.Error(w, "invalid teamId", http.StatusBadRequest)
+		return
+	}
+	slotId, err := strconv.Atoi(vars["slotId"])
+	if err != nil {
+		http.Error(w, "invalid slotId", http.StatusBadRequest)
+		return
+	}
+	if _, ok := room.apx.state.SlotInfo[TeamSlot{teamId, slotId}]; !ok {
+		http.Error(w, "slot not found", http.StatusNotFound)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	w.Write(room.apx.slotTrackerSSE.buildSnapshot(room.apx, slotId))
+	flusher.Flush()
+
+	ch := make(chan []byte, 16)
+	room.apx.slotTrackerSSE.subscribe <- slotSSESub{slot: slotId, ch: ch}
+	defer func() { room.apx.slotTrackerSSE.unsubscribe <- ch }()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			w.Write(msg)
+			flusher.Flush()
+		}
+	}
+}
+
 type TrackerItemLinkGroup struct {
 	Slot    int    `json:"slot"`
 	Name    string `json:"name"`
@@ -1591,6 +1692,8 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		perSlotPasswords: perSlotPasswords,
 		ipLimiter:        newIPRateLimiter(),
 		state:            apState,
+		trackerSSE:       newTrackerSSE(),
+		slotTrackerSSE:   newSlotTrackerSSE(),
 		logDeath: func(slotId int) {
 			if err := rm.store.IncrementSlotDeathCount(lobbyRoomId, slotId); err != nil {
 				log.Printf("failed to persist death count for room %s slot %d: %v", lobbyRoomId, slotId, err)
@@ -1601,6 +1704,8 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 	apx.chatCommandRouter = newCommandRouter(apx)
 	apx.buildRoomInfoFromState()
 	apx.populateReadData()
+	go apx.trackerSSE.Run(ctx, apx)
+	go apx.slotTrackerSSE.Run(ctx)
 
 	if save != false {
 		if rm.config.DatabaseURL != "" {
@@ -2344,6 +2449,12 @@ func (s *TrackerSphereLocations) UnmarshalJSON(data []byte) error {
 func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (*HostedRoom, bool) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
+	if !isValidLobbyRoomId(roomId) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+		return nil, false
+	}
 	room, ok := rm.registry.Get(roomId)
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
