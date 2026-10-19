@@ -11,6 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var testStorageCfg = DataStorageConfig{
+	Tiers: []StorageTier{
+		{UpTo: 2, BytesPerSlot: 100},
+		{UpTo: 4, BytesPerSlot: 50},
+		{UpTo: 0, BytesPerSlot: 10},
+	},
+}
+
 func newTestStorage() *DataStorage {
 	return &DataStorage{
 		data:            make(map[string]*StorageEntry),
@@ -26,7 +34,7 @@ var testSlot = TeamSlot{Team: 0, Slot: 1}
 func TestDataStorage(t *testing.T) {
 	t.Run("ReadData", func(t *testing.T) {
 		t.Run("Get_ReadKey_CallsRegisteredFunc", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			ds.RegisterReadKey("race_mode", func() StorageValue {
 				return int64(1)
 			})
@@ -36,7 +44,7 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("Get_ReadKey_ReflectsLiveState", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			counter := int64(0)
 			ds.RegisterReadKey("live_val", func() StorageValue {
 				return counter
@@ -50,7 +58,7 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("Get_ReadKey_Missing_ReturnsFalse", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			_, ok := ds.Get("_read_nonexistent")
 			assert.False(t, ok)
 		})
@@ -58,7 +66,7 @@ func TestDataStorage(t *testing.T) {
 		t.Run("Get_ReadPrefix_DoesNotFallThroughToStoredData", func(t *testing.T) {
 			// Even if stored data has a key that looks like a read key, _read_ prefix
 			// must only resolve via readData, not stored data.
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			// Manually insert a stored entry with a _read_-like bare key
 			ds.mu.Lock()
 			ds.data["race_mode"] = &StorageEntry{
@@ -73,13 +81,13 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("Set_ReadKeyPrefix_Rejected", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			_, _, err := ds.Set(testSlot, "_read_race_mode", int64(0), nil, 0, nil)
 			assert.ErrorContains(t, err, "read-only")
 		})
 
 		t.Run("Set_ReadKeyPrefix_DoesNotCreateEntry", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			ds.Set(testSlot, "_read_anything", int64(0), nil, 0, nil) //nolint: errcheck
 			ds.mu.RLock()
 			_, exists := ds.data["_read_anything"]
@@ -88,7 +96,7 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("Set_ReadKeyPrefix_DoesNotIncrementKeyCount", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			ds.Set(testSlot, "_read_anything", int64(0), nil, 0, nil) //nolint: errcheck
 			ds.mu.RLock()
 			count := ds.keyCount[testSlot]
@@ -183,7 +191,7 @@ func TestDataStorage(t *testing.T) {
 
 	t.Run("SlotSize", func(t *testing.T) {
 		t.Run("NewKey_DeniedWhenSizeExceeded", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			bigVal := strings.Repeat("x", maxSlotSize-10)
 			_, _, err := ds.Set(testSlot, "bigkey", bigVal, nil, 0, nil)
 			require.NoError(t, err)
@@ -193,7 +201,7 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("NewWriter_DeniedWhenSizeExceeded", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			slot2 := TeamSlot{Team: 0, Slot: 2}
 
 			bigVal := strings.Repeat("x", maxSlotSize-10)
@@ -209,7 +217,7 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("SizeNotSharedBetweenSlots", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			slot2 := TeamSlot{Team: 0, Slot: 2}
 
 			bigVal := strings.Repeat("x", maxSlotSize-10)
@@ -221,7 +229,7 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("KeyNameCountsTowardSize", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			bigKey := strings.Repeat("k", maxSlotSize-8)
 			_, _, err := ds.Set(testSlot, bigKey, int64(0), nil, 0, nil)
 			require.NoError(t, err)
@@ -231,7 +239,7 @@ func TestDataStorage(t *testing.T) {
 		})
 
 		t.Run("GrowthDeniedForWriter", func(t *testing.T) {
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			// Fill close to limit
 			bigVal := strings.Repeat("x", maxSlotSize-20)
 			_, _, err := ds.Set(testSlot, "key", bigVal, nil, 0, nil)
@@ -247,7 +255,7 @@ func TestDataStorage(t *testing.T) {
 		t.Run("MultiWriter_DeltaAppliedToAll", func(t *testing.T) {
 			// slot1 writes small, slot2 writes big, slot1 writes small again
 			// slot2's slotBytes should reflect the shrink
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			slot2 := TeamSlot{Team: 0, Slot: 2}
 
 			// slot1 creates key with small value
@@ -274,7 +282,7 @@ func TestDataStorage(t *testing.T) {
 
 		t.Run("GrowthByNonOwner_NotRejectedForOwner", func(t *testing.T) {
 			// slot2 grows a shared key — slot1 (owner) is not the one being checked
-			ds := newDataStorage()
+			ds := newDataStorage(0)
 			slot2 := TeamSlot{Team: 0, Slot: 2}
 
 			_, _, err := ds.Set(testSlot, "shared", strings.Repeat("a", 100), nil, 0, nil)
@@ -1043,6 +1051,104 @@ func TestDataStorage(t *testing.T) {
 			assert.Equal(t, 1, clientQueueLen(c1))
 			assert.Equal(t, 1, clientQueueLen(c2))
 		})
+	})
+
+	t.Run("ByteCap", func(t *testing.T) {
+		t.Run("NewKeyRejectedWhenOverCap", func(t *testing.T) {
+			ds := newTestStorage()
+			ds.byteCap = 1
+			_, _, err := ds.Set(testSlot, "key", "hello", nil, 0, nil)
+			assert.ErrorContains(t, err, "room storage cap exceeded")
+		})
+
+		t.Run("GrowthRejectedWhenOverCap", func(t *testing.T) {
+			ds := newTestStorage()
+			initialSize := len("k") + len("hi")
+			ds.byteCap = initialSize
+			_, _, err := ds.Set(testSlot, "k", "hi", nil, 0, nil)
+			require.NoError(t, err)
+
+			_, _, err = ds.Set(testSlot, "k", nil, []DataStorageOperation{
+				{Operation: "add", Value: strings.Repeat("x", 100)},
+			}, 0, nil)
+			assert.ErrorContains(t, err, "room storage cap exceeded")
+		})
+
+		t.Run("ZeroCapMeansUncapped", func(t *testing.T) {
+			ds := newTestStorage() // byteCap zero-initializes to 0
+			_, _, err := ds.Set(testSlot, "key", strings.Repeat("x", 1000), nil, 0, nil)
+			assert.NoError(t, err)
+		})
+
+		t.Run("CapSharedAcrossSlots", func(t *testing.T) {
+			ds := newTestStorage()
+			ds.byteCap = 4 // "k"(1)+"ab"(2)=3 fits, "k2"+"ab" would push to 6
+			slot2 := TeamSlot{Team: 0, Slot: 2}
+
+			_, _, err := ds.Set(testSlot, "k", "ab", nil, 0, nil)
+			require.NoError(t, err)
+
+			_, _, err = ds.Set(slot2, "k2", "ab", nil, 0, nil)
+			assert.ErrorContains(t, err, "room storage cap exceeded")
+		})
+
+		t.Run("TotalBytesTrackedOnWrite", func(t *testing.T) {
+			ds := newTestStorage()
+			_, _, err := ds.Set(testSlot, "mykey", "hello", nil, 0, nil)
+			require.NoError(t, err)
+			assert.Equal(t, len("mykey")+len("hello"), ds.totalBytes)
+		})
+
+		t.Run("TotalBytesUpdatedOnGrowth", func(t *testing.T) {
+			ds := newTestStorage()
+			ds.Set(testSlot, "k", "ab", nil, 0, nil) //nolint:errcheck
+			before := ds.totalBytes
+
+			ds.Set(testSlot, "k", nil, []DataStorageOperation{ //nolint:errcheck
+				{Operation: "add", Value: "cde"},
+			}, 0, nil)
+
+			assert.Equal(t, before+3, ds.totalBytes)
+		})
+	})
+}
+
+func TestRoomStorageCap(t *testing.T) {
+	t.Run("TierBoundaries", func(t *testing.T) {
+		tests := []struct {
+			players int
+			want    int
+		}{
+			{0, 0},
+			{1, 100},
+			{2, 200},
+			{3, 250},  // 2*100 + 1*50
+			{4, 300},  // 2*100 + 2*50
+			{5, 310},  // 2*100 + 2*50 + 1*10
+			{10, 360}, // 2*100 + 2*50 + 6*10
+		}
+		for _, tt := range tests {
+			got := getStorageCap(tt.players, testStorageCfg)
+			if got != tt.want {
+				t.Errorf("getStorageCap(%d) = %d, want %d", tt.players, got, tt.want)
+			}
+		}
+	})
+
+	t.Run("ZeroPlayers", func(t *testing.T) {
+		assert.Equal(t, 0, getStorageCap(0, testStorageCfg))
+	})
+
+	t.Run("DefaultConfigSanity", func(t *testing.T) {
+		// Does not assert exact values — only that cap is positive and monotonically increasing.
+		counts := []int{1, 5, 10, 20, 30, 50, 100}
+		prev := 0
+		for _, n := range counts {
+			got := getStorageCap(n, DefaultRoomStorageConfig)
+			assert.Greater(t, got, 0, "getStorageCap(%d) should be > 0", n)
+			assert.Greater(t, got, prev, "getStorageCap(%d) should exceed roomStorageCap(%d)", n, n-1)
+			prev = got
+		}
 	})
 }
 

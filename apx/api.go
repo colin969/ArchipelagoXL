@@ -303,7 +303,6 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(srv.loggingMiddleware)
 	api.HandleFunc("/room/{roomId}", srv.handleRoomStatus).Methods(http.MethodGet)
-	api.HandleFunc("/room/{roomId}/players", srv.handleRoomPlayers).Methods(http.MethodGet)
 	// Webhost compatible APIs
 	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}", srv.handleRoomWebhostApiTracker).Methods(http.MethodGet)
@@ -903,35 +902,6 @@ func (rm *RoomManager) handleRoomStop(w http.ResponseWriter, r *http.Request) {
 	rm.registry.Remove(roomId)
 
 	json.NewEncoder(w).Encode(map[string]string{"status": "stopped", "room_id": roomId})
-}
-
-type ApiPlayer [2]int
-type ApiPlayersResponse map[string]ApiPlayer
-
-func (rm *RoomManager) handleRoomPlayers(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	roomId := vars["roomId"]
-	w.Header().Set("Content-Type", "application/json")
-
-	if !isValidLobbyRoomId(roomId) {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
-		return
-	}
-
-	room, ok := rm.registry.Get(roomId)
-	if !ok {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
-		return
-	}
-
-	players := make(ApiPlayersResponse, len(room.apx.state.NameToSlot))
-	for name, slotInfo := range room.apx.state.NameToSlot {
-		players[name] = [2]int{slotInfo.Team, slotInfo.Slot}
-	}
-
-	json.NewEncoder(w).Encode(players)
 }
 
 type WebhostApiRoomStatusResponse struct {

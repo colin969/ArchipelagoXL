@@ -567,7 +567,7 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 	state.PlayersNetwork.invalidateCache()
 
 	state.ServerOptions = &so
-	state.DataStorage = newDataStorage()
+	state.DataStorage = newDataStorage(0)
 	state.ClientStatuses = clientStatuses
 	state.SlotActivityTimers = activityTimers
 	state.SlotConnectionTimers = connectionTimers

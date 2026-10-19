@@ -682,7 +682,7 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 		Checks:               newChecksState(locations),
 		ReceivedItems:        newReceivedItems(),
 		Hints:                newHintsState(),
-		DataStorage:          newDataStorage(),
+		DataStorage:          newDataStorage(len(slotInfoMap)),
 		SlotDataIndex:        def.SlotDataIndex,
 		ClientStatuses:       &clientStatuses,
 		SlotActivityTimers:   newSlotTimers(),

@@ -758,7 +758,7 @@ func TestClient_Cmd_Hint(t *testing.T) {
 			rancidAfterSecond++
 		}
 	}
-	assert.Equal(t, 2, rancidAfterSecond, "should have exactly 2 unfound Rancid_Egg hints stored after second call")
+	assert.Equal(t, rancidAfterFirst+1, rancidAfterSecond, "second hint call should add exactly one new Rancid_Egg hint")
 }
 
 func TestClient_CreateHints_NotifiesSetNotify(t *testing.T) {

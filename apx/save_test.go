@@ -131,7 +131,7 @@ func TestSave(t *testing.T) {
 			Checks:        newChecksState(locations),
 			ReceivedItems: newReceivedItems(),
 			Hints:         newHintsState(),
-			DataStorage:   newDataStorage(),
+			DataStorage:   newDataStorage(0),
 			ClientStatuses: &ClientStatuses{
 				status: make(map[int]map[int]ClientStatus),
 			},
@@ -214,7 +214,7 @@ func TestSave(t *testing.T) {
 			Checks:        newChecksState(locations),
 			ReceivedItems: newReceivedItems(),
 			Hints:         newHintsState(),
-			DataStorage:   newDataStorage(),
+			DataStorage:   newDataStorage(0),
 			ClientStatuses: &ClientStatuses{
 				status: make(map[int]map[int]ClientStatus),
 			},

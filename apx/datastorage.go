@@ -26,17 +26,59 @@ type DataStorage struct {
 	slotBytes       map[TeamSlot]int
 	readData        map[string]func() StorageValue
 	notifiedClients map[string][]*RegisteredClient
+	totalBytes      int
+	byteCap         int
 	mu              sync.RWMutex
 }
 
-func newDataStorage() *DataStorage {
+func newDataStorage(playerCount int) *DataStorage {
 	return &DataStorage{
 		data:            make(map[string]*StorageEntry),
 		keyCount:        make(map[TeamSlot]int),
 		slotBytes:       make(map[TeamSlot]int),
 		readData:        make(map[string]func() StorageValue),
 		notifiedClients: make(map[string][]*RegisteredClient),
+		byteCap:         getStorageCap(playerCount, DefaultRoomStorageConfig),
 	}
+}
+
+type StorageTier struct {
+	UpTo         int // Player cap
+	BytesPerSlot int // Bytes added to room total per player inside bounds
+}
+
+type DataStorageConfig struct {
+	Tiers []StorageTier
+}
+
+var DefaultRoomStorageConfig = DataStorageConfig{
+	Tiers: []StorageTier{
+		{UpTo: 10, BytesPerSlot: 2 * 1024 * 1024}, // 2mb
+		{UpTo: 20, BytesPerSlot: 1 * 1024 * 1024}, // 1mb
+		{UpTo: 30, BytesPerSlot: 500 * 1024},      // 500kb
+		{UpTo: 50, BytesPerSlot: 200 * 1024},      // 200kb
+		{UpTo: 0, BytesPerSlot: 50 * 1024},        // 50kb
+	},
+}
+
+func getStorageCap(playerCount int, cfg DataStorageConfig) int {
+	// 0 is basically debug, allow unlimited
+	if playerCount == 0 {
+		return 0
+	}
+
+	total := 0
+	prev := 0
+	for _, tier := range cfg.Tiers {
+		ceiling := tier.UpTo
+		if ceiling == 0 || playerCount <= ceiling {
+			total += (playerCount - prev) * tier.BytesPerSlot
+			return total
+		}
+		total += (ceiling - prev) * tier.BytesPerSlot
+		prev = ceiling
+	}
+	return total
 }
 
 type StorageValue = any
@@ -139,6 +181,10 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 			ds.mu.Unlock()
 			return nil, nil, fmt.Errorf("slot storage size quota exceeded")
 		}
+		if ds.byteCap > 0 && ds.totalBytes+defSize > ds.byteCap {
+			ds.mu.Unlock()
+			return nil, nil, fmt.Errorf("room storage cap exceeded")
+		}
 		entry = &StorageEntry{
 			slotWriters: map[TeamSlot]struct{}{owner: {}},
 			value:       defaultVal,
@@ -146,6 +192,7 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 		ds.data[key] = entry
 		ds.keyCount[owner]++
 		ds.slotBytes[owner] += defSize
+		ds.totalBytes += defSize
 	} else {
 		if _, alreadyWriter := entry.slotWriters[owner]; !alreadyWriter {
 			currentSize := len(key) + storageSize(entry.value)
@@ -180,11 +227,17 @@ func (ds *DataStorage) Set(owner TeamSlot, key string, defaultVal StorageValue, 
 			ds.mu.Unlock()
 			return nil, nil, fmt.Errorf("slot storage size quota exceeded")
 		}
+		// Too big for total store, reject
+		if ds.byteCap > 0 && ds.totalBytes+delta > ds.byteCap {
+			ds.mu.Unlock()
+			return nil, nil, fmt.Errorf("room storage cap exceeded")
+		}
 	}
 	// Apply delta to all writers
 	for writer := range entry.slotWriters {
 		ds.slotBytes[writer] += delta
 	}
+	ds.totalBytes += delta
 	entry.value = value
 
 	var notify []*RegisteredClient
