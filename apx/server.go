@@ -2058,7 +2058,10 @@ func (s *ApxRoom) handleLocationScouts(ctx context.Context, connState *connectio
 		loc, ok := s.state.Locations[TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot}][locId]
 		if !ok {
 			cmd := MessageTypeLocationScouts
-			return sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("LocationScouts: Invalid location id: %d", locId), s.lokiLogger, connState.slotName)
+			sendInvalidPacket(ctx, connState.clientConn, PacketProblemArguments, &cmd, fmt.Sprintf("LocationScouts: Invalid location id: %d", locId), s.lokiLogger, connState.slotName)
+			// Mirror Multiserver behaviour with a disconnect
+			connState.cancel()
+			return nil
 		}
 
 		if msg.CreateAsHint != 0 {
