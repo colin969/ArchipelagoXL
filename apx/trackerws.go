@@ -23,20 +23,20 @@ type TrackerWS struct {
 	interval    time.Duration
 }
 
-func newTrackerWS(playerCount int) *TrackerWS {
+func newTrackerWS(_ int) *TrackerWS {
 	interval := 2
-	switch {
-	case playerCount > 300:
-		interval = 10
-	case playerCount > 200:
-		interval = 8
-	case playerCount > 100:
-		interval = 6
-	case playerCount > 50:
-		interval = 4
-	case playerCount > 20:
-		interval = 3
-	}
+	// switch {
+	// case playerCount > 300:
+	// 	interval = 10
+	// case playerCount > 200:
+	// 	interval = 8
+	// case playerCount > 100:
+	// 	interval = 6
+	// case playerCount > 50:
+	// 	interval = 4
+	// case playerCount > 20:
+	// 	interval = 3
+	// }
 	return &TrackerWS{
 		subscribe:   make(chan chan []byte, 16),
 		unsubscribe: make(chan chan []byte, 16),
@@ -98,13 +98,13 @@ func (h *TrackerWS) buildPatch(apx *ApxRoom, dirty map[TeamSlot]struct{}) []byte
 	patches := make([]TrackerPlayerState, 0, len(dirty))
 	for ts := range dirty {
 		checked := state.Checks.GetChecked(ts)
-		lastActivity := ""
+		lastActivity := int64(0)
 		if v, ok := activityTimers[ts]; ok {
-			lastActivity = time.Unix(v, 0).UTC().Format(time.RFC3339)
+			lastActivity = v
 		}
-		lastConn := ""
+		lastConn := int64(0)
 		if v, ok := connectionTimers[ts]; ok {
-			lastConn = time.Unix(v, 0).UTC().Format(time.RFC3339)
+			lastConn = v
 		}
 		patches = append(patches, TrackerPlayerState{
 			Team:           ts.Team,
@@ -133,13 +133,13 @@ func (h *TrackerWS) buildSnapshot(apx *ApxRoom) []byte {
 	playerStates := make([]TrackerPlayerState, 0, len(state.SlotInfo))
 	for ts := range state.SlotInfo {
 		checked := state.Checks.GetChecked(ts)
-		lastActivity := ""
+		lastActivity := int64(0)
 		if v, ok := activityTimers[ts]; ok {
-			lastActivity = time.Unix(v, 0).UTC().Format(time.RFC3339)
+			lastActivity = v
 		}
-		lastConn := ""
+		lastConn := int64(0)
 		if v, ok := connectionTimers[ts]; ok {
-			lastConn = time.Unix(v, 0).UTC().Format(time.RFC3339)
+			lastConn = v
 		}
 		playerStates = append(playerStates, TrackerPlayerState{
 			Team:           ts.Team,

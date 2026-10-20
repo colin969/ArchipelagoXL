@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"maps"
@@ -298,29 +297,20 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	}
 
 	r := mux.NewRouter()
-	// I should really replace this
-	var dashboardTmpl = template.Must(template.ParseFiles("templates/dashboard.gohtml"))
 
-	r.HandleFunc("/dashboard/{roomId}", func(w http.ResponseWriter, r *http.Request) {
-		roomId := mux.Vars(r)["roomId"]
-		if !isValidLobbyRoomId(roomId) {
-			http.Error(w, "invalid room id", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html")
-		dashboardTmpl.ExecuteTemplate(w, "dashboard.gohtml", map[string]string{"RoomID": roomId})
-	}).Methods(http.MethodGet)
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
 	if !(cfg.DisableAdminDashboard || cfg.StandaloneMode) {
 		srv.registerAdminRoutes(r)
 	}
+	srv.registerDashboardRoutes(r)
+	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	api := r.PathPrefix("/api").Subrouter()
 	api.Use(srv.loggingMiddleware)
 	api.HandleFunc("/room/{roomId}", srv.handleRoomStatus).Methods(http.MethodGet)
 	// Webhost compatible APIs
 	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
-	api.HandleFunc("/tracker/{roomId}", cachedRoomHandler(srv, "tracker", 60*time.Second, srv.trackerSupply)).Methods(http.MethodGet)
-	api.HandleFunc("/tracker/{roomId}/players", cachedRoomHandler(srv, "tracker_players", 30*time.Second, srv.trackerPlayersSupply)).Methods(http.MethodGet)
+	api.HandleFunc("/tracker/{roomId}", newCachedRoomHandler(srv, "tracker", 60*time.Second, srv.trackerSupply)).Methods(http.MethodGet)
+	api.HandleFunc("/tracker/{roomId}/players", newCachedRoomHandler(srv, "tracker_players", 30*time.Second, srv.trackerPlayersSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/live", srv.handleTrackerWS).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/team/{teamId}/slot/{slotId}/live", srv.handleSlotTrackerWS).Methods(http.MethodGet)
 	// /tracker/.../slot/...
@@ -332,8 +322,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	// /tracker/.../checks
 	// /tracker/.../hints
 	// /tracker/.../datastorage
-	api.HandleFunc("/static_tracker/{roomId}", cachedRoomHandler(srv, "static_tracker", 0, srv.staticTrackerSupply)).Methods(http.MethodGet)
-	api.HandleFunc("/slot_data_tracker/{roomId}", cachedRoomHandler(srv, "slot_data_tracker", 0, srv.slotDataTrackerSupply)).Methods(http.MethodGet)
+	api.HandleFunc("/static_tracker/{roomId}", newCachedRoomHandler(srv, "static_tracker", 0, srv.staticTrackerSupply)).Methods(http.MethodGet)
+	api.HandleFunc("/slot_data_tracker/{roomId}", newCachedRoomHandler(srv, "slot_data_tracker", 0, srv.slotDataTrackerSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/datapackage/{checksum}", srv.handleDatapackageByChecksum).Methods(http.MethodGet)
 	if !cfg.StandaloneMode {
 		mgmt := api.PathPrefix("").Subrouter()
@@ -963,6 +953,24 @@ func (rm *RoomManager) handleRoomWebhostApiStatus(w http.ResponseWriter, r *http
 	})
 }
 
+func (rm *RoomManager) handleSlotDashboard(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+	teamId := vars["teamId"]
+	slotId := vars["slotId"]
+
+	if !isValidLobbyRoomId(roomId) {
+		http.Error(w, "invalid room id", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	renderTemplate(w, "base", map[string]string{
+		"RoomID": roomId,
+		"TeamID": teamId,
+		"SlotID": slotId,
+	}, "templates/base_dashboard.gohtml", "templates/dashboard_slot.gohtml")
+}
+
 type TrackerAlias struct {
 	Alias  *string `json:"alias"`
 	Team   int     `json:"team"`
@@ -1205,13 +1213,13 @@ func (rm *RoomManager) trackerPlayersSupply(room *HostedRoom) ([]byte, error) {
 }
 
 type TrackerPlayerState struct {
-	Team           int    `json:"t"`
-	Slot           int    `json:"s"`
-	TotalLocations int    `json:"l"`
-	ChecksDone     int    `json:"c"`
-	Status         int    `json:"st"`
-	LastActivity   string `json:"a"`
-	LastConn       string `json:"lc"`
+	Team           int   `json:"t"`
+	Slot           int   `json:"s"`
+	TotalLocations int   `json:"l"`
+	ChecksDone     int   `json:"c"`
+	Status         int   `json:"st"`
+	LastActivity   int64 `json:"a"`
+	LastConn       int64 `json:"lc"`
 }
 
 type TrackerOverview struct {
@@ -1220,7 +1228,7 @@ type TrackerOverview struct {
 }
 
 func (rm *RoomManager) handleTrackerWS(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1244,14 +1252,16 @@ func (rm *RoomManager) handleTrackerWS(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	go func() {
 		for {
-			typ, _, err := c.Read(ctx)
+			typ, data, err := c.Read(ctx)
 			if err != nil {
 				return
 			}
 			if typ != websocket.MessageText && typ != websocket.MessageBinary {
 				continue
 			}
-			// Client sent actual data — not allowed
+			if len(data) == 1 && data[0] == '#' {
+				continue
+			} // Client sent actual data — not allowed
 			c.Close(websocket.StatusPolicyViolation, "clients must not send messages")
 			return
 		}
@@ -1273,7 +1283,7 @@ func (rm *RoomManager) handleTrackerWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) handleSlotTrackerWS(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1746,6 +1756,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		cancel:               cancel,
 		deathlinkDisabled:    deathlinkDisabled,
 		reducedAccess:        reducedAccess,
+		apiCache:             newRoomApiCache(),
 	}
 
 	var normalId, reducedId int
@@ -1837,7 +1848,7 @@ func (rm *RoomManager) validateRoomIdMiddleware(next http.Handler) http.Handler 
 }
 
 func (rm *RoomManager) handlePasswordRefresh(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1861,7 +1872,7 @@ type PasswordRequest struct {
 }
 
 func (rm *RoomManager) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1885,7 +1896,7 @@ func (rm *RoomManager) handleAdminPassword(w http.ResponseWriter, r *http.Reques
 }
 
 func (rm *RoomManager) handlePassword(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1915,7 +1926,7 @@ func (rm *RoomManager) handlePassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) handleDeathlinks(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1924,7 +1935,7 @@ func (rm *RoomManager) handleDeathlinks(w http.ResponseWriter, r *http.Request) 
 }
 
 func (rm *RoomManager) handleFullFeed(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1933,7 +1944,7 @@ func (rm *RoomManager) handleFullFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) handleFullFeedUser(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1981,7 +1992,7 @@ func (rm *RoomManager) handleFullFeedUser(w http.ResponseWriter, r *http.Request
 }
 
 func (rm *RoomManager) handleBounceExclusionsList(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -1990,7 +2001,7 @@ func (rm *RoomManager) handleBounceExclusionsList(w http.ResponseWriter, r *http
 }
 
 func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2043,7 +2054,7 @@ func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Req
 }
 
 func (rm *RoomManager) handleSlotBounceExclusionsList(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2053,7 +2064,7 @@ func (rm *RoomManager) handleSlotBounceExclusionsList(w http.ResponseWriter, r *
 }
 
 func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2084,7 +2095,7 @@ func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http
 }
 
 func (rm *RoomManager) handleDeathlinkProbability(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2120,7 +2131,7 @@ func (rm *RoomManager) handleDeathlinkProbability(w http.ResponseWriter, r *http
 }
 
 func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2191,7 +2202,7 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 }
 
 func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2253,7 +2264,7 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 }
 
 func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2292,7 +2303,7 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 }
 
 func (rm *RoomManager) handleDebugTap(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2345,7 +2356,7 @@ type AltConnectNameRequest struct {
 }
 
 func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2401,7 +2412,7 @@ func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Reque
 }
 
 func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2447,7 +2458,7 @@ func (s *TrackerSphereLocations) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (*HostedRoom, bool) {
+func (rm *RoomManager) roomFromRequestApi(w http.ResponseWriter, r *http.Request) (*HostedRoom, bool) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
 	if !isValidLobbyRoomId(roomId) {
@@ -2466,8 +2477,21 @@ func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (
 	return room, true
 }
 
+func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (*HostedRoom, bool) {
+	vars := mux.Vars(r)
+	roomId := vars["roomId"]
+	if !isValidLobbyRoomId(roomId) {
+		return nil, false
+	}
+	room, ok := rm.registry.Get(roomId)
+	if !ok {
+		return nil, false
+	}
+	return room, true
+}
+
 func (rm *RoomManager) handleRoomState(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2488,7 +2512,7 @@ func (rm *RoomManager) handleRoomState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2526,7 +2550,7 @@ func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequest(w, r)
+	room, ok := rm.roomFromRequestApi(w, r)
 	if !ok {
 		return
 	}
@@ -2600,9 +2624,9 @@ func (rm *RoomManager) startRoomKiller(interval, timeout time.Duration) {
 	}()
 }
 
-func cachedRoomHandler(rm *RoomManager, key string, ttl time.Duration, supply func(room *HostedRoom) ([]byte, error)) http.HandlerFunc {
+func newCachedRoomHandler(rm *RoomManager, key string, ttl time.Duration, supply func(room *HostedRoom) ([]byte, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		room, ok := rm.roomFromRequest(w, r)
+		room, ok := rm.roomFromRequestApi(w, r)
 		if !ok {
 			return
 		}

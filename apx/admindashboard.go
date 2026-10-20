@@ -50,7 +50,7 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 	if r.Method == http.MethodPost {
 		if err := r.ParseMultipartForm(100 << 20); err != nil {
 			data.Error = "failed to parse form"
-			renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 			return
 		}
 
@@ -70,7 +70,7 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 		file, header, err := r.FormFile("file")
 		if err != nil {
 			data.Error = "no file provided"
-			renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 			return
 		}
 		defer file.Close()
@@ -78,7 +78,7 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 		fileBytes, err := io.ReadAll(file)
 		if err != nil {
 			data.Error = "failed to read file"
-			renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 			return
 		}
 
@@ -86,13 +86,13 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 			zr, err := zip.NewReader(bytes.NewReader(fileBytes), int64(len(fileBytes)))
 			if err != nil {
 				data.Error = fmt.Sprintf("invalid zip: %v", err)
-				renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+				renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 				return
 			}
 			fileBytes, err = multidata.ReadArchipelagoFromZip(zr)
 			if err != nil {
 				data.Error = fmt.Sprintf("reading zip: %v", err)
-				renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+				renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 				return
 			}
 		}
@@ -100,7 +100,7 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 		md, err := multidata.ParseMultidata(fileBytes)
 		if err != nil {
 			data.Error = fmt.Sprintf("invalid multidata: %v", err)
-			renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 			return
 		}
 
@@ -110,7 +110,7 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 			uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
 		if err != nil {
 			data.Error = fmt.Sprintf("failed to start room: %v", err)
-			renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 			return
 		}
 
@@ -122,7 +122,7 @@ func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	renderTemplate(w, "base", data, "templates/base.gohtml", "templates/upload.gohtml")
+	renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 }
 
 func (rm *RoomManager) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +132,7 @@ func (rm *RoomManager) handleAdminRooms(w http.ResponseWriter, r *http.Request) 
 			ActiveNav: "rooms",
 			Error:     "failed to load rooms from store",
 			ApiKey:    rm.config.ApiKey,
-		}, "templates/base.gohtml", "templates/rooms.gohtml")
+		}, "templates/base_admin.gohtml", "templates/rooms.gohtml")
 		return
 	}
 
@@ -159,7 +159,7 @@ func (rm *RoomManager) handleAdminRooms(w http.ResponseWriter, r *http.Request) 
 		ActiveNav: "rooms",
 		Rooms:     result,
 		ApiKey:    rm.config.ApiKey,
-	}, "templates/base.gohtml", "templates/rooms.gohtml")
+	}, "templates/base_admin.gohtml", "templates/rooms.gohtml")
 }
 
 func (rm *RoomManager) handleAdminStats(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +174,7 @@ func (rm *RoomManager) handleAdminStats(w http.ResponseWriter, r *http.Request) 
 		RoomCount:          rm.registry.Count(),
 		CachedDataPackages: cachedDataPackages,
 		ApiKey:             rm.config.ApiKey,
-	}, "templates/base.gohtml", "templates/stats.gohtml")
+	}, "templates/base_admin.gohtml", "templates/stats.gohtml")
 }
 
 // renderTemplate is a small helper to keep handlers tidy

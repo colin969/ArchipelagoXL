@@ -597,7 +597,7 @@ func BenchmarkHandleRoomWebhostApiTracker(b *testing.B) {
 	}
 
 	router := mux.NewRouter()
-	router.HandleFunc("/api/tracker/{roomId}", cachedRoomHandler(rm, "tracker", 60*time.Second, rm.trackerSupply)).Methods(http.MethodGet)
+	router.HandleFunc("/api/tracker/{roomId}", newCachedRoomHandler(rm, "tracker", 60*time.Second, rm.trackerSupply)).Methods(http.MethodGet)
 
 	b.ReportAllocs()
 

@@ -1,0 +1,221 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>APX - {{block "title" .}}{{end}}</title>
+    <link rel="stylesheet" href="/static/tabulator_site_dark.min.css">
+    <script src="/static/tabulator.min.js"></script>
+    {{block "styles" .}}{{end}}
+    <style>
+        *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary:    #1b1b1c;
+            --bg-secondary:  #2d2d30;
+            --bg-tertiary:   #141417;
+            --bg-quaternary: #242428;
+            --row-odd:rgb(29, 29, 37);
+            --row-even:rgb(20, 20, 25);
+            --text-primary:  #f1f1f1;
+            --text-secondary:#aaaaaa;
+            --text-disabled: #9b9b9b;
+            --outline:       #47474d;
+            --accent:        #DD0428;
+            --accent-light:  #E85971;
+            --confirm:       #5cb468;
+            --confirm-hover: #559e5f;
+            --btn-bg:        #434346;
+            --btn-border:    #6f6f75;
+            --nav-hover-bg:  #3c2d4b;
+            --nav-hover-border: #d33682;
+            --font: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', sans-serif;
+        }
+
+        body {
+            font-family: var(--font);
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 1em;
+            font-weight: 100;
+            min-height: 100vh;
+        }
+
+        /* ── Nav ── */
+        .nav {
+            background-color: var(--bg-secondary);
+            border-bottom: 1px solid var(--outline);
+            padding: 0 1rem;
+            display: flex;
+            align-items: stretch;
+            height: 2.5rem;
+            gap: 0.25rem;
+        }
+        .nav__brand {
+            display: flex;
+            align-items: center;
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: var(--accent);
+            padding-right: 1.5rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            user-select: none;
+        }
+        .nav__link {
+            display: inline-flex;
+            align-items: center;
+            padding: 0 0.75rem;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            text-decoration: none;
+            border: 1px solid transparent;
+            border-bottom: none;
+            cursor: pointer;
+        }
+        .nav__link:hover {
+            background-color: var(--nav-hover-bg);
+            border-color: var(--nav-hover-border);
+        }
+        .nav__link--active {
+            font-weight: bold;
+            text-decoration: underline;
+        }
+
+        /* ── Page shell ── */
+        .page {
+            padding: 2rem;
+            width: 100%;
+        }
+        .page__title {
+            font-size: 1.4rem;
+            margin-bottom: 1.5rem;
+        }
+
+        /* ── Card ── */
+        .card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--outline);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .card__title {
+            font-size: 1rem;
+            font-weight: bold;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--outline);
+        }
+
+        /* ── Form elements ── */
+        .form-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+            margin-bottom: 1rem;
+        }
+        .form-row label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        .form-row input[type="text"],
+        .form-row input[type="file"] {
+            font-family: var(--font);
+            font-size: 0.875rem;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            border: 1px solid var(--outline);
+            padding: 0.35rem 0.5rem;
+            width: 100%;
+            max-width: 28rem;
+        }
+        .form-row input[type="file"] {
+            padding: 0.25rem;
+            cursor: pointer;
+        }
+        .form-row input[type="file"]::file-selector-button {
+            font-family: var(--font);
+            font-size: 0.8rem;
+            background-color: var(--btn-bg);
+            color: var(--text-primary);
+            border: 1px solid var(--btn-border);
+            padding: 0.2rem 0.6rem;
+            cursor: pointer;
+            margin-right: 0.5rem;
+        }
+        .form-row input[type="file"]::file-selector-button:hover {
+            background-color: var(--bg-secondary);
+        }
+
+        .form-check {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+            user-select: none;
+        }
+        .form-check input[type="checkbox"] {
+            accent-color: var(--accent);
+            width: 1rem;
+            height: 1rem;
+            cursor: pointer;
+        }
+
+        .form-hint {
+            font-size: 0.75rem;
+            color: var(--text-disabled);
+            font-style: italic;
+            margin-top: 0.15rem;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            font-family: var(--font);
+            font-size: 0.875rem;
+            padding: 0.35rem 1rem;
+            border: 1px solid var(--btn-border);
+            background-color: var(--btn-bg);
+            color: var(--text-primary);
+            cursor: pointer;
+            user-select: none;
+        }
+        .btn:hover  { background-color: var(--bg-secondary); }
+        .btn:active { background-color: var(--bg-primary); box-shadow: 0 -1px 0 #09090a; }
+        .btn--confirm {
+            background-color: var(--confirm);
+            border-color: var(--confirm-hover);
+            color: #111;
+        }
+        .btn--confirm:hover  { background-color: var(--confirm-hover); }
+        .btn--confirm:active { background-color: #407947; }
+
+        /* ── Flash messages ── */
+        .flash {
+            padding: 0.6rem 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid;
+            font-size: 0.85rem;
+            max-width: 28rem;
+        }
+        .flash--error   { border-color: #a22020; background-color: #5a1010; }
+        .flash--success { border-color: var(--confirm-hover); background-color: #1a3d1e; }
+    </style>
+    {{block "head" .}}{{end}}
+</head>
+<body>
+
+<nav class="nav">
+    <span class="nav__brand">APX</span>
+</nav>
+
+<main class="page">
+    {{block "content" .}}{{end}}
+</main>
+
+{{block "scripts" .}}{{end}}
+</body>
+</html>
+{{end}}

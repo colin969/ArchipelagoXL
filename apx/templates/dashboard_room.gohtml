@@ -1,0 +1,56 @@
+{{template "base" .}}
+
+{{define "title"}} Room - {{.RoomId}}{{end}}
+
+{{define "content"}}
+
+<div class="card__title">Room - {{.RoomId}}</div>
+
+<div class="desc-box">
+  <a href="/dashboard/{{.RoomId}}/tracker"><button class="btn">View Tracker</button></a>
+</div>
+
+<table class="room-table">
+  <thead>
+    <th>Player</th>
+    <th>Game</th>
+    <th>Patch</th>
+  </thead>
+  <tbody>
+    {{range .Players}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td>{{.Game}}</td>
+        <td>Coming Soon</td>
+      </tr>
+    {{end}}
+  </tbody>
+</table>
+
+{{end}}
+
+{{define "styles"}}
+<style>
+  .desc-box {
+    padding: 0.5rem;
+    margin-bottom: 0.5rem;
+    background-color: var(--bg-secondary);
+  }
+  .room-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .room-table th {
+    text-align: left;
+    background-color: var(--bg-quaternary);
+    padding: 0.5rem;
+    font-weight: bold;
+  }
+  .room-table td {
+    padding: 0.4rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .room-table tbody tr:nth-child(even) { background: var(--row-even); }
+  .room-table tbody tr:nth-child(odd) { background: var(--row-odd); }
+</style>
+{{end}}
