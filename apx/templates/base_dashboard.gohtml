@@ -67,11 +67,10 @@
             display: inline-flex;
             align-items: center;
             padding: 0 0.75rem;
-            font-size: 0.8rem;
+            height: 100%;
             color: var(--text-primary);
             text-decoration: none;
             border: 1px solid transparent;
-            border-bottom: none;
             cursor: pointer;
         }
         .nav__link:hover {
@@ -81,6 +80,11 @@
         .nav__link--active {
             font-weight: bold;
             text-decoration: underline;
+        }
+        .nav__sep {
+            margin-left: 0.1rem;
+            margin-right: 0.1rem;
+            font-size: 1.2em;
         }
 
         /* ── Page shell ── */
@@ -209,6 +213,7 @@
 
 <nav class="nav">
     <span class="nav__brand">APX</span>
+    <div class="breadcrumb">{{block "breadcrumb" .}}{{end}}</div>
 </nav>
 
 <main class="page">

@@ -2,6 +2,13 @@
 
 {{define "title"}} Tracker - {{.RoomId}}{{end}}
 
+{{define "breadcrumb"}}
+<a class="nav__link" href="/dashboard/{{.RoomId}}">Room</a>
+<span class="nav__sep">›</span>
+<a class="nav__link nav__link--active" href="/dashboard/{{.RoomId}}/tracker">Tracker</a>
+{{end}}
+
+
 {{define "content"}}
 
 <h1>Dashboard</h1>

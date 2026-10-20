@@ -2,9 +2,13 @@
 
 {{define "title"}} Room - {{.RoomId}}{{end}}
 
+{{define "breadcrumb"}}
+<a class="nav__link nav__link--active" href="/dashboard/{{.RoomId}}">Room</a>
+{{end}}
+
 {{define "content"}}
 
-<div class="card__title">Room - {{.RoomId}}</div>
+<div class="card__title">{{.RoomId}}</div>
 
 <div class="desc-box">
   <a href="/dashboard/{{.RoomId}}/tracker"><button class="btn">View Tracker</button></a>
