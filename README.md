@@ -91,6 +91,12 @@ The first start will also download all apworlds in the index, which might take a
 
 ## Archipelago Webhost
 
+## Stylesheets
+
+The lobby's stylesheets are the Sass files in `lobby/static/sass/`. They are compiled to CSS when the lobby is built, by its `build.rs`, and the CSS is served from the binary under `/static/css/`. There is no compiled CSS in the repository and nothing to install or run by hand: edit a `.sass` file and build. A file whose name starts with `_` is a partial and isn't compiled on its own.
+
+# Configuring a real deployment
+
 ```
 ./start-webhost.sh
 ```
@@ -176,13 +182,16 @@ Generate strong random values for each row. `openssl rand -hex 32` or `openssl r
 
 ## Optional
 
-| Variable | Effect when set |
+| Variable | Effect |
 |---|---|
 | `SENTRY_DSN` | Enables Sentry error reporting. |
 | `OTLP_ENDPOINT` | Enables OpenTelemetry / OTLP tracing. |
 | `RUST_LOG` | Log filter, e.g. `info,ap_lobby=debug`. The compose example sets `debug`. |
 | `SKIP_APWORLDS_UPDATE` | If set, skips fetching the apworld index on startup (useful for offline dev). |
-| `PRELOAD_OPTIONS_DEFS` | If set, eagerly preloads option schemas into Redis at startup. |
+| `PRELOAD_OPTIONS_DEFS` | If set, eagerly preloads option schemas into Valkey at startup, skipping the ones already there. |
+| `AP_BASES` | The Archipelago versions to offer, for example `0.6.8,0.6.7`. Unset means the index's own version only. See [Choosing which bases to offer](#choosing-which-bases-to-offer). |
+| `AP_DEFAULT_BASE` | The Archipelago version of a new room. Unset means the newest of `AP_BASES`. |
+| `ADMIN_ROOMS_ONLY` | Restricts room creation to admins. Non-admins lose the "Create new room" links and the `/create-room` handlers reject them; existing rooms and everything else about them are unaffected. Accepts `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`, case-insensitive. Unset or empty means off; **any other value aborts startup**. |
 
 ## Discord OAuth
 
@@ -199,6 +208,142 @@ banned_users = []   # optional
 ```
 
 The `redirect_uri` must exactly match a redirect URI registered in your Discord developer application.
+
+## Running more than one lobby process
+
+Several lobby processes can serve the same deployment.
+
+| State | Where it lives | With several processes |
+|---|---|---|
+| Rooms, YAMLs, validation results, generations | Postgres | Shared. |
+| Job queues, sessions | Valkey | Shared. A worker's result is handled by whichever process the worker is connected to. |
+| Option definitions for the options page | Valkey, for 24 hours | Shared. To drop them sooner, for example after fixing the options generator, delete the `options_def:*` keys. The ones of the index's own Archipelago version are `options_def:<apworld>:<version>`, as they always were; another base's are `options_def:base:<base>:<apworld>:<version>`. |
+| Downloaded apworlds | `APWORLDS_PATH` | Shared if the directory is. |
+| The index | A checkout of the index repository per process (`APWORLDS_INDEX_DIR`), read into its memory | Each process has its own, and they keep each other on the same commit, see below. Two processes must not share one `APWORLDS_INDEX_DIR`. |
+
+The process that serves `/worlds/refresh` loads the newest commit of the index, records it in Valkey under `index:announced`, and publishes it. Every other process loads that same commit when it hears of it, normally well within a second, and checks the key every 30 seconds in case it didn't hear. The open rooms are looked at once, by the process that served the request.
+
+A process that starts reads the newest commit, as it always did. If that is newer than the announced one, it announces it and the running processes follow, so restarting one process moves all of them. To see which commit a process is on, look for `Loaded the index at commit` in its log.
+
+If Valkey is unreachable, a refresh still updates the process that served it and then answers with an error, since the others were not told. They catch up within 30 seconds of Valkey coming back if the refresh is run again.
+
+# Archipelago versions
+
+The workers (`yaml-checker`, `generator`, `option-generator`) run Archipelago itself, and a worker image is built for exactly one Archipelago version, called its base. Every request a worker makes to the lobby's queues names the base it runs, and the lobby only hands a worker the jobs of that base.
+
+A room is on one base, kept in `rooms.ap_version`. Everything about the room follows from it: the worlds and releases it can use are the ones the index gives that base, its YAMLs are validated by a worker of that base, and so is its generation. A job carries its base as `ap_version`, and a worker refuses a job that names another base than its own.
+
+The options pages (`/options...`) and the game API (`/api/games`, `/api/games/<apworld>/options`) are about one base as well: the default one, or the one named with `?base=<version>`. The worlds, their releases and their options are that base's. Option definitions are generated by a worker of that base and cached for it alone. The "Create YAML" links in a room's world list lead to the room's base.
+
+Each queue keeps its waiting jobs in one list per base. The index's own version uses the keys the queue always had (`wq:<queue>:queue`), so jobs that are waiting or running across an upgrade or a rollback are not lost; any other base uses `wq:<queue>:partition:<base>:queue`. A worker that names no base, as the ones built before this did, is treated as running the index's version.
+
+## Choosing which bases to offer
+
+Two things decide which bases a lobby works with, and a base needs both:
+
+- **The index describes it.** Its `index.toml` names one version in `archipelago_version` and can declare more in `[bases]`; see `apwm/README.md`.
+- **The lobby offers it**, which is yours to set, because it only makes sense for a base you run workers for.
+
+| Variable | Effect |
+|---|---|
+| `AP_BASES` | The bases to offer, separated by commas, for example `0.6.8,0.6.7`. Unset or empty offers the index's `archipelago_version` and nothing else, which is what a lobby did before it had this setting. A base listed here that the index doesn't describe yet is not offered until it does, with a warning at startup; it needs no restart when the index catches up. |
+| `AP_DEFAULT_BASE` | The base of a new room, and of the options pages and the game API when no base is named. Unset or empty means the newest base on offer. It has to be one of `AP_BASES`. |
+
+"Newest" is the highest version as semver orders them, whatever order `AP_BASES` lists them in. A pre-release is older than its release: `0.7.0-rc1` comes before `0.7.0`.
+
+A value that isn't a version, or an `AP_DEFAULT_BASE` that isn't among the offered ones, stops the lobby at startup. If the index describes none of `AP_BASES`, the lobby starts, logs an error, and uses the index's own version wherever it needs a default. The log line `Loaded the index at commit ..., offering Archipelago 0.6.8 (default), 0.6.7` says what a process ended up with.
+
+Each base on offer needs its own `yaml-checker`, `generator` and `option-generator`. A base that is offered without them looks fine and does nothing: its YAMLs stay unvalidated, its generations never start, and its options pages fail after waiting 30 seconds. In the compose example the three services at the top are for 0.6.7 and the three in the `ap-0.6.8` profile are for 0.6.8:
+
+```
+docker compose --profile ap-0.6.8 up -d
+```
+
+Not offering a base doesn't remove anything. A room that is on it keeps its pages and its YAMLs; with no worker for it, nothing new gets validated or generated there. `PRELOAD_OPTIONS_DEFS` preloads every base on offer.
+
+## What a host sees
+
+With one base on offer, nothing to choose appears anywhere. With more:
+
+- **Making a room.** The form begins with an "Archipelago version" selector, above the room's name. It starts on the default base, or on the base of the template the room is made from if that one is still offered. Choosing another loads the form again, because the worlds of its Apworlds tab are those of one base. That drops what was typed into the form, which is why the selector comes first.
+- **A room's page** carries a chip at the right end of the row with the room's name, reading `AP 0.6.8`. It is green when the room is on the default base, gold when it is on an older one, and white when it is on a newer one. Its tooltip says the same in words.
+- **Moving a room to another base** is done from the "Archipelago version" tab of its edit page. The tab has a selector of the other bases and a "Change version" button: the form's "Save room" button is hidden there, because the move isn't saved with the rest of the room. It is refused once the room has a generation. A room with no YAML moves immediately. A room with YAMLs first shows what the move does, and moves when its owner confirms:
+  - a warning for each world the target base doesn't have, whose YAMLs become unsupported, and for each world the room pins to a release the target base doesn't have, with the release that would be used instead;
+  - a list of the worlds that simply get another release;
+  - after the move, every YAML of the room is validated again by the new base's workers. The room's choice of worlds and releases is kept as it is and read against the new base.
+- **Templates** can name a base, or leave it to the default when a room is made.
+- **The worlds page and the options pages** have the selector too, and `/worlds` takes `?base=` like the options pages.
+- **The API** gives a room's base as `ap_version`, in `/api/room/<id>` and in `/api/rooms`.
+
+## Upgrading from a lobby without bases
+
+The upgrade puts every existing room on 0.6.7, because that was the only version a lobby could be on when rooms got a base. A lobby whose index is on an older Archipelago has to move to 0.6.7 first, the usual way, with the version of the lobby from before this.
+
+With `AP_BASES` unset, nothing else changes: the same workers get the same jobs, under the same keys in Valkey.
+
+The upgrade has one database migration, which adds `rooms.ap_version` and `room_templates.ap_version`. The lobby applies it when it starts. A lobby process from before the upgrade keeps working against the migrated tables, so it can serve while the new one starts, and going back to it needs nothing undone. When several new processes start at the same moment on a database that lacks the migration, one applies it and the others stop with `column "ap_version" of relation "rooms" already exists`; started again, they run normally. Starting one process first avoids that.
+
+To go on from there to a second base, keep this order:
+
+1. **Upgrade the lobby and the workers you have, with `AP_BASES` unset.** A lobby from before bases hands any job to any worker, so no worker of another base may run while one of those is still up.
+2. **Start the workers of the new base.** They wait and claim nothing.
+3. **Set `AP_BASES`.** If the index already describes the new base, the lobby offers it from the moment it starts with that setting, and makes it the default for new rooms. Its workers have to be there by then, which is why they come first.
+
+Going back is the same in reverse: unset `AP_BASES`, then stop the new base's workers, and only then put an older lobby back. A lobby from before bases doesn't read `rooms.ap_version`, so it would treat a room made on another base as a 0.6.7 room.
+
+## Building a worker for a base
+
+Each base has a pin file, `taskcluster/docker/ap-worker/bases/<base>.env`, holding the commits of Archipelago, the fuzzer and the linter that its image is built from. Archipelago comes from the [ionium fork](https://github.com/ionium-ap/Archipelago), which keeps one patched line per upstream release; [its own notes](https://github.com/ionium-ap/Archipelago/blob/ionium-0.6.8/docs/ionium%20fork.md) list what each line carries and why.
+
+The Dockerfile takes the base as a build argument and defaults to `0.6.7`:
+
+```
+docker build --build-arg SRC=. --build-arg DOCKER_SRC=taskcluster/docker/ap-worker \
+    --build-arg AP_BASE=0.6.8 -f taskcluster/docker/ap-worker/Dockerfile .
+```
+
+The build fails if the pinned Archipelago commit reports a different version than the file is named after.
+
+- To move a base to a newer commit of the fork, change `BASE_COMMIT` in its pin file and note the fork tag beside it.
+- To add a base, add its pin file, add the base to the `image-ap-worker` matrix in `.gitlab-ci.yml`, and move `NEWEST_BASE` there if it is the newest. The index's CI keeps its own list of bases and needs the new one too, see below.
+
+CI pushes these `ap-worker` tags:
+
+| Tag | Pushed from | Which build |
+|---|---|---|
+| `sha-<short sha>-<base>` | every branch | each base |
+| `<base>` | `main` | each base |
+| `<base>-dev` | `ionium-dev` | each base |
+| `latest` | `main` | the newest base |
+| `dev` | `ionium-dev` | the newest base |
+
+`latest` and `dev` change Archipelago version whenever a base is added, so nothing that needs a given version should pull them. Unlike the other images, `ap-worker` has no `sha-<short sha>` tag without a base.
+
+Anything on Kubernetes that runs a tag that moves (`<base>`, `<base>-dev`, `latest`, `dev`) has to ask for the image to be pulled every time. For every tag but `latest` the default is to pull only when the node doesn't have the tag yet, so a node keeps running the image it has however often the tag moves. What that looks like is a bug that was fixed and is still there. The index's CI ran into it with `ap-checker:<base>` and its jobs now set `pull_policy: always`. The lobby's own deployments pin `sha-` tags, which never move.
+
+## Who builds on these images
+
+- **The lobby's own deployments** pin `ap-lobby:sha-<short sha>` and, for each worker, `ap-worker:sha-<short sha>-<base>` of the same commit. CI builds every image for a commit or none of them, so a commit that has one has them all. A commit that changes nothing an image is made from, such as this README, has none.
+- **The index's CI** (the `Archipelago-index-ci` repository) builds one checker image per base, `ap-checker:<base>` on `ap-worker:<base>`, and fails its build if the two disagree on the Archipelago version. The jobs that run apworld code (`check`, `unit-tests`, `network-audit`, `fuzz`) run once per base, each on the versions that `apwm changes` reports as added on that base. The fuzzer and the linter in a checker image are the ones pinned in the base's pin file here.
+
+The index's CI can't read its bases from the index, so it lists them itself: in the matrix of each of those jobs and its checker image build, and in `AP_BASES` in `index-validate.yml`. Its `diff` job warns when the index declares a base that has no lane. A base added here and to the index is not tested there until it is added to those lists.
+
+## How the bases differ
+
+A YAML can be valid on one base and not on another, and not only because the worlds changed.
+
+| | 0.6.7 | 0.6.8 |
+|---|---|---|
+| A YAML's `requires:` block | Not checked. | Enforced. The YAML is rejected if `requires: version` is newer than 0.6.8, or if `requires: game: <Game>` asks for a newer world than the one the room uses. |
+| A YAML's `quantity:` key | Ignored. | Rejected unless it is 1, because a room counts one player per YAML. |
+| Core worlds | Includes Donkey Kong Country 3. | Donkey Kong Country 3 is gone; Gauntlet Legends is new. |
+| Fork patches | Generation and hosting. | Generation only. |
+
+The world version that `requires: game` is compared against comes from the apworld's own `archipelago.json`, not from the index. A core world with no manifest counts as 0.0.0, which is also what Archipelago's own templates assume for it.
+
+Templates written by Archipelago always carry `requires: version` set to the version that wrote them, so a YAML from a newer Archipelago than the room's base is rejected on 0.6.8 and later.
+
+The unit tests differ too. `ap-worker/ap_tests.py` runs a world's own tests and Archipelago's general ones, after unloading every world but the one under test. On 0.6.7 the general tests go over `AutoWorldRegister.world_types`. From 0.6.8 on they go over `AutoWorldRegister.testable_worlds`, a copy taken when `worlds` is imported, so the script sets it again after unloading. Without that, the general tests miss the world under test, which is loaded later, and fail with a `KeyError` for any world that was in Archipelago's `worlds` directory at import and then unloaded. The index's checker image puts Universal Tracker there.
 
 # Running apdiff-viewer standalone
 

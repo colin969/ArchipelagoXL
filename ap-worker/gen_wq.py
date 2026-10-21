@@ -63,7 +63,7 @@ async def main(loop):
 
 class GenerationQueue(LobbyQueue):
     def __init__(self, ap_handler, output_dir, root_url, worker_name, token, loop):
-        super().__init__(root_url, "generation", worker_name, token, loop)
+        super().__init__(root_url, "generation", worker_name, token, loop, Utils.__version__)
         self.root_url = root_url
         self.ap_handler = ap_handler
         self.output_dir = output_dir
@@ -132,6 +132,9 @@ class GenerationQueue(LobbyQueue):
                         "skip_output": False,
                         "csv_output": False,
                         "log_time": False,
+                        # Read by Archipelago 0.6.8 and later. Off because a room counts one
+                        # player per YAML, see the matching check in checker.py
+                        "allow_quantity": False,
                     }
                 )
 

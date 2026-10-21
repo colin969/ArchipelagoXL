@@ -12,6 +12,7 @@ use crate::utils::{NamedBuf, ZipFile};
 use crate::views::api;
 use crate::views::filters;
 use crate::views::room::host::{fetch_apx_room_info, ApxRoomInfoDisplay};
+use crate::views::utils::{base_chip, BaseChip};
 use crate::yaml::{compute_ap_slot_names, YamlValidationResult};
 use crate::{Context, LobbyConfig, TplContext};
 use askama::Template;
@@ -65,6 +66,7 @@ pub struct RoomTpl<'a> {
     // Map from original player name to AP truncated slot name
     truncated_names: HashMap<String, String>,
     yaml_eval_results: Vec<(YamlId, Option<YamlEvalResult>)>,
+    base_chip: BaseChip,
 }
 
 impl RoomTpl<'_> {
@@ -155,7 +157,7 @@ pub async fn room_inner<'a>(
     };
     
     let game_display_names = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         yamls
             .iter()
             .map(|(yaml, _)| &yaml.game)
@@ -180,6 +182,8 @@ pub async fn room_inner<'a>(
         .filter(|yaml| !&yaml.0.game.starts_with("Random ("))
         .unique_by(|yaml| &yaml.0.game)
         .count();
+
+    let base_chip = base_chip(&room.ap_version, &index_manager.default_base().await);
 
     let is_my_room = session.is_admin || session.user_id == Some(room.settings.author_id);
     let user_has_yaml = yamls
@@ -239,6 +243,7 @@ pub async fn room_inner<'a>(
         truncated_names,
         apx_room_info,
         yaml_eval_results,
+        base_chip,
     })
 }
 

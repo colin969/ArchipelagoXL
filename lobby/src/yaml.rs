@@ -23,6 +23,25 @@ use std::time::Duration;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use wq::JobStatus;
 
+/// Reads one YAML document. Every read of a YAML in the lobby goes through here, so that they
+/// all agree on what is valid.
+pub fn read_yaml<'de, T: serde::Deserialize<'de>>(
+    yaml: &'de str,
+) -> std::result::Result<T, serde_saphyr::Error> {
+    let mut options = serde_saphyr::Options::default();
+    // `.inf` and `.nan` are valid YAML, and Archipelago reads them. By default they are
+    // refused wherever the type to read isn't known, and for an upload that is everything but
+    // its `name` and its `game`: a value the lobby never looks at would get the file refused.
+    options.reject_non_finite_typeless_float = false;
+    // The lobby reads no comments. Asked to hand them over, the parser keeps a run of them
+    // until it knows what they belong to, and refuses a file with more than 32 in a row at
+    // some places ("too many consecutive comments"), such as a block of options that was
+    // commented out under a game. Not asking for them lifts that limit.
+    options.emit_comments = false;
+
+    serde_saphyr::from_str_with_options(yaml, options)
+}
+
 #[tracing::instrument(skip_all)]
 pub fn parse_raw_yamls(yamls: &[&str]) -> Result<Vec<(String, YamlFile)>> {
     let yaml = yamls
@@ -45,7 +64,7 @@ pub fn parse_raw_yamls(yamls: &[&str]) -> Result<Vec<(String, YamlFile)>> {
                 anyhow::bail!("Invalid yaml file. Syntax error.")
             };
 
-            let parsed: YamlFile = match serde_saphyr::from_str(&doc) {
+            let parsed: YamlFile = match read_yaml(&doc) {
                 Ok(doc) => doc,
                 Err(e) => {
                     let error_str = e.to_string();
@@ -135,6 +154,7 @@ pub async fn parse_and_validate_yamls_for_room<'a>(
                 let validation_result = validate_yaml(
                     document,
                     parsed,
+                    &room.ap_version,
                     &room.settings.manifest,
                     index_manager,
                     yaml_validation_queue,
@@ -167,7 +187,7 @@ pub async fn parse_and_validate_yamls_for_room<'a>(
                 (vec![], YamlValidationStatus::Unknown, None, vec![])
             };
 
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         let features = crate::extractor::extract_features(&index, parsed, document)?;
         let (disabled_games, unsupported_games): (Vec<_>, Vec<_>) = unsupported_games
             .into_iter()
@@ -276,23 +296,28 @@ pub enum YamlValidationJobResult {
 }
 
 #[tracing::instrument(skip_all)]
+/// Validates a YAML for a room on Archipelago `ap_version`: with the releases that the room's
+/// manifest gives on that version, by a worker running that version.
 pub(crate) async fn validate_yaml(
     yaml: &str,
     parsed: &YamlFile,
+    ap_version: &Version,
     manifest: &Manifest,
     index_manager: &IndexManager,
     yaml_validation_queue: &YamlValidationQueue,
 ) -> Result<YamlValidationJobResult> {
-    let apworlds = match get_apworlds_for_games(index_manager, manifest, &parsed.game).await {
-        Ok(apworlds) => apworlds,
-        Err(unsupported) => return Ok(YamlValidationJobResult::Unsupported(unsupported)),
-    };
+    let apworlds =
+        match get_apworlds_for_games(index_manager, ap_version, manifest, &parsed.game).await {
+            Ok(apworlds) => apworlds,
+            Err(unsupported) => return Ok(YamlValidationJobResult::Unsupported(unsupported)),
+        };
 
     let mut params = YamlValidationParams {
         apworlds,
         yaml: yaml.to_string(),
         otlp_context: HashMap::new(),
         yaml_id: None,
+        ap_version: Some(ap_version.clone()),
     };
 
     let cx = tracing::Span::current().context();
@@ -301,7 +326,12 @@ pub(crate) async fn validate_yaml(
     });
 
     let job_id = yaml_validation_queue
-        .enqueue_job(&params, wq::Priority::Normal, Duration::from_secs(30))
+        .enqueue_job_in(
+            Some(&ap_version.to_string()),
+            &params,
+            wq::Priority::Normal,
+            Duration::from_secs(30),
+        )
         .await?;
 
     let Some(status) = yaml_validation_queue
@@ -401,13 +431,14 @@ fn is_reserved_name(player_name: &str) -> bool {
 #[tracing::instrument(skip(index_manager, manifest))]
 pub async fn get_apworlds_for_games(
     index_manager: &IndexManager,
+    base: &Version,
     manifest: &Manifest,
     games: &YamlGame,
 ) -> std::result::Result<Vec<(String, Version)>, Vec<String>> {
     match games {
         YamlGame::Name(name) => {
             let Some(apworld_path) = index_manager
-                .get_apworld_from_game_name(manifest, name)
+                .get_apworld_from_game_name(base, manifest, name)
                 .await
             else {
                 return Err(vec![name.to_string()]);
@@ -419,7 +450,7 @@ pub async fn get_apworlds_for_games(
             let mut errors = Vec::new();
             for (game, _) in map.iter().filter(|(_, probability)| **probability != 0.) {
                 let resolved_game = index_manager
-                    .get_apworld_from_game_name(manifest, game)
+                    .get_apworld_from_game_name(base, manifest, game)
                     .await;
 
                 match resolved_game {
@@ -451,7 +482,7 @@ pub async fn revalidate_yamls_if_necessary(
     let yamls = db::get_yamls_for_room(room.id, conn).await?;
 
     let (resolved_index, _) = {
-        let index = index_manager.index.read().await;
+        let index = index_manager.index_for(&room.ap_version).await?;
         room.settings.manifest.resolve_with(&index)
     };
 
@@ -515,6 +546,23 @@ fn should_revalidate_yaml(
     false
 }
 
+/// The names of the worlds a YAML can roll: the one it names, or each one it gives a weight.
+/// None for a YAML that can't be read anymore.
+pub fn games_of_yaml(yaml: &Yaml) -> Vec<String> {
+    let Ok(parsed) = read_yaml::<YamlFile>(yaml.current_content()) else {
+        return vec![];
+    };
+
+    match parsed.game {
+        YamlGame::Name(name) => vec![name],
+        YamlGame::Map(games) => games
+            .into_iter()
+            .filter(|(_, weight)| *weight != 0.)
+            .map(|(game, _)| game)
+            .collect(),
+    }
+}
+
 #[tracing::instrument(skip(index_manager, yaml_validation_queue, conn), fields(yaml_id = %yaml.id, room_id = %room.id))]
 pub async fn queue_yaml_validation(
     yaml: &Yaml,
@@ -524,7 +572,7 @@ pub async fn queue_yaml_validation(
     conn: &mut AsyncPgConnection,
 ) -> Result<()> {
     let current = yaml.current_content();
-    let Ok(parsed) = serde_saphyr::from_str::<YamlFile>(current) else {
+    let Ok(parsed) = read_yaml::<YamlFile>(current) else {
         log::error!(
             "Internal error, unable to reparse YAML {} that was already parsed before",
             yaml.id
@@ -541,29 +589,35 @@ pub async fn queue_yaml_validation(
         return Ok(());
     };
 
-    let apworlds =
-        match get_apworlds_for_games(index_manager, &room.settings.manifest, &parsed.game).await {
-            Ok(apworlds) => apworlds,
-            Err(unsupported) => {
-                // If the apworld was already unsupported, nothing has changed
-                if yaml.validation_status == YamlValidationStatus::Unsupported {
-                    return Ok(());
-                }
-
-                let error = format!("Unsupported apworlds: {}", unsupported.join(", "));
-
-                db::update_yaml_status(
-                    yaml.id,
-                    db::YamlValidationStatus::Unsupported,
-                    Some(error),
-                    vec![],
-                    Utc::now(),
-                    conn,
-                )
-                .await?;
+    let apworlds = match get_apworlds_for_games(
+        index_manager,
+        &room.ap_version,
+        &room.settings.manifest,
+        &parsed.game,
+    )
+    .await
+    {
+        Ok(apworlds) => apworlds,
+        Err(unsupported) => {
+            // If the apworld was already unsupported, nothing has changed
+            if yaml.validation_status == YamlValidationStatus::Unsupported {
                 return Ok(());
             }
-        };
+
+            let error = format!("Unsupported apworlds: {}", unsupported.join(", "));
+
+            db::update_yaml_status(
+                yaml.id,
+                db::YamlValidationStatus::Unsupported,
+                Some(error),
+                vec![],
+                Utc::now(),
+                conn,
+            )
+            .await?;
+            return Ok(());
+        }
+    };
 
     db::reset_yaml_validation_status(yaml.id, conn).await?;
 
@@ -572,6 +626,7 @@ pub async fn queue_yaml_validation(
         yaml: current.to_string(),
         otlp_context: HashMap::new(),
         yaml_id: Some(yaml.id),
+        ap_version: Some(room.ap_version.0.clone()),
     };
 
     let cx = tracing::Span::current().context();
@@ -580,7 +635,12 @@ pub async fn queue_yaml_validation(
     });
 
     yaml_validation_queue
-        .enqueue_job(&params, wq::Priority::Low, Duration::from_secs(600))
+        .enqueue_job_in(
+            Some(&room.ap_version.to_string()),
+            &params,
+            wq::Priority::Low,
+            Duration::from_secs(600),
+        )
         .await?;
 
     Ok(())
@@ -930,6 +990,68 @@ name: Player2
 game: Super Metroid
 "#;
         assert!(parse_raw_yamls(&[valid_multiple]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_raw_yamls_takes_values_the_lobby_doesnt_read() {
+        use crate::yaml::parse_raw_yamls;
+
+        // Valid YAML that Archipelago reads, in options the lobby never looks at
+        let non_finite = r#"
+name: Player1
+game: A Link to the Past
+A Link to the Past:
+  a: .inf
+  b: -.inf
+  c: .nan
+"#;
+        assert!(parse_raw_yamls(&[non_finite]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_raw_yamls_takes_any_number_of_comments_in_a_row() {
+        use crate::yaml::parse_raw_yamls;
+
+        // A long run of comment lines, in each place a YAML can have one. People comment out
+        // whole blocks of options, and a template explains its options at length.
+        let comments = |indent: &str| format!("{indent}# a comment\n").repeat(500);
+        let places = [
+            ("before everything", "{c0}name: Player1\ngame: A Link to the Past\n"),
+            (
+                "between two keys",
+                "name: Player1\n{c0}game: A Link to the Past\n",
+            ),
+            (
+                "before the first option of a game",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n{c2}  goal: ganon\n",
+            ),
+            (
+                "between two options",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n  goal: ganon\n{c2}  mode: open\n",
+            ),
+            (
+                "between two items of a list",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n  start_inventory:\n    - Bow\n{c4}    - Hookshot\n",
+            ),
+            (
+                "inside the weights of an option",
+                "name: Player1\ngame: A Link to the Past\nA Link to the Past:\n  goal:\n{c4}    ganon: 50\n{c4}    pedestal: 50\n",
+            ),
+            ("after everything", "name: Player1\ngame: A Link to the Past\n{c0}"),
+        ];
+
+        for (place, yaml) in places {
+            let yaml = yaml
+                .replace("{c0}", &comments(""))
+                .replace("{c2}", &comments("  "))
+                .replace("{c4}", &comments("    "));
+            let result = parse_raw_yamls(&[&yaml]);
+            assert!(
+                result.is_ok(),
+                "comments {place}: {}",
+                result.unwrap_err().0
+            );
+        }
     }
 
     #[test]

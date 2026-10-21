@@ -69,6 +69,7 @@ diesel::table! {
         meta_file -> Text,
         is_bundle_room -> Bool,
         locked -> Bool,
+        ap_version -> Nullable<Text>,
     }
 }
 
@@ -96,6 +97,7 @@ diesel::table! {
         meta_file -> Text,
         is_bundle_room -> Bool,
         locked -> Bool,
+        ap_version -> Text,
     }
 }
 

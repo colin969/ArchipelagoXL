@@ -11,7 +11,7 @@ use crate::db::Json;
 use crate::error::Result;
 use crate::schema::{discord_users, room_info, room_templates, rooms, yamls};
 
-use super::{RoomTemplateId, YamlValidationStatus};
+use super::{ApVersion, RoomTemplateId, YamlId, YamlValidationStatus};
 
 #[derive(Insertable, AsChangeset, Debug)]
 #[diesel(table_name=rooms)]
@@ -34,6 +34,7 @@ pub struct NewRoom<'a> {
     pub meta_file: String,
     pub is_bundle_room: bool,
     pub locked: bool,
+    pub ap_version: ApVersion,
 }
 
 macro_rules! define_settings_structs {
@@ -97,6 +98,9 @@ pub struct Room {
     #[diesel(embed)]
     pub settings: RoomSettings,
     pub from_template_id: Option<RoomTemplateId>,
+    /// The Archipelago version the room's YAMLs are validated against and its multiworld is
+    /// generated with. The room's manifest is resolved in the index's view of that version.
+    pub ap_version: ApVersion,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -107,6 +111,9 @@ pub struct RoomTemplate {
     pub settings: RoomTemplateSettings,
     pub global: bool,
     pub tpl_name: String,
+    /// The Archipelago version of the rooms made from this template. `None` leaves it to the
+    /// default version at the time a room is made.
+    pub ap_version: Option<ApVersion>,
 }
 
 impl RoomSettings {
@@ -197,6 +204,21 @@ pub async fn update_room_manifest(
     Ok(())
 }
 
+/// Moves a room to another Archipelago version. What the room's YAMLs were validated with
+/// stops meaning anything, so whoever calls this has them validated again.
+#[tracing::instrument(skip(conn))]
+pub async fn update_room_ap_version(
+    room_id: RoomId,
+    ap_version: &ApVersion,
+    conn: &mut AsyncPgConnection,
+) -> Result<()> {
+    diesel::update(rooms::table.find(room_id))
+        .set(rooms::ap_version.eq(ap_version))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 #[tracing::instrument(skip(conn))]
 pub async fn delete_room(room_id: RoomId, conn: &mut AsyncPgConnection) -> Result<()> {
     diesel::delete(rooms::table)
@@ -213,6 +235,19 @@ pub async fn get_room(room_id: RoomId, conn: &mut AsyncPgConnection) -> Result<R
         .find(room_id)
         .select(Room::as_select())
         .first::<Room>(conn)
+        .await?)
+}
+
+#[tracing::instrument(skip(conn))]
+pub async fn get_ap_version_for_yaml(
+    yaml_id: YamlId,
+    conn: &mut AsyncPgConnection,
+) -> Result<ApVersion> {
+    Ok(yamls::table
+        .find(yaml_id)
+        .inner_join(rooms::table)
+        .select(rooms::ap_version)
+        .first::<ApVersion>(conn)
         .await?)
 }
 

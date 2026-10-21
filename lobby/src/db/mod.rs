@@ -50,6 +50,8 @@ pub enum OpenState {
     Any,
     Open,
     Closed,
+    /// Open, plus rooms whose close date is within the last N seconds.
+    OpenOrClosedWithin(i64),
 }
 
 #[tracing::instrument(skip(conn))]
@@ -109,6 +111,9 @@ impl RoomFilter {
             OpenState::Any => query,
             OpenState::Open => query.filter(rooms::close_date.gt(now)),
             OpenState::Closed => query.filter(rooms::close_date.lt(now)),
+            OpenState::OpenOrClosedWithin(secs) => {
+                query.filter(rooms::close_date.gt(now - secs.seconds()))
+            }
         };
 
         query.order_by(rooms::close_date.desc())
