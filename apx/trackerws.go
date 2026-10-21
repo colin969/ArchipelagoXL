@@ -156,10 +156,24 @@ func (h *TrackerWS) buildSnapshot(apx *ApxRoom) []byte {
 	return wrapEvent("snapshot", data)
 }
 
+type SlotTrackerDirtyFlags uint8
+
+const (
+	SlotTrackerDirtyChecks SlotTrackerDirtyFlags = 1 << iota
+	SlotTrackerDirtyItems
+	SlotTrackerDirtyHints
+)
+
 type SlotTrackerWS struct {
 	subscribe   chan slotWSSub
 	unsubscribe chan chan []byte
-	publish     chan slotWSEvent
+	dirty       chan slotWSDirty
+	interval    time.Duration
+}
+
+type slotWSDirty struct {
+	slot  int
+	flags SlotTrackerDirtyFlags
 }
 
 type slotWSSub struct {
@@ -176,12 +190,23 @@ func newSlotTrackerWS() *SlotTrackerWS {
 	return &SlotTrackerWS{
 		subscribe:   make(chan slotWSSub, 16),
 		unsubscribe: make(chan chan []byte, 16),
-		publish:     make(chan slotWSEvent, 512),
+		dirty:       make(chan slotWSDirty, 512),
+		interval:    2 * time.Second,
 	}
 }
 
-func (h *SlotTrackerWS) Run(ctx context.Context) {
+func (h *SlotTrackerWS) MarkDirty(slot int, flags SlotTrackerDirtyFlags) {
+	select {
+	case h.dirty <- slotWSDirty{slot: slot, flags: flags}:
+	default:
+	}
+}
+
+func (h *SlotTrackerWS) Run(ctx context.Context, apx *ApxRoom) {
 	listeners := make(map[int]map[chan []byte]struct{})
+	dirty := make(map[int]SlotTrackerDirtyFlags)
+	ticker := time.NewTicker(h.interval)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -203,22 +228,88 @@ func (h *SlotTrackerWS) Run(ctx context.Context) {
 					break
 				}
 			}
-		case ev := <-h.publish:
-			for ch := range listeners[ev.slot] {
-				select {
-				case ch <- ev.msg:
-				default:
+		case d := <-h.dirty:
+			dirty[d.slot] |= d.flags
+		case <-ticker.C:
+			for slot, flags := range dirty {
+				chans := listeners[slot]
+				if len(chans) == 0 {
+					continue
+				}
+				msg := h.buildPatch(apx, slot, flags)
+				if msg == nil {
+					continue
+				}
+				for ch := range chans {
+					select {
+					case ch <- msg:
+					default:
+					}
 				}
 			}
+			dirty = make(map[int]SlotTrackerDirtyFlags)
 		}
 	}
 }
 
-func (h *SlotTrackerWS) Publish(slot int, event string, data []byte) {
-	select {
-	case h.publish <- slotWSEvent{slot: slot, msg: wrapEvent(event, data)}:
-	default:
+type WsTrackerHint struct {
+	Entrance        string     `json:"entrance"`
+	Location        string     `json:"location"`
+	Item            string     `json:"item"`
+	Status          HintStatus `json:"status"`
+	ReceivingPlayer int32      `json:"receiving_player"`
+	FindingPlayer   int32      `json:"finding_player"`
+	ItemFlags       int16      `json:"item_flags"`
+	Found           bool       `json:"found"`
+}
+
+type SlotPatch struct {
+	Checks *[]int64         `json:"checks,omitempty"`
+	Items  *[]NetworkItem   `json:"items,omitempty"`
+	Hints  *[]WsTrackerHint `json:"hints,omitempty"`
+	Status *int             `json:"status,omitempty"`
+}
+
+func (h *SlotTrackerWS) buildPatch(apx *ApxRoom, slot int, flags SlotTrackerDirtyFlags) []byte {
+	state := apx.state
+	ts := TeamSlot{0, slot}
+	patch := SlotPatch{}
+
+	if flags&SlotTrackerDirtyChecks != 0 {
+		checks := state.Checks.GetChecked(ts)
+		patch.Checks = &checks
 	}
+	if flags&SlotTrackerDirtyItems != 0 {
+		items := state.ReceivedItems.Get(ReceivedItemsKey{0, slot, true})
+		patch.Items = &items
+	}
+	if flags&SlotTrackerDirtyHints != 0 {
+		rawHints := state.Hints.GetSlotHints(ts)
+		trackerHints := make([]WsTrackerHint, 0, len(rawHints))
+		for _, rawHint := range rawHints {
+			locGame := apx.state.SlotInfo[TeamSlot{0, int(rawHint.FindingPlayer)}].Game
+			itemGame := apx.state.SlotInfo[TeamSlot{0, int(rawHint.ReceivingPlayer)}].Game
+			locName := apx.datapackages.LocationIDToName[locGame][rawHint.Location]
+			itemName := apx.datapackages.ItemIDToName[itemGame][rawHint.Item]
+			trackerHints = append(trackerHints, WsTrackerHint{
+				Entrance:        rawHint.Entrance,
+				Location:        locName,
+				Item:            itemName,
+				Status:          rawHint.Status,
+				ReceivingPlayer: rawHint.ReceivingPlayer,
+				FindingPlayer:   rawHint.FindingPlayer,
+				ItemFlags:       rawHint.ItemFlags,
+				Found:           rawHint.Found,
+			})
+		}
+		patch.Hints = &trackerHints
+	}
+
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return nil
+	}
+	return wrapEvent("patch", data)
 }
 
 func (h *SlotTrackerWS) buildSnapshot(apx *ApxRoom, slot int) []byte {
@@ -226,15 +317,41 @@ func (h *SlotTrackerWS) buildSnapshot(apx *ApxRoom, slot int) []byte {
 	ts := TeamSlot{0, slot}
 
 	type slotSnapshot struct {
-		Items     []NetworkItem `json:"items"`
-		Checks    []int64       `json:"checks"`
-		Status    int           `json:"status"`
-		TotalLocs int           `json:"total_locs"`
+		Locations []int64         `json:"locations"`
+		Checks    []int64         `json:"checks"`
+		Items     []NetworkItem   `json:"items"`
+		Hints     []WsTrackerHint `json:"hints"`
+		Status    int             `json:"status"`
+		TotalLocs int             `json:"total_locs"`
 	}
 
+	locs := make([]int64, 0, len(state.Locations[ts]))
+	for locId := range state.Locations[ts] {
+		locs = append(locs, locId)
+	}
+	rawHints := state.Hints.GetSlotHints(ts)
+	trackerHints := make([]WsTrackerHint, 0, len(rawHints))
+	for _, rawHint := range rawHints {
+		locGame := apx.state.SlotInfo[TeamSlot{0, int(rawHint.FindingPlayer)}].Game
+		itemGame := apx.state.SlotInfo[TeamSlot{0, int(rawHint.ReceivingPlayer)}].Game
+		locName := apx.datapackages.LocationIDToName[locGame][rawHint.Location]
+		itemName := apx.datapackages.ItemIDToName[itemGame][rawHint.Item]
+		trackerHints = append(trackerHints, WsTrackerHint{
+			Entrance:        rawHint.Entrance,
+			Location:        locName,
+			Item:            itemName,
+			Status:          rawHint.Status,
+			ReceivingPlayer: rawHint.ReceivingPlayer,
+			FindingPlayer:   rawHint.FindingPlayer,
+			ItemFlags:       rawHint.ItemFlags,
+			Found:           rawHint.Found,
+		})
+	}
 	snap := slotSnapshot{
 		Items:     state.ReceivedItems.Get(ReceivedItemsKey{0, slot, true}),
+		Locations: locs,
 		Checks:    state.Checks.GetChecked(ts),
+		Hints:     trackerHints,
 		Status:    int(state.ClientStatuses.Get(0, slot)),
 		TotalLocs: len(state.Locations[ts]),
 	}

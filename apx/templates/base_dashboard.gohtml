@@ -7,6 +7,99 @@
     <title>APX - {{block "title" .}}{{end}}</title>
     <link rel="stylesheet" href="/static/tabulator_site_dark.min.css">
     <script src="/static/tabulator.min.js"></script>
+    <script>
+        const DB_NAME    = "apx-tracker";
+        const DB_VERSION = 2;
+        const DATAPACKAGE_STORE   = "packages";
+        const PLAYERS_STORE = "players";
+
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB_NAME, DB_VERSION);
+                req.onupgradeneeded = e => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(DATAPACKAGE_STORE)) {
+                    db.createObjectStore(DATAPACKAGE_STORE, { keyPath: "checksum" });
+                }
+                if (!db.objectStoreNames.contains(PLAYERS_STORE)) {
+                    db.createObjectStore(PLAYERS_STORE, { keyPath: "roomId" });
+                }
+                };
+                req.onsuccess = e => resolve(e.target.result);
+                req.onerror   = e => reject(e.target.error);
+            });
+        }
+
+        async function loadAndCachePlayers(roomId) {
+            const db = await openDB();
+
+            const cached = await new Promise((resolve, reject) => {
+                const tx  = db.transaction(PLAYERS_STORE, "readonly");
+                const req = tx.objectStore(PLAYERS_STORE).get(roomId);
+                req.onsuccess = e => resolve(e.target.result ?? null);
+                req.onerror   = e => reject(e.target.error);
+            });
+
+            if (cached) {
+                console.log(`[players] cache hit for room ${roomId}`);
+                return cached.data;
+            }
+
+            console.log(`[players] fetching room ${roomId}`);
+            const res = await fetch(`/api/tracker/${roomId}/players`);
+            if (!res.ok) {
+                console.error(`[players] failed to fetch players: ${res.status}`);
+                return null;
+            }
+            const data = await res.json();
+
+            await new Promise((resolve, reject) => {
+                const tx  = db.transaction(PLAYERS_STORE, "readwrite");
+                const req = tx.objectStore(PLAYERS_STORE).put({ roomId, data });
+                req.onsuccess = () => resolve();
+                req.onerror   = e => reject(e.target.error);
+            });
+
+            console.log(`[players] loaded and cached room ${roomId}`);
+            return data;
+        }
+
+        async function loadAndCacheDatapackage(checksum) {
+            const db = await openDB();
+
+            // Try cache first
+            const cached = await new Promise((resolve, reject) => {
+                const tx  = db.transaction(DATAPACKAGE_STORE, "readonly");
+                const req = tx.objectStore(DATAPACKAGE_STORE).get(checksum);
+                req.onsuccess = e => resolve(e.target.result ?? null);
+                req.onerror   = e => reject(e.target.error);
+            });
+
+            if (cached) {
+                return cached.data;
+            }
+
+            // Fetch from API
+            console.log(`[dp] fetching ${checksum}`);
+            const res = await fetch(`/api/datapackage/${checksum}`);
+            if (!res.ok) {
+                console.error(`[dp] failed to fetch datapackage: ${res.status}`);
+                return;
+            }
+            const data = await res.json();
+
+            // Save to IndexedDB
+            await new Promise((resolve, reject) => {
+                const tx  = db.transaction(DATAPACKAGE_STORE, "readwrite");
+                const req = tx.objectStore(DATAPACKAGE_STORE).put({ checksum, data });
+                req.onsuccess = () => resolve();
+                req.onerror   = e => reject(e.target.error);
+            });
+
+            console.log(`[dp] loaded and cached ${checksum}`);
+            return data;
+        }
+    </script>
     {{block "styles" .}}{{end}}
     <style>
         *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; }

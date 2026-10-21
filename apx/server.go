@@ -241,10 +241,10 @@ type Version struct {
 }
 
 type NetworkItem struct {
-	Item     int64
-	Location int64
-	Player   int32
-	Flags    int16
+	Item     int64 `json:"item"`
+	Location int64 `json:"location"`
+	Player   int32 `json:"player"`
+	Flags    int16 `json:"flags"`
 }
 
 type Sphere map[TeamSlot][]int64
@@ -564,6 +564,9 @@ func (ls *Checks) GetCollectLocIds(team int, slot int) map[TeamSlot][]int64 {
 
 func (s *ApxRoom) notifyHintsChanged(affectedSlots map[TeamSlot]struct{}) {
 	for ts := range affectedSlots {
+		if s.slotTrackerWS != nil {
+			s.slotTrackerWS.MarkDirty(ts.Slot, SlotTrackerDirtyHints)
+		}
 		key := fmt.Sprintf("_read_hints_%d_%d", ts.Team, ts.Slot)
 		val, _ := s.state.DataStorage.Get(key)
 		clients := s.state.DataStorage.GetNotifyClients(key)
@@ -703,16 +706,10 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 			for id := range newChecks {
 				ids = append(ids, id)
 			}
-			data, _ := json.Marshal(ids)
-			s.slotTrackerWS.Publish(teamSlot.Slot, "checks", data)
+			s.slotTrackerWS.MarkDirty(teamSlot.Slot, SlotTrackerDirtyChecks)
 
-			bySlot := make(map[int][]NetworkItem)
 			for _, item := range newItems {
-				bySlot[int(item.Player)] = append(bySlot[int(item.Player)], item)
-			}
-			for slot, items := range bySlot {
-				data, _ := json.Marshal(items)
-				s.slotTrackerWS.Publish(slot, "items", data)
+				s.slotTrackerWS.MarkDirty(int(item.Player), SlotTrackerDirtyItems)
 			}
 		}
 

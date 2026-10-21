@@ -312,7 +312,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/tracker/{roomId}", newCachedRoomHandler(srv, "tracker", 60*time.Second, srv.trackerSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/players", newCachedRoomHandler(srv, "tracker_players", 30*time.Second, srv.trackerPlayersSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/live", srv.handleTrackerWS).Methods(http.MethodGet)
-	api.HandleFunc("/tracker/{roomId}/team/{teamId}/slot/{slotId}/live", srv.handleSlotTrackerWS).Methods(http.MethodGet)
+	api.HandleFunc("/tracker/{roomId}/{teamId}/{slotId}/live", srv.handleSlotTrackerWS).Methods(http.MethodGet)
 	// /tracker/.../slot/...
 	// /tracker/.../slot/.../overview
 	// /tracker/.../slot/.../items
@@ -1322,11 +1322,14 @@ func (rm *RoomManager) handleSlotTrackerWS(w http.ResponseWriter, r *http.Reques
 	ctx := r.Context()
 	go func() {
 		for {
-			typ, _, err := c.Read(ctx)
+			typ, data, err := c.Read(ctx)
 			if err != nil {
 				return
 			}
 			if typ != websocket.MessageText && typ != websocket.MessageBinary {
+				continue
+			}
+			if len(data) == 1 && data[0] == '#' {
 				continue
 			}
 			c.Close(websocket.StatusPolicyViolation, "clients must not send messages")
@@ -1716,7 +1719,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 	apx.buildRoomInfoFromState()
 	apx.populateReadData()
 	go apx.trackerWS.Run(ctx, apx)
-	go apx.slotTrackerWS.Run(ctx)
+	go apx.slotTrackerWS.Run(ctx, apx)
 
 	if save != false {
 		if rm.config.DatabaseURL != "" {
@@ -2477,7 +2480,7 @@ func (rm *RoomManager) roomFromRequestApi(w http.ResponseWriter, r *http.Request
 	return room, true
 }
 
-func (rm *RoomManager) roomFromRequest(w http.ResponseWriter, r *http.Request) (*HostedRoom, bool) {
+func (rm *RoomManager) roomFromRequest(r *http.Request) (*HostedRoom, bool) {
 	vars := mux.Vars(r)
 	roomId := vars["roomId"]
 	if !isValidLobbyRoomId(roomId) {

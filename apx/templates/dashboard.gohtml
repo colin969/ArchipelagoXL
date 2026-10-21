@@ -144,7 +144,7 @@ function setupTable(playersJson, firstPatch) {
 
   const onClickId = function(event, cell) {
     const id = cell.getValue();
-    window.location.href = `/dashboard/${ROOM_ID}/team/0/slot/${id}`;
+    window.location.href = `/dashboard/${ROOM_ID}/tracker/0/${id}`;
   }
 
   table.setColumns([
@@ -191,7 +191,7 @@ function initLoadingTable() {
     rowHeight: 32,
     placeholder: `<div class="loading-placeholder">
                     <div class="loading-spinner"></div>
-                    Connecting…
+                    Loading...
                   </div>`,
     columns: [
       {title: "ID", field: "id", width: 60},

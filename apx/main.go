@@ -253,6 +253,7 @@ func run() error {
 	}
 
 	log.Printf("APX shutting down...")
+	s.Close()
 	rm.CloseAll()
 
 	return nil

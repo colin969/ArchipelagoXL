@@ -1,0 +1,282 @@
+{{template "base" .}}
+
+{{define "title"}} Tracker - {{.RoomId}} - {{.Name}} {{end}}
+
+{{define "breadcrumb"}}
+<a class="nav__link" href="/dashboard/{{.RoomId}}">Room</a>
+<span class="nav__sep">›</span>
+<a class="nav__link" href="/dashboard/{{.RoomId}}/tracker">Tracker</a>
+<span class="nav__sep">›</span>
+<a class="nav__link nav__link--active" href="/dashboard/{{.RoomId}}/tracker/{{.Team}}/{{.Slot}}">Slot - {{.Name}}</a>
+{{end}}
+
+{{define "content"}}
+
+<div class="slot-header">
+  <h2>{{.Name}} - {{.Game}}</h2>
+  <h2 id="slot-progress"></h2>
+</div>
+
+<div class="slot-tables">
+  <div id="slot-locations-table"></div>
+  <div id="slot-items-table"></div>
+</div>
+<div id="slot-hints-table"></div>
+
+{{end}}
+
+{{define "styles"}}
+<style>
+  .slot-header {
+    margin-bottom: 1rem;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .slot-tables {
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    margin-bottom: 1.1rem;
+  }
+
+  #slot-locations-table {
+    width: 49%;
+  }
+
+  #slot-items-table {
+    width: 49%;
+  }
+
+</style>
+{{end}}
+
+{{define "scripts"}}
+<script>
+const ROOM_ID = {{.RoomId}};
+const TEAM_ID = {{.Team}};
+const SLOT_ID = {{.Slot}};
+const DP_CHECKSUM = {{.DataPackageChecksum}};
+
+const liveUrl = `/api/tracker/${ROOM_ID}/${TEAM_ID}/${SLOT_ID}/live`;
+
+let locationsTable = null;
+let itemsTable = null;
+let hintsTable = null;
+let datapackage = null;
+let players = null
+let totalLocs = 0;
+let totalChecked = 0;
+
+function updateProgress() {
+  const percent = totalLocs > 0 ? ((totalChecked / totalLocs) * 100) .toFixed(1) : 0;
+  document.getElementById("slot-progress").textContent = `${totalChecked} / ${totalLocs} (${percent}%)`;
+}
+
+function applySnapshot(data) {
+  let checkedSet = new Set()
+  if (data["checks"] !== undefined) {
+    checkedSet = new Set(data["checks"]);
+  }
+
+  if (data["locations"]?.length) {
+    const rows = [];
+    for (const id of data["locations"]) {
+      rows.push({
+       id: id, 
+       name: datapackage.LocationIDToName[id] ?? `Unknown (Location ID: ${id})`, 
+       checked: checkedSet.has(id) ? "✔" : "",
+      });
+    }
+    locationsTable.setData(rows);
+  } else {
+    locationsTable.options.placeholder = "No Locations? Confused :(";
+    locationsTable.redraw();
+  }
+
+  if (data["items"]?.length) {
+    const itemCounts = {};
+    for (const item of data["items"]) {
+      const id = item["item"];
+      itemCounts[id] = (itemCounts[id] ?? 0) + 1;
+    }
+    const newItems = Object.entries(itemCounts).map(([id, amount]) => ({
+      id: id,
+      name: datapackage.ItemIDToName[id] ?? `Unknown (Item ID: ${id})`,
+      amount: amount,
+    }));
+    console.log(newItems);
+    itemsTable.setData(newItems);
+  } else {
+    itemsTable.options.placeholder = "No Items Yet";
+    itemsTable.redraw();
+  }
+
+  console.log(data["hints"])
+  if (data["hints"]?.length) {
+    hintsTable.setData(data["hints"].map((h, i) => ({
+      id:       i,
+      finder:   players[h["finding_player"]] ? players[h["finding_player"]].name : `Unknown Player: ${h["finding_player"]}`,
+      receiver: players[h["receiving_player"]] ? players[h["receiving_player"]].name : `Unknown Player: ${h["receiving_player"]}`,
+      game:   players[h["finding_player"]] ? players[h["finding_player"]].game: `Unknown Player: ${h["finding_player"]}`,
+      item:     h["item"],
+      location: h["location"],
+      entrance: h["entrance"] || "Vanilla",
+      found:    h["found"] ? "✓" : "",
+    })));
+  } else {
+    hintsTable.options.placeholder = "No Hints Yet";
+    hintsTable.redraw();
+  }
+
+  totalLocs = data["locations"]?.length
+  totalChecked = data["checks"]?.length
+  updateProgress();
+}
+
+function applyPatch(data) {
+  if (data["checks"] !== undefined) {
+    const checkedSet = new Set(data["checks"]);
+    const rows = [];
+    for (const id of checkedSet) {
+      totalChecked++;
+      rows.push({ id, name: id, checked: true });
+    }
+    locationsTable.setData(rows);
+  }
+
+  if (data["items"]) {
+    const itemCounts = {};
+    for (const item of data["items"]) {
+      const id = item[0];
+      itemCounts[id] = (itemCounts[id] ?? 0) + 1;
+    }
+    itemsTable.setData(
+      Object.entries(itemCounts).map(([id, amount]) => ({ id: Number(id), item: id, amount }))
+    );
+  }
+
+  if (data["hints"]) {
+    hintsTable.setData(data["hints"].map((h, i) => ({
+      id:       i,
+      finder:   players[h["finding_player"]] ? players[h["finding_player"]].name: `Unknown Player: ${h["finding_player"]}`,
+      receiver: players[h["receiving_player"]] ? players[h["receiving_player"]].name : `Unknown Player: ${h["receiving_player"]}`,
+      game:   players[h["finding_player"]] ? players[h["finding_player"]].game: `Unknown Player: ${h["finding_player"]}`,
+      item:     h["item"],
+      location: h["location"],
+      entrance: h["entrance"] || "Vanilla",
+      found:    h["found"] ? "✓" : "",
+    })));
+  }
+
+  updateProgress();
+}
+
+
+async function initialLoad() {
+  console.log("Doing initial load");
+  
+  initLoadingTables();
+  unsortedPlayers = await loadAndCachePlayers(ROOM_ID);
+  players = {}
+  for (const p of Object.values(unsortedPlayers)) {
+      players[p["slot"]] = p
+  }
+  datapackage = await loadAndCacheDatapackage(DP_CHECKSUM);
+
+  datapackage.ItemIDToName = {};
+  for (const name of Object.keys(datapackage.ItemNameToID)) {
+    datapackage.ItemIDToName[datapackage.ItemNameToID[name]] = name; 
+  }
+
+  datapackage.LocationIDToName = {};
+  for (const name of Object.keys(datapackage.LocationNameToID)) {
+    datapackage.LocationIDToName[datapackage.LocationNameToID[name]] = name; 
+  }
+
+  const websocket = new WebSocket(liveUrl);
+
+    websocket.addEventListener("error", () => {
+  
+  })
+
+  websocket.addEventListener("open", () => {
+    console.log("Connected to live feed");
+    pingInterval = setInterval(() => websocket.send("#"), 10_000);
+  });
+
+  websocket.addEventListener("close", () => {
+    console.log("DISCONNECTED");
+    clearInterval(pingInterval);
+  });
+
+  websocket.addEventListener("message", (e) => {
+    const parsed = JSON.parse(e.data);
+    const event  = parsed["event"];
+    const data   = parsed["data"];
+      if (event === "snapshot") {
+      applySnapshot(data);
+    } else if (event === "patch") {
+      applyPatch(data);
+    }
+  });
+}
+
+function initLoadingTables() {
+  locationsTable = new Tabulator("#slot-locations-table", {
+    height: "40vh",
+    layout: "fitColumns",
+    rowHeight: 28,
+    index: "id",
+    placeholder: `<div class="loading-placeholder">
+                    <div class="loading-spinner"></div>
+                    Loading...
+                  </div>`,
+    initialSort: [{ column: "name", dir: "asc" }],
+    columns: [
+      {title: "Location", field: "name"},
+      {title: "Checked", field: "checked", width: 140, hozAlign: "center"},
+    ],
+  });
+
+  itemsTable = new Tabulator("#slot-items-table", {
+    height: "40vh",
+    layout: "fitColumns",
+    rowHeight: 28,
+    index: "id",
+    placeholder: `<div class="loading-placeholder">
+                    <div class="loading-spinner"></div>
+                    Loading...
+                  </div>`,
+    initialSort: [{ column: "name", dir: "asc" }],
+    columns: [
+      {title: "Item", field: "name"},
+      {title: "Amount", field: "amount", width: 140, hozAlign: "center"},
+    ],
+  });
+
+  hintsTable = new Tabulator("#slot-hints-table", {
+    height: "40vh",
+    layout: "fitColumns",
+    rowHeight: 28,
+    placeholder: `<div class="loading-placeholder">
+                    <div class="loading-spinner"></div>
+                    Loading...
+                  </div>`,
+    columns: [
+      {title: "Finder", field: "finder"},
+      {title: "Receiver", field: "receiver"},
+      {title: "Item", field: "item"},
+      {title: "Location", field: "location"},
+      {title: "Game", field: "game"},
+      {title: "Entrance", field: "entrance"},
+      {title: "Found", field: "found", hozAlign: "center"},
+    ],
+  });
+}
+
+initialLoad();
+</script>
+{{end}}
