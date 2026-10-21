@@ -173,6 +173,11 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 				description: "Send an item to a player",
 				handler:     handleAuthedCommand(s.handleAdminSendCommand),
 			},
+			{
+				name:        "send_location",
+				description: "Send a check for a player",
+				handler:     handleAuthedCommand(s.handleAdminSendLocationCommand),
+			},
 		},
 	})
 
@@ -744,6 +749,35 @@ func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connect
 	if connState.registeredClient.textConcernsSelf && slotInfo.Slot != connState.registeredClient.Slot {
 		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{msg})
 	}
+
+	return nil
+}
+
+func (s *ApxRoom) handleAdminSendLocationCommand(ctx context.Context, connState *connectionState, args string) error {
+	argsList := splitArgs(args)
+	if len(argsList) < 2 {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			"Usage: !admin send_location <player> <location>")
+		return nil
+	}
+
+	player := argsList[0]
+	location := strings.Join(argsList[1:], " ")
+
+	slotInfo, ok := s.state.NameToSlot[player]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Player '%s' not found", player))
+		return nil
+	}
+	locId, ok := s.datapackages.LocationNameToID[slotInfo.Game][location]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Location '%s' not found for game %s", location, slotInfo.Game))
+		return nil
+	}
+
+	s.RegisterChecks(context.Background(), TeamSlot{slotInfo.Team, slotInfo.Slot}, []int64{locId})
 
 	return nil
 }
