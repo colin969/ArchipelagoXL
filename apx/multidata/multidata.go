@@ -5,12 +5,11 @@ import (
 	"bytes"
 	"compress/zlib"
 	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"reflect"
-	"sort"
 	"strings"
 
 	"github.com/nlpodyssey/gopickle/pickle"
@@ -225,83 +224,7 @@ type GamesPackage struct {
 	LocationNameGroups map[string][]string
 	LocationNameToID   map[string]int
 	Checksum           string
-}
-
-func (gp *GamesPackage) ComputeChecksum() (string, error) {
-	data := map[string]any{
-		"item_name_groups":     gp.ItemNameGroups,
-		"item_name_to_id":      gp.ItemNameToID,
-		"location_name_groups": gp.LocationNameGroups,
-		"location_name_to_id":  gp.LocationNameToID,
-	}
-	b, err := marshalSorted(data)
-	if err != nil {
-		return "", err
-	}
-	sum := sha1.Sum(b)
-	return fmt.Sprintf("%x", sum), nil
-}
-
-func marshalSorted(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := encodeSorted(&buf, reflect.ValueOf(v)); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func encodeSorted(buf *bytes.Buffer, v reflect.Value) error {
-	switch v.Kind() {
-	case reflect.Map:
-		keys := make([]string, 0, v.Len())
-		for _, k := range v.MapKeys() {
-			keys = append(keys, k.String())
-		}
-		sort.Strings(keys)
-		buf.WriteByte('{')
-		for i, k := range keys {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			keyBytes, err := json.Marshal(k)
-			if err != nil {
-				return err
-			}
-			buf.Write(keyBytes)
-			buf.WriteByte(':')
-			if err := encodeSorted(buf, v.MapIndex(reflect.ValueOf(k))); err != nil {
-				return err
-			}
-		}
-		buf.WriteByte('}')
-
-	case reflect.Slice:
-		buf.WriteByte('[')
-		for i := 0; i < v.Len(); i++ {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			if err := encodeSorted(buf, v.Index(i)); err != nil {
-				return err
-			}
-		}
-		buf.WriteByte(']')
-
-	case reflect.Interface, reflect.Ptr:
-		if v.IsNil() {
-			buf.WriteString("null")
-			return nil
-		}
-		return encodeSorted(buf, v.Elem())
-
-	default:
-		b, err := json.Marshal(v.Interface())
-		if err != nil {
-			return err
-		}
-		buf.Write(b)
-	}
-	return nil
+	ComputedChecksum   string
 }
 
 type MultiData struct {
@@ -585,6 +508,12 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 			gp.Checksum, _ = v.(string)
 		}
 
+		computed, err := checksumFromRawDict(inner)
+		if err != nil {
+			return GamesPackage{}, fmt.Errorf("checksum: %w", err)
+		}
+		gp.ComputedChecksum = computed
+
 		if v, ok := dictGet(inner, "item_name_to_id"); ok {
 			d, ok := v.(*types.Dict)
 			if !ok {
@@ -616,6 +545,56 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 			})
 			if err != nil {
 				return GamesPackage{}, fmt.Errorf("location_name_to_id: %w", err)
+			}
+		}
+
+		if v, ok := dictGet(inner, "item_name_groups"); ok {
+			d, ok := v.(*types.Dict)
+			if !ok {
+				return GamesPackage{}, fmt.Errorf("item_name_groups: expected dict, got %T", v)
+			}
+			gp.ItemNameGroups, err = toStringDict(d, func(v any) ([]string, error) {
+				list, ok := v.(*types.List)
+				if !ok {
+					return nil, fmt.Errorf("expected list, got %T", v)
+				}
+				out := make([]string, len(*list))
+				for i, e := range *list {
+					s, ok := e.(string)
+					if !ok {
+						return nil, fmt.Errorf("expected string, got %T", e)
+					}
+					out[i] = s
+				}
+				return out, nil
+			})
+			if err != nil {
+				return GamesPackage{}, fmt.Errorf("item_name_groups: %w", err)
+			}
+		}
+
+		if v, ok := dictGet(inner, "location_name_groups"); ok {
+			d, ok := v.(*types.Dict)
+			if !ok {
+				return GamesPackage{}, fmt.Errorf("location_name_groups: expected dict, got %T", v)
+			}
+			gp.LocationNameGroups, err = toStringDict(d, func(v any) ([]string, error) {
+				list, ok := v.(*types.List)
+				if !ok {
+					return nil, fmt.Errorf("expected list, got %T", v)
+				}
+				out := make([]string, len(*list))
+				for i, e := range *list {
+					s, ok := e.(string)
+					if !ok {
+						return nil, fmt.Errorf("expected string, got %T", e)
+					}
+					out[i] = s
+				}
+				return out, nil
+			})
+			if err != nil {
+				return GamesPackage{}, fmt.Errorf("location_name_groups: %w", err)
 			}
 		}
 
@@ -766,6 +745,104 @@ func mapToMultiData(d *types.Dict) (*MultiData, error) {
 	return md, nil
 }
 
+func checksumFromRawDict(d *types.Dict) (string, error) {
+	// Encode as JSON in pickle insertion order using ordered key-value pairs.
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+
+	keys := []string{"item_name_groups", "item_name_to_id", "location_name_groups", "location_name_to_id"}
+	first := true
+	for _, key := range keys {
+		v, ok := dictGet(d, key)
+		if !ok {
+			continue
+		}
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+
+		keyJSON, _ := json.Marshal(key)
+		buf.Write(keyJSON)
+		buf.WriteByte(':')
+
+		valJSON, err := pickleToJSON(v)
+		if err != nil {
+			return "", fmt.Errorf("checksum: key %q: %w", key, err)
+		}
+		buf.Write(valJSON)
+	}
+	buf.WriteByte('}')
+
+	sum := sha1.Sum(buf.Bytes())
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func pickleToJSON(v any) ([]byte, error) {
+	switch val := v.(type) {
+	case *types.Dict:
+		var buf bytes.Buffer
+		buf.WriteByte('{')
+		for i, kv := range *val {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			k, err := marshalString(fmt.Sprint(kv.Key))
+			if err != nil {
+				return nil, err
+			}
+			vj, err := pickleToJSON(kv.Value)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(k)
+			buf.WriteByte(':')
+			buf.Write(vj)
+		}
+		buf.WriteByte('}')
+		return buf.Bytes(), nil
+	case *types.List:
+		var buf bytes.Buffer
+		buf.WriteByte('[')
+		for i, e := range *val {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			ej, err := pickleToJSON(e)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(ej)
+		}
+		buf.WriteByte(']')
+		return buf.Bytes(), nil
+	default:
+		return marshalValue(v)
+	}
+}
+
+// marshalString encodes a string key without HTML escaping.
+func marshalString(s string) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return nil, err
+	}
+	// json.Encoder appends a newline; trim it
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+func marshalValue(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
 func pickleToGo(v any) any {
 	switch val := v.(type) {
 	case *types.Dict:
@@ -801,6 +878,22 @@ func pickleToGo(v any) any {
 	default:
 		return v
 	}
+}
+
+func toStringSlice(v any) ([]string, error) {
+	list, ok := v.(*types.List)
+	if !ok {
+		return nil, fmt.Errorf("expected list, got %T", v)
+	}
+	out := make([]string, len(*list))
+	for i, e := range *list {
+		s, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string, got %T", e)
+		}
+		out[i] = s
+	}
+	return out, nil
 }
 
 func ParseMultidata(data []byte) (*MultiData, error) {
@@ -877,4 +970,13 @@ func ReadArchipelagoFromZip(r *zip.Reader) ([]byte, error) {
 	}
 
 	return nil, fmt.Errorf("no .archipelago file found in archive")
+}
+
+func ValidateDataPackageChecksums(md *MultiData) error {
+	for game, dp := range md.DataPackage {
+		if dp.ComputedChecksum != dp.Checksum {
+			return fmt.Errorf("game %q: bad checksum: got %s expected %s", game, dp.ComputedChecksum, dp.Checksum)
+		}
+	}
+	return nil
 }

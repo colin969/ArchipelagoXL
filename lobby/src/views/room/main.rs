@@ -210,14 +210,12 @@ pub async fn room_inner<'a>(
     .unwrap_or(None)
     .map(|info| ApxRoomInfoDisplay {
         lobby_room_id: info.lobby_room_id,
-        ap_room_id: info.ap_room_id,
         normal_addr: format!("ap{}.{}", info.normal_id, lobby_config.apx_ws_root),
         reduced_addr: format!("ap{}.{}", info.reduced_id, lobby_config.apx_ws_root),
         disabled: info.disabled,
         per_slot_passwords: info.per_slot_passwords,
         deathlink_disabled: info.deathlink_disabled,
         reduced_access: info.reduced_access,
-        server_password: None,
     });
 
     Ok(RoomTpl {

@@ -56,3 +56,18 @@ func TestLoadMultiDataSmall(t *testing.T) {
 		}
 	}
 }
+
+func TestDataPackageChecksum(t *testing.T) {
+	md, err := LoadMultiData("../testdata/large.archipelago")
+	if err != nil {
+		t.Fatalf("failed to parse multidata: %v", err)
+	}
+
+	if len(md.DataPackage) == 0 {
+		t.Fatal("DataPackage is empty")
+	}
+
+	if err := ValidateDataPackageChecksums(md); err != nil {
+		t.Error(err)
+	}
+}

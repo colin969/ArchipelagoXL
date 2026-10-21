@@ -677,7 +677,7 @@ func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err = validateDataPackageChecksums(md)
+	err = multidata.ValidateDataPackageChecksums(md)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("invalid multidata: %v", err)})
@@ -2869,17 +2869,4 @@ func safePathFromJoin(lobbyRoomId string, storagePath string) (string, error) {
 		return "", fmt.Errorf("path traversal detected")
 	}
 	return resolved, nil
-}
-
-func validateDataPackageChecksums(md *multidata.MultiData) error {
-	for game, dp := range md.DataPackage {
-		sum, err := dp.ComputeChecksum()
-		if err != nil {
-			return fmt.Errorf("game %q: failed to compute checksum: %w", game, err)
-		}
-		if sum != dp.Checksum {
-			return fmt.Errorf("game %q: checksum mismatch: got %s, expected %s", game, sum, dp.Checksum)
-		}
-	}
-	return nil
 }

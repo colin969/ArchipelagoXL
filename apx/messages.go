@@ -759,7 +759,7 @@ func parseIntConvFloatList(nums []json.Number) ([]int64, error) {
 }
 
 func enqueueMessage[T any](msg []T, clients ...*RegisteredClient) error {
-	b, err := json.Marshal(msg)
+	b, err := apJsonMarshal(msg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
@@ -767,4 +767,14 @@ func enqueueMessage[T any](msg []T, clients ...*RegisteredClient) error {
 		client.messageQueue.Enqueue(b)
 	}
 	return nil
+}
+
+func apJsonMarshal(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }

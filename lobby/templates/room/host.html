@@ -86,18 +86,6 @@
                 <td class="shrink">Reduced Addr:</td>
                 <td style="font-family: 'Courier New', monospace;">{{ apx.reduced_addr }}</td>
             </tr>
-            {% if let Some(password) = &apx.server_password %}
-            <tr>
-                <td class="shrink">Admin Password:</td>
-                <td>
-                    <span id="admin-password" style="display: none; font-family: 'Courier New', monospace;">{{ password }}</span>
-                    <button type="button" style="width: unset;" onclick="
-                        document.getElementById('admin-password').style.display = 'inline';
-                        this.remove();
-                    ">Click to Reveal</button>
-                </td>
-            </tr>
-            {% endif %}
         </tbody>
     </table>
     <a class="button-emulator cancel-button" href="/room/{{ self.room.id }}/host/stop" onclick="return handleButtonClick(event)">Stop hosting</a>

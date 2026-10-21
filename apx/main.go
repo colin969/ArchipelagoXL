@@ -24,10 +24,7 @@ import (
 
 type Config struct {
 	TLSKeyFile             string `json:"tls_key_file"`
-	ApRoomId               string `json:"ap_room_id"`
 	DatabaseURL            string `json:"database_url"`
-	APHost                 string `json:"ap_room_host"`
-	APPassword             string `json:"ap_room_password"`
 	SavesPath              string `json:"saves_path"`
 	LobbyRootUrl           string `json:"lobby_root_url"`
 	LobbyRoomId            string `json:"lobby_room_id"`
@@ -310,12 +307,6 @@ func getConfig() (*Config, error) {
 		}
 		cfg.ReducedPort = port
 	}
-	if v := os.Getenv("AP_ROOM_HOST"); v != "" {
-		cfg.APHost = v
-	}
-	if v := os.Getenv("AP_ROOM_PASSWORD"); v != "" {
-		cfg.APPassword = v
-	}
 	if v := os.Getenv("LOBBY_ENABLED"); v != "" {
 		enabled, err := strconv.ParseBool(v)
 		if err != nil {
@@ -356,9 +347,6 @@ func getConfig() (*Config, error) {
 	}
 	if v := os.Getenv("APX_API_KEY"); v != "" {
 		cfg.ApiKey = v
-	}
-	if v := os.Getenv("AP_ROOM_ID"); v != "" {
-		cfg.ApRoomId = v
 	}
 	if v := os.Getenv("TLS_CERT_FILE"); v != "" {
 		cfg.TLSCertFile = v
