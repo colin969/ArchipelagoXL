@@ -178,6 +178,16 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 				description: "Send a check for a player",
 				handler:     handleAuthedCommand(s.handleAdminSendLocationCommand),
 			},
+			{
+				name:        "hint",
+				description: "Hint an item for a player",
+				handler:     handleAuthedCommand(s.handleAdminHintCommand),
+			},
+			{
+				name:        "hint_location",
+				description: "Hint a location for a player",
+				handler:     handleAuthedCommand(s.handleAdminHintLocationCommand),
+			},
 		},
 	})
 
@@ -778,6 +788,114 @@ func (s *ApxRoom) handleAdminSendLocationCommand(ctx context.Context, connState 
 	}
 
 	s.RegisterChecks(context.Background(), TeamSlot{slotInfo.Team, slotInfo.Slot}, []int64{locId})
+
+	return nil
+}
+
+func (s *ApxRoom) handleAdminHintCommand(ctx context.Context, connState *connectionState, args string) error {
+	argsList := splitArgs(args)
+	if len(argsList) < 2 {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			"Usage: !admin send <player> <item>")
+		return nil
+	}
+
+	player := argsList[0]
+	item := strings.Join(argsList[1:], " ")
+
+	slotInfo, ok := s.state.NameToSlot[player]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Player '%s' not found", player))
+		return nil
+	}
+	itemId, ok := s.datapackages.ItemNameToID[slotInfo.Game][item]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Item '%s' not found for game %s", item, slotInfo.Game))
+		return nil
+	}
+
+	teamSlot := TeamSlot{Team: slotInfo.Team, Slot: slotInfo.Slot}
+	_, newHints := s.state.Hints.CollectItemHint(teamSlot, int32(slotInfo.Slot), itemId, &s.state.SphereLocs, &s.state.Checks, 0, 0)
+
+	if len(newHints) > 0 {
+		// Send own clients hint points update
+		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
+		clients := s.connections.GetSlotClients(teamSlot)
+
+		err := enqueueMessage([]any{RoomUpdateMessage{
+			HintPoints: &newPoints,
+		}}, clients...)
+		if err != nil {
+			return err
+		}
+
+		// Notify listeners of change
+		affectedSlots := make(map[TeamSlot]struct{})
+		for _, hint := range newHints {
+			affectedSlots[TeamSlot{0, int(hint.FindingPlayer)}] = struct{}{}
+			if hint.ReceivingPlayer != hint.FindingPlayer {
+				affectedSlots[TeamSlot{0, int(hint.ReceivingPlayer)}] = struct{}{}
+			}
+		}
+		s.notifyHintsChanged(affectedSlots)
+	}
+
+	return nil
+}
+
+func (s *ApxRoom) handleAdminHintLocationCommand(ctx context.Context, connState *connectionState, args string) error {
+	argsList := splitArgs(args)
+	if len(argsList) < 2 {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			"Usage: !admin send_location <player> <location>")
+		return nil
+	}
+
+	player := argsList[0]
+	location := strings.Join(argsList[1:], " ")
+
+	slotInfo, ok := s.state.NameToSlot[player]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Player '%s' not found", player))
+		return nil
+	}
+	locId, ok := s.datapackages.LocationNameToID[slotInfo.Game][location]
+	if !ok {
+		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
+			fmt.Sprintf("Location '%s' not found for game %s", location, slotInfo.Game))
+		return nil
+	}
+
+	teamSlot := TeamSlot{slotInfo.Team, slotInfo.Slot}
+	existing := s.state.Hints.GetSlotHints(teamSlot)
+	for _, h := range existing {
+		if int(h.FindingPlayer) == slotInfo.Slot && h.Location == locId {
+			return nil
+		}
+	}
+
+	loc := s.state.Locations[teamSlot][locId]
+	found := s.state.Checks.IsChecked(teamSlot, locId)
+
+	status := HintStatusUnspecified
+	if found {
+		status = HintStatusFound
+	}
+
+	hint := Hint{
+		ReceivingPlayer: int32(loc.Player),
+		FindingPlayer:   int32(slotInfo.Slot),
+		Location:        locId,
+		Item:            loc.Item,
+		ItemFlags:       loc.Flags,
+		Found:           found,
+		Status:          status,
+	}
+
+	s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, nil, 0, 0)
 
 	return nil
 }

@@ -1036,7 +1036,7 @@ func (h *HintsState) AddPaidSlotHint(ctx context.Context, ts TeamSlot, hint Hint
 		return h.hints[i], true
 	}
 
-	if !hint.Found && cost > 0 && points < cost {
+	if !hint.Found && cost > 0 && points < cost && client != nil {
 		SendChatMessageToClient(ctx, client.clientConn, client.Slot,
 			fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points))
 		return hint, false
