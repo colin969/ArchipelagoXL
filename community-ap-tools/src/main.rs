@@ -737,7 +737,7 @@ async fn hint(
         shlex::try_quote(item_name)?
     );
 
-    ap_cmd(cmd, apx_room_info, config).await?;
+    sendRoomCommand(cmd, apx_room_info, config).await?;
 
     Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
 }
@@ -771,37 +771,32 @@ async fn give(
         shlex::try_quote(item_name)?
     );
 
-    ap_cmd(cmd, apx_room_info, config).await?;
+    sendRoomCommand(cmd, apx_room_info, config).await?;
 
     Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
 }
 
 // Fix turn into apx route
-async fn ap_cmd(
+async fn sendRoomCommand(
     cmd: String,
     apx_room_info: ApxRoomInfo,
     config: &State<Config>,
 ) -> crate::error::Result<()> {
     let client = reqwest::Client::new();
-    let form = reqwest::multipart::Form::new().text("cmd", cmd);
 
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("x-api-key"),
-        HeaderValue::from_str(&config.ap_admin_api_key)?,
+        HeaderValue::from_str(&config.apx_api_key)?,
     );
 
-    // There's no point in looking at the response here. AP doesn't have a proper API for rooms
-    // since sending a command just inserts something in database that gets polled by the room
-    // process later on so they don't provide responses. If anything fails, it just ignores the
-    // input and nothing happens...
-    let ap_room_url = config
-        .ap_api_root
-        .join(&format!("/room/{}", apx_room_info.ap_room_id))?;
+    let apx_cmd_url = config
+        .apx_api_root
+        .join(&format!("/room/{}/command", apx_room_info.lobby_room_id))?;
     let _ = client
-        .post(ap_room_url)
-        .multipart(form)
+        .post(apx_cmd_url)
         .headers(headers)
+        .json(&serde_json::json!({ "command": cmd }))
         .send()
         .await?;
 

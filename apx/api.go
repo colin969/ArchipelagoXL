@@ -340,6 +340,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		roomAdmin.HandleFunc("/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	}
 	roomAdmin.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/command", srv.handleRoomCommand).Methods(http.MethodPost)
 	roomAdmin.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
 	roomAdmin.HandleFunc("/refresh_slot_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
@@ -1715,7 +1716,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		},
 		standaloneSlotData: standaloneSlotData,
 	}
-	apx.chatCommandRouter = newCommandRouter(apx)
+	apx.commandRouter = newCommandRouter(apx)
 	apx.buildRoomInfoFromState()
 	apx.populateReadData()
 	go apx.trackerWS.Run(ctx, apx)
@@ -2512,6 +2513,47 @@ func (rm *RoomManager) handleRoomState(w http.ResponseWriter, r *http.Request) {
 		Deaths:               room.apx.bounceInfo.Get(),
 		FullFeedSlots:        fullFeedSlots,
 	})
+}
+
+type RoomCommand struct {
+	Command string `json:"command"`
+}
+
+func (rm *RoomManager) handleRoomCommand(w http.ResponseWriter, r *http.Request) {
+	room, ok := rm.roomFromRequestApi(w, r)
+	if !ok {
+		return
+	}
+
+	var cmd RoomCommand
+	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if cmd.Command == "" {
+		http.Error(w, "Missing command", http.StatusBadRequest)
+		return
+	}
+
+	var output strings.Builder
+	runner := CommandContext{
+		Write: func(text string) {
+			output.WriteString(text)
+			output.WriteString("\n")
+		},
+		serverRunner: &ServerRunner{},
+	}
+
+	handled, err := room.apx.commandRouter.server.Handle(r.Context(), &runner, cmd.Command)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !handled {
+		http.Error(w, "Unknown command", http.StatusBadRequest)
+		return
+	}
 }
 
 func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {

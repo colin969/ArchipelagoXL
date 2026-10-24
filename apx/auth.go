@@ -189,8 +189,21 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 	text := packet.Text
 
 	trimmed := strings.TrimSpace(text)
-	if handled, err := s.chatCommandRouter.Handle(ctx, connState, trimmed); handled {
-		return err
+	if strings.HasPrefix(trimmed, "!") {
+		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "!"))
+		// Wrap client in a command context so funcs understand it
+		commandCtx := CommandContext{
+			Write: func(text string) {
+				enqueueMessage([]any{formatGenericMessage(nil, nil, "CommandResult", text)}, connState.registeredClient)
+			},
+			connState: connState,
+		}
+		if handled, err := s.commandRouter.client.Handle(ctx, &commandCtx, rest); handled {
+			if err != nil {
+				enqueueMessage([]any{formatGenericMessage(nil, nil, "CommandResult", fmt.Sprintf("%v", err))}, connState.registeredClient)
+			}
+			return err
+		}
 	}
 
 	slot := connState.registeredClient.Slot

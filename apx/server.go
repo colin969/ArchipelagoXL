@@ -220,7 +220,7 @@ type ApxRoom struct {
 	lokiLogger         *LokiLogger
 	logDeath           func(slotId int)
 	ipLimiter          *IPRateLimiter
-	chatCommandRouter  *chatCommandRouter
+	commandRouter      *CommandRouter
 	trackerWS          *TrackerWS
 	slotTrackerWS      *SlotTrackerWS
 	lobbyRoomId        string

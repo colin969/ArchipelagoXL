@@ -2,18 +2,41 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/coder/websocket/wsjson"
 )
 
-type chatHandler func(ctx context.Context, connState *connectionState, args string) error
+type ServerRunner struct{}
+
+type CommandContext struct {
+	Write func(text string)
+	// Only set for client commands
+	connState *connectionState
+	// Only set for server commands
+	serverRunner *ServerRunner
+}
+
+func (c *CommandContext) IsClient() bool {
+	return c.connState != nil
+}
+func (c *CommandContext) IsAdmin() bool {
+	if c.IsClient() {
+		return c.connState.adminAuthed.Load()
+	} else {
+		return true
+	}
+}
+func (c *CommandContext) IsServer() bool {
+	return c.serverRunner != nil
+}
+
+type commandHandler func(ctx context.Context, cmdCtx *CommandContext, args string) error
 
 type chatCommand struct {
-	handler     chatHandler
+	handler     commandHandler
 	name        string
 	description string
 }
@@ -31,6 +54,11 @@ func (g *chatCommandGroup) helpText() string {
 		lines = append(lines, fmt.Sprintf("!%s %s - %s", g.prefix, cmd.name, cmd.description))
 	}
 	return strings.Join(lines, "\n")
+}
+
+type CommandRouter struct {
+	client *chatCommandRouter
+	server *chatCommandRouter
 }
 
 type chatCommandRouter struct {
@@ -59,18 +87,12 @@ func (r *chatCommandRouter) HelpText() string {
 	return strings.Join(lines, "\n")
 }
 
-func (r *chatCommandRouter) Handle(ctx context.Context, connState *connectionState, text string) (bool, error) {
-	if !strings.HasPrefix(text, "!") {
-		return false, nil
-	}
-
-	rest := strings.TrimSpace(strings.TrimPrefix(text, "!"))
-
+func (r *chatCommandRouter) Handle(ctx context.Context, commandCtx *CommandContext, rest string) (bool, error) {
 	// Top-level commands
 	for _, cmd := range r.topLevel {
 		if rest == cmd.name || strings.HasPrefix(rest, cmd.name+" ") {
 			args := strings.TrimSpace(strings.TrimPrefix(rest, cmd.name))
-			return true, cmd.handler(ctx, connState, args)
+			return true, cmd.handler(ctx, commandCtx, args)
 		}
 	}
 
@@ -82,32 +104,32 @@ func (r *chatCommandRouter) Handle(ctx context.Context, connState *connectionSta
 			for _, cmd := range group.commands {
 				if sub == cmd.name || strings.HasPrefix(sub, cmd.name+" ") {
 					args := strings.TrimSpace(strings.TrimPrefix(sub, cmd.name))
-					return true, cmd.handler(ctx, connState, args)
+					return true, cmd.handler(ctx, commandCtx, args)
 				}
 			}
 			// Matched group prefix but no sub-command — show group help
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, group.helpText())
-			return true, nil
+			return true, errors.New(group.helpText())
 		}
 	}
 
 	return false, nil
 }
 
-func newCommandRouter(s *ApxRoom) *chatCommandRouter {
-	r := &chatCommandRouter{}
+func newCommandRouter(s *ApxRoom) *CommandRouter {
+	clientRouter := &chatCommandRouter{}
+	serverRouter := &chatCommandRouter{}
 
-	r.AddTopLevel(
+	clientRouter.AddTopLevel(
 		chatCommand{
 			name:        "help",
 			description: "Show available commands",
-			handler: func(ctx context.Context, connState *connectionState, args string) error {
-				SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot, r.HelpText())
+			handler: func(ctx context.Context, commandCtx *CommandContext, args string) error {
+				commandCtx.Write(clientRouter.HelpText())
 				return nil
 			},
 		},
 	)
-	r.AddTopLevel(
+	clientRouter.AddTopLevel(
 		chatCommand{
 			name:        "hint_location",
 			description: "Spend hint points for a location in your game",
@@ -119,7 +141,7 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 			handler:     s.handleHintItemCommand,
 		},
 	)
-	r.AddTopLevel(
+	clientRouter.AddTopLevel(
 		chatCommand{
 			name:        "countdown",
 			description: "Start a countdown (default: 10 seconds)",
@@ -141,7 +163,7 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 			handler:     s.handleReleaseCommand,
 		},
 	)
-	r.AddTopLevel(
+	clientRouter.AddTopLevel(
 		chatCommand{
 			name:        "players",
 			description: "List all players in the room",
@@ -149,7 +171,7 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 		},
 	)
 
-	r.AddGroup(&chatCommandGroup{
+	clientRouter.AddGroup(&chatCommandGroup{
 		prefix:      "admin",
 		description: "Admin commands (must be !admin login <password> first)",
 		commands: []chatCommand{
@@ -191,33 +213,97 @@ func newCommandRouter(s *ApxRoom) *chatCommandRouter {
 		},
 	})
 
-	r.AddGroup(&chatCommandGroup{
+	clientRouter.AddGroup(&chatCommandGroup{
 		prefix:      "apx",
 		description: "APX specific commands",
 		commands: []chatCommand{
 			{
 				name:        "status",
 				description: "Show room status",
-				handler: func(ctx context.Context, connState *connectionState, args string) error {
-					SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-						s.StatusString(connState.registeredClient))
-					return nil
-				},
+				handler:     s.handleRoomStatusCommand,
 			},
 		},
 	})
 
-	return r
+	serverRouter.AddTopLevel(
+		chatCommand{
+			name:        "help",
+			description: "Show available commands",
+			handler: func(ctx context.Context, commandCtx *CommandContext, args string) error {
+				commandCtx.Write(serverRouter.HelpText())
+				return nil
+			},
+		},
+		chatCommand{
+			name:        "countdown",
+			description: "Start a countdown (default: 10 seconds)",
+			handler:     s.handleCountdownCommand,
+		},
+		chatCommand{
+			name:        "release",
+			description: "Release a players items",
+			handler:     handleAuthedCommand(s.handleAdminReleaseCommand),
+		},
+		chatCommand{
+			name:        "send",
+			description: "Send an item to a player",
+			handler:     handleAuthedCommand(s.handleAdminSendCommand),
+		},
+		chatCommand{
+			name:        "send_location",
+			description: "Send a check for a player",
+			handler:     handleAuthedCommand(s.handleAdminSendLocationCommand),
+		},
+		chatCommand{
+			name:        "hint",
+			description: "Hint an item for a player",
+			handler:     handleAuthedCommand(s.handleAdminHintCommand),
+		},
+		chatCommand{
+			name:        "hint_location",
+			description: "Hint a location for a player",
+			handler:     handleAuthedCommand(s.handleAdminHintLocationCommand),
+		},
+	)
+
+	serverRouter.AddGroup(&chatCommandGroup{
+		prefix:      "apx",
+		description: "APX specific commands",
+		commands: []chatCommand{
+			{
+				name:        "status",
+				description: "Show room status",
+				handler:     s.handleRoomStatusCommand,
+			},
+		},
+	})
+
+	router := CommandRouter{
+		client: clientRouter,
+		server: serverRouter,
+	}
+	return &router
 }
 
-func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *connectionState, args string) error {
-	client := connState.registeredClient
+func (s *ApxRoom) handleRoomStatusCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if commandCtx.IsClient() {
+		commandCtx.Write(s.StatusString(commandCtx.connState.registeredClient))
+	} else {
+		commandCtx.Write(s.StatusString(nil))
+	}
+	return nil
+}
+
+func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if !commandCtx.IsClient() {
+		return fmt.Errorf("Command supported on clients only")
+	}
+
+	client := commandCtx.connState.registeredClient
 	locationName := strings.TrimSpace(args)
 
 	if locationName == "" {
-		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
-			"Usage: !hint_location <location name>")
-		return nil
+		return fmt.Errorf("Usage: !hint_location <location name>")
 	}
 
 	teamSlot := TeamSlot{Team: client.Team, Slot: client.Slot}
@@ -226,16 +312,12 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	game := *client.game
 	locID, err := s.datapackages.GetLocationID(game, locationName)
 	if err != nil {
-		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
-			fmt.Sprintf("Unknown location: %q", locationName))
-		return nil
+		return fmt.Errorf("Unknown location: %q", locationName)
 	}
 
 	// Check location belongs to this slot
 	if _, exists := s.state.Locations[teamSlot][locID]; !exists {
-		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
-			fmt.Sprintf("Location %q does not exist in your world", locationName))
-		return nil
+		return fmt.Errorf("Location %q does not exist in your world", locationName)
 	}
 
 	// Skip if hint already exists — no cost
@@ -273,7 +355,7 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	hint, allowed := s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, client, cost, points)
 	if allowed {
 		// Send own clients hint points update
-		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
+		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{client.Team, client.Slot})
 		clients := s.connections.GetSlotClients(teamSlot)
 
 		err = enqueueMessage([]any{RoomUpdateMessage{
@@ -289,14 +371,16 @@ func (s *ApxRoom) handleHintLocationCommand(ctx context.Context, connState *conn
 	return nil
 }
 
-func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connectionState, args string) error {
-	client := connState.registeredClient
+func (s *ApxRoom) handleHintItemCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if !commandCtx.IsClient() {
+		return fmt.Errorf("Command supported on clients only")
+	}
+
+	client := commandCtx.connState.registeredClient
 	itemName := strings.TrimSpace(args)
 
 	if itemName == "" {
-		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
-			"Usage: !hint <item name>")
-		return nil
+		return fmt.Errorf("Usage: !hint <item name>")
 	}
 
 	teamSlot := TeamSlot{Team: client.Team, Slot: client.Slot}
@@ -304,9 +388,7 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	itemID, ok := s.datapackages.GetItemID(game, itemName)
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
-			fmt.Sprintf("Unknown item: %q", itemName))
-		return nil
+		return fmt.Errorf("Unknown item: %q", itemName)
 	}
 
 	cost := s.state.GetSlotHintCost(teamSlot)
@@ -315,14 +397,13 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	// Had points to spend, never found a hint
 	if (cost <= 0 || points >= cost) && len(hints) == 0 {
-		SendChatMessageToClient(ctx, connState.clientConn, client.Slot,
-			fmt.Sprintf("No locations found containing %q", itemName))
+		commandCtx.Write(fmt.Sprintf("No locations found containing %q", itemName))
 		return nil
 	}
 
 	if len(newHints) > 0 {
 		// Send own clients hint points update
-		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
+		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{client.Team, client.Slot})
 		clients := s.connections.GetSlotClients(teamSlot)
 
 		err := enqueueMessage([]any{RoomUpdateMessage{
@@ -369,26 +450,19 @@ func (s *ApxRoom) handleHintItemCommand(ctx context.Context, connState *connecti
 
 	if cost > 0 && points < cost {
 		text := fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points)
-		wsjson.Write(ctx, client.clientConn, []PrintJsonMessage{
-			formatGenericMessage(&client.Team, &client.Slot, "CommandResult", text),
-		})
+		commandCtx.Write(text)
 	} else if len(newHints) == 0 {
 		text := "No more copies of this item left to find."
-		wsjson.Write(ctx, client.clientConn, []PrintJsonMessage{
-			formatGenericMessage(&client.Team, &client.Slot, "CommandResult", text),
-		})
+		commandCtx.Write(text)
 	}
 	return nil
 }
 
-func (s *ApxRoom) handleCountdownCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleCountdownCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
 	allowed := s.state.ServerOptions.CountdownAllowed(len(s.state.SlotInfo))
 
-	if !allowed && !connState.adminAuthed.Load() {
-		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", "Not allowed."),
-		})
-		return nil
+	if !allowed && !commandCtx.IsAdmin() {
+		return fmt.Errorf("Not allowed.")
 	}
 
 	seconds := 10
@@ -396,10 +470,7 @@ func (s *ApxRoom) handleCountdownCommand(ctx context.Context, connState *connect
 		var err error
 		seconds, err = strconv.Atoi(args)
 		if err != nil {
-			wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-				formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", "Invalid value for seconds"),
-			})
-			return nil
+			return fmt.Errorf("Invalid value for seconds")
 		}
 	}
 
@@ -450,30 +521,32 @@ func (s *ApxRoom) handleCountdownCommand(ctx context.Context, connState *connect
 	return nil
 }
 
-func (s *ApxRoom) handleGetItemCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleGetItemCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if !commandCtx.IsClient() {
+		return fmt.Errorf("Command supported on clients only")
+	}
+
+	client := commandCtx.connState.registeredClient
+
 	allowed := s.state.ServerOptions.ItemCheatAllowed()
 
 	if !allowed {
-		text := "Sorry, item cheating has been disabled on this server. You can ask the server admin to enable item cheating or use /send"
-		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
-		return nil
+		return fmt.Errorf("Sorry, item cheating has been disabled on this server. You can ask the server admin to enable item cheating or use /send")
 	}
 
-	itemID, ok := s.datapackages.GetItemID(*connState.registeredClient.game, args)
+	itemID, ok := s.datapackages.GetItemID(*client.game, args)
 	if !ok {
-		text := fmt.Sprintf("Item not found for '%s'", args)
-		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
-		return nil
+		return fmt.Errorf("Item not found for '%s'", args)
 	}
 
-	newItem := NetworkItem{itemID, -1, int32(connState.registeredClient.Slot), 0}
-	s.state.ReceivedItems.Add(connState.registeredClient.Team, connState.registeredClient.Slot, []NetworkItem{newItem})
+	newItem := NetworkItem{itemID, -1, int32(client.Slot), 0}
+	s.state.ReceivedItems.Add(client.Team, client.Slot, []NetworkItem{newItem})
 
-	text := fmt.Sprintf("Cheat console: sending %q to %s", args, *connState.slotName)
+	text := fmt.Sprintf("Cheat console: sending %q to %s", args, *client.slotName)
 
 	msg := formatGenericMessageWithItem(
-		&connState.registeredClient.Team,
-		&connState.registeredClient.Slot,
+		&client.Team,
+		&client.Slot,
 		"ItemCheat",
 		text,
 		&newItem,
@@ -484,49 +557,57 @@ func (s *ApxRoom) handleGetItemCommand(ctx context.Context, connState *connectio
 	return nil
 }
 
-func (s *ApxRoom) handleCollectCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleCollectCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if !commandCtx.IsClient() {
+		return fmt.Errorf("Command supported on clients only")
+	}
+
+	client := commandCtx.connState.registeredClient
+
 	cm := s.state.ServerOptions.GetCollectMode()
-	status := s.state.ClientStatuses.Get(connState.registeredClient.Team, connState.registeredClient.Slot)
+	status := s.state.ClientStatuses.Get(client.Team, client.Slot)
 
 	if cm == PermissionEnabled || cm == PermissionAutoEnabled {
-		s.CollectPlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		s.CollectPlayer(client.Team, client.Slot)
 		return nil
 	}
 	if cm == PermissionDisabled {
-		text := "Sorry, client item collecting has been disabled on this server. You can ask the server admin for a /collect"
-		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
-		return nil
+		return fmt.Errorf("Sorry, client item collecting has been disabled on this server. You can ask the server admin for a /collect")
 	}
 	if cm == PermissionGoal && status == ClientStatusGoal {
-		s.CollectPlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		s.CollectPlayer(client.Team, client.Slot)
 		return nil
 	}
 
 	return nil
 }
 
-func (s *ApxRoom) handleReleaseCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleReleaseCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if !commandCtx.IsClient() {
+		return fmt.Errorf("Command supported on clients only")
+	}
+
+	client := commandCtx.connState.registeredClient
+
 	rm := s.state.ServerOptions.GetReleaseMode()
-	status := s.state.ClientStatuses.Get(connState.registeredClient.Team, connState.registeredClient.Slot)
+	status := s.state.ClientStatuses.Get(client.Team, client.Slot)
 
 	if rm == PermissionEnabled || rm == PermissionAutoEnabled {
-		s.ReleasePlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		s.ReleasePlayer(client.Team, client.Slot)
 		return nil
 	}
 	if rm == PermissionDisabled {
-		text := "Sorry, client item releasing has been disabled on this server. You can ask the server admin for a /release"
-		s.broadcastPrintJson([]PrintJsonMessage{formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "Chat", text)})
-		return nil
+		return fmt.Errorf("Sorry, client item releasing has been disabled on this server. You can ask the server admin for a /release")
 	}
 	if rm == PermissionGoal && status == ClientStatusGoal {
-		s.ReleasePlayer(connState.registeredClient.Team, connState.registeredClient.Slot)
+		s.ReleasePlayer(client.Team, client.Slot)
 		return nil
 	}
 
 	return nil
 }
 
-func (s *ApxRoom) handlePlayersCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handlePlayersCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
 	s.connections.mu.RLock()
 	numSlotsConnected := len(s.connections.clients)
 	s.connections.mu.RUnlock()
@@ -539,58 +620,50 @@ func (s *ApxRoom) handlePlayersCommand(ctx context.Context, connState *connectio
 	}
 
 	text := fmt.Sprintf("%d players of %d connected: %s", numSlotsConnected, len(playerNames), strings.Join(playerNames, ", "))
-	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-	})
-
+	commandCtx.Write(text)
 	return nil
 }
 
-func (s *ApxRoom) handleAdminLoginCommand(ctx context.Context, connState *connectionState, args string) error {
-	authed := connState.adminAuthed.Load()
+func (s *ApxRoom) handleAdminLoginCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if !commandCtx.IsClient() {
+		return fmt.Errorf("Command supported on clients only")
+	}
+
+	authed := commandCtx.connState.adminAuthed.Load()
 	if authed {
 		text := "You are already authenticated as admin"
-		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-		})
+		commandCtx.Write(text)
 		return nil
 	}
 
 	allowed := s.state.ServerOptions.AdminPasswordCheck(&args)
 	if !allowed {
-		text := "Entered password was incorrect, or there is none set"
-		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-		})
-		return nil
+		return fmt.Errorf("Entered password was incorrect, or there is none set")
 	}
 
-	connState.adminAuthed.Store(true)
+	commandCtx.connState.adminAuthed.Store(true)
 	text := "Login successful. You can now issue server side commands."
-	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-	})
+	commandCtx.Write(text)
 	return nil
 }
 
-func (s *ApxRoom) handleAdminLogoutCommand(ctx context.Context, connState *connectionState, args string) error {
-	connState.adminAuthed.Store(false)
+func (s *ApxRoom) handleAdminLogoutCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	if !commandCtx.IsClient() {
+		return fmt.Errorf("Command supported on clients only")
+	}
+
+	commandCtx.connState.adminAuthed.Store(false)
+
 	text := "Logout successful. You can no longer issue server side commands."
-	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-	})
+	commandCtx.Write(text)
 
 	return nil
 }
 
-func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleAdminOptionCommand(_ context.Context, commandCtx *CommandContext, args string) error {
 	argsList := splitArgs(args)
 	if len(argsList) < 2 {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			"Usage: !admin option <option> <value>")
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			"Options list: password, server_password, hint_cost")
-		return nil
+		return fmt.Errorf("Usage: !admin option <option> <value>\nOptions list: password, server_password, hint_cost")
 	}
 
 	option := argsList[0]
@@ -607,9 +680,7 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 	case "hint_cost":
 		hintCost, err := strconv.Atoi(value)
 		if err != nil || hintCost < 0 || hintCost > 100 {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option hint_cost <0-100>")
-			return nil
+			return fmt.Errorf("Usage: !admin option hint_cost <0-100>")
 		}
 		s.state.ServerOptions.SetHintCost(hintCost)
 		s.buildRoomInfoFromState()
@@ -617,9 +688,7 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 	case "location_check_points":
 		locationCheckPoints, err := strconv.Atoi(value)
 		if err != nil || locationCheckPoints < 0 || locationCheckPoints > 100 {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option location_check_points <0-100>")
-			return nil
+			return fmt.Errorf("Usage: !admin option location_check_points <0-100>")
 		}
 		s.state.ServerOptions.SetLocationCheckPoints(locationCheckPoints)
 		s.buildRoomInfoFromState()
@@ -627,9 +696,7 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 	case "release_mode":
 		mode, valid := permissionFromString(value)
 		if !valid {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option release_mode <enabled|goal|auto|auto-enabled|disabled>")
-			return nil
+			return fmt.Errorf("Usage: !admin option release_mode <enabled|goal|auto|auto-enabled|disabled>")
 		}
 		s.state.ServerOptions.SetReleaseMode(mode)
 		s.buildRoomInfoFromState()
@@ -637,9 +704,7 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 	case "collect_mode":
 		mode, valid := permissionFromString(value)
 		if !valid {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option collect_mode <enabled|goal|auto|auto-enabled|disabled>")
-			return nil
+			return fmt.Errorf("Usage: !admin option collect_mode <enabled|goal|auto|auto-enabled|disabled>")
 		}
 		s.state.ServerOptions.SetReleaseMode(mode)
 		s.buildRoomInfoFromState()
@@ -647,9 +712,7 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 	case "remaining_mode":
 		mode, valid := permissionFromString(value)
 		if !valid || mode == PermissionAuto || mode == PermissionAutoEnabled {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option remaining_mode <enabled|goal|disabled>")
-			return nil
+			return fmt.Errorf("Usage: !admin option remaining_mode <enabled|goal|disabled>")
 		}
 		s.state.ServerOptions.SetRemainingMode(mode)
 		s.buildRoomInfoFromState()
@@ -657,18 +720,14 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 	case "countdown_mode":
 		mode, valid := permissionFromString(value)
 		if !valid || (mode != PermissionEnabled && mode != PermissionAuto && mode != PermissionDisabled) {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option countdown_mode <enabled|auto|disabled>")
-			return nil
+			return fmt.Errorf("Usage: !admin option countdown_mode <enabled|auto|disabled>")
 		}
 		s.state.ServerOptions.SetCountdownMode(mode)
 		// Weird this isn't in room info
 	case "item_cheat":
 		mode, valid := permissionFromString(value)
 		if !valid || (mode != PermissionEnabled && mode != PermissionDisabled) {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option item_cheat <enabled|disabled>")
-			return nil
+			return fmt.Errorf("Usage: !admin option item_cheat <enabled|disabled>")
 		}
 		s.state.ServerOptions.SetItemCheatAllowed(mode == PermissionEnabled)
 		// Weird this isn't in room info
@@ -676,31 +735,27 @@ func (s *ApxRoom) handleAdminOptionCommand(ctx context.Context, connState *conne
 		// Mostly for compat
 		mode, valid := permissionFromString(value)
 		if !valid || (mode != PermissionEnabled && mode != PermissionDisabled) {
-			SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-				"Usage: !admin option disable_item_cheat <enabled|disabled>")
-			return nil
+			return fmt.Errorf("Usage: !admin option disable_item_cheat <enabled|disabled>")
 		}
 		s.state.ServerOptions.SetItemCheatAllowed(mode == PermissionDisabled)
 		// Weird this isn't in room info
+	default:
+		return fmt.Errorf("Available options: password, server_password, hint_cost, location_check_points, release_mode, collect_mode, remaining_mode, countdown_mode, item_cheat, disable_item_cheat")
 	}
+
+	commandCtx.Write(fmt.Sprintf("Changed '%s' to '%s'", option, value))
 
 	return nil
 }
 
-func (s *ApxRoom) handleAdminReleaseCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleAdminReleaseCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
 	slotInfo, ok := s.state.NameToSlot[args]
 	if !ok {
-		text := fmt.Sprintf("No player found for name '%s'", args)
-		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-			formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-		})
-		return nil
+		return fmt.Errorf("No player found for name '%s'", args)
 	}
 
-	text := fmt.Sprintf("Releasing player '%s' (slot %d)", args, slotInfo.Slot)
-	wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-		formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-	})
+	text := fmt.Sprintf("Releasing player '%s' (team %d - slot %d)", args, slotInfo.Team, slotInfo.Slot)
+	commandCtx.Write(text)
 
 	locIds := make([]int64, 0, len(s.state.Locations[TeamSlot{slotInfo.Team, slotInfo.Slot}]))
 	for locId := range s.state.Locations[TeamSlot{slotInfo.Team, slotInfo.Slot}] {
@@ -710,12 +765,10 @@ func (s *ApxRoom) handleAdminReleaseCommand(ctx context.Context, connState *conn
 	return nil
 }
 
-func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
 	argsList := splitArgs(args)
 	if len(argsList) < 2 {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			"Usage: !admin send <player> <item>")
-		return nil
+		return fmt.Errorf("Usage: !admin send <player> <item>")
 	}
 
 	player := argsList[0]
@@ -723,15 +776,11 @@ func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connect
 
 	slotInfo, ok := s.state.NameToSlot[player]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Player '%s' not found", player))
-		return nil
+		return fmt.Errorf("Player '%s' not found", player)
 	}
 	itemId, ok := s.datapackages.ItemNameToID[slotInfo.Game][item]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Item '%s' not found for game %s", item, slotInfo.Game))
-		return nil
+		return fmt.Errorf("Item '%s' not found for game %s", item, slotInfo.Game)
 	}
 
 	networkItem := NetworkItem{
@@ -746,7 +795,7 @@ func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connect
 	text := fmt.Sprintf("Cheat console: sending %q to %s", item, player)
 
 	msg := formatGenericMessageWithItem(
-		&connState.registeredClient.Team,
+		&slotInfo.Team,
 		&slotInfo.Slot,
 		"ItemCheat",
 		text,
@@ -756,19 +805,15 @@ func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, connState *connect
 	s.broadcastPrintJson([]PrintJsonMessage{msg})
 
 	// Make sure requester always gets the feedback too
-	if connState.registeredClient.textConcernsSelf && slotInfo.Slot != connState.registeredClient.Slot {
-		wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{msg})
-	}
+	commandCtx.Write(text)
 
 	return nil
 }
 
-func (s *ApxRoom) handleAdminSendLocationCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleAdminSendLocationCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
 	argsList := splitArgs(args)
 	if len(argsList) < 2 {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			"Usage: !admin send_location <player> <location>")
-		return nil
+		return fmt.Errorf("Usage: !admin send_location <player> <location>")
 	}
 
 	player := argsList[0]
@@ -776,15 +821,11 @@ func (s *ApxRoom) handleAdminSendLocationCommand(ctx context.Context, connState 
 
 	slotInfo, ok := s.state.NameToSlot[player]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Player '%s' not found", player))
-		return nil
+		return fmt.Errorf("Player '%s' not found", player)
 	}
 	locId, ok := s.datapackages.LocationNameToID[slotInfo.Game][location]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Location '%s' not found for game %s", location, slotInfo.Game))
-		return nil
+		return fmt.Errorf("Location '%s' not found for game %s", location, slotInfo.Game)
 	}
 
 	s.RegisterChecks(context.Background(), TeamSlot{slotInfo.Team, slotInfo.Slot}, []int64{locId})
@@ -792,12 +833,10 @@ func (s *ApxRoom) handleAdminSendLocationCommand(ctx context.Context, connState 
 	return nil
 }
 
-func (s *ApxRoom) handleAdminHintCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleAdminHintCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
 	argsList := splitArgs(args)
 	if len(argsList) < 2 {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			"Usage: !admin send <player> <item>")
-		return nil
+		return fmt.Errorf("Usage: !admin hint <player> <item>")
 	}
 
 	player := argsList[0]
@@ -805,32 +844,17 @@ func (s *ApxRoom) handleAdminHintCommand(ctx context.Context, connState *connect
 
 	slotInfo, ok := s.state.NameToSlot[player]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Player '%s' not found", player))
-		return nil
+		return fmt.Errorf("Player '%s' not found", player)
 	}
 	itemId, ok := s.datapackages.ItemNameToID[slotInfo.Game][item]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Item '%s' not found for game %s", item, slotInfo.Game))
-		return nil
+		return fmt.Errorf("Item '%s' not found for game %s", item, slotInfo.Game)
 	}
 
 	teamSlot := TeamSlot{Team: slotInfo.Team, Slot: slotInfo.Slot}
 	_, newHints := s.state.Hints.CollectItemHint(teamSlot, int32(slotInfo.Slot), itemId, &s.state.SphereLocs, &s.state.Checks, 0, 0)
 
 	if len(newHints) > 0 {
-		// Send own clients hint points update
-		newPoints := s.state.GetSlotRemainingPoints(TeamSlot{connState.registeredClient.Team, connState.registeredClient.Slot})
-		clients := s.connections.GetSlotClients(teamSlot)
-
-		err := enqueueMessage([]any{RoomUpdateMessage{
-			HintPoints: &newPoints,
-		}}, clients...)
-		if err != nil {
-			return err
-		}
-
 		// Notify listeners of change
 		affectedSlots := make(map[TeamSlot]struct{})
 		for _, hint := range newHints {
@@ -845,12 +869,10 @@ func (s *ApxRoom) handleAdminHintCommand(ctx context.Context, connState *connect
 	return nil
 }
 
-func (s *ApxRoom) handleAdminHintLocationCommand(ctx context.Context, connState *connectionState, args string) error {
+func (s *ApxRoom) handleAdminHintLocationCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
 	argsList := splitArgs(args)
 	if len(argsList) < 2 {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			"Usage: !admin send_location <player> <location>")
-		return nil
+		return fmt.Errorf("Usage: !admin hint_location <player> <location>")
 	}
 
 	player := argsList[0]
@@ -858,15 +880,11 @@ func (s *ApxRoom) handleAdminHintLocationCommand(ctx context.Context, connState 
 
 	slotInfo, ok := s.state.NameToSlot[player]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Player '%s' not found", player))
-		return nil
+		return fmt.Errorf("Player '%s' not found", player)
 	}
 	locId, ok := s.datapackages.LocationNameToID[slotInfo.Game][location]
 	if !ok {
-		SendChatMessageToClient(ctx, connState.clientConn, connState.registeredClient.Slot,
-			fmt.Sprintf("Location '%s' not found for game %s", location, slotInfo.Game))
-		return nil
+		return fmt.Errorf("Location '%s' not found for game %s", location, slotInfo.Game)
 	}
 
 	teamSlot := TeamSlot{slotInfo.Team, slotInfo.Slot}
@@ -900,18 +918,16 @@ func (s *ApxRoom) handleAdminHintLocationCommand(ctx context.Context, connState 
 	return nil
 }
 
-func handleAuthedCommand(handler chatHandler) chatHandler {
-	return func(ctx context.Context, connState *connectionState, args string) error {
-		authed := connState.adminAuthed.Load()
-		if !authed {
-			text := "You must first login using !admin login <password>"
-			wsjson.Write(ctx, connState.clientConn, []PrintJsonMessage{
-				formatGenericMessage(&connState.registeredClient.Team, &connState.registeredClient.Slot, "CommandResult", text),
-			})
-			return nil
+func handleAuthedCommand(handler commandHandler) commandHandler {
+	return func(ctx context.Context, commandCtx *CommandContext, args string) error {
+		if commandCtx.IsClient() {
+			authed := commandCtx.connState.adminAuthed.Load()
+			if !authed {
+				return fmt.Errorf("You must first login using !admin login <password>")
+			}
 		}
 
-		return handler(ctx, connState, args)
+		return handler(ctx, commandCtx, args)
 	}
 }
 
