@@ -1202,7 +1202,7 @@ type TrackerSlimSlotOverview struct {
 	TotalLocations int          `json:"locations"`
 	ChecksDone     int          `json:"checks"`
 	Status         ClientStatus `json:"status"`
-	LastActivity   string       `json:"last_activity"`
+	LastActivity   int64        `json:"last_activity"`
 }
 
 type TrackerApiOverview struct {
@@ -1217,10 +1217,6 @@ func (rm *RoomManager) trackerOverviewSupply(room *HostedRoom) ([]byte, error) {
 	activityTimersMap := room.apx.state.SlotActivityTimers.GetAll()
 
 	for ts, slotInfo := range room.apx.state.SlotInfo {
-		lastActivity := ""
-		if v, ok := activityTimersMap[ts]; ok {
-			lastActivity = time.Unix(v, 0).UTC().Format(http.TimeFormat)
-		}
 		checksDone := room.apx.state.Checks.GetTotalChecked(ts)
 		slots = append(slots, TrackerSlimSlotOverview{
 			Team:           ts.Team,
@@ -1230,7 +1226,7 @@ func (rm *RoomManager) trackerOverviewSupply(room *HostedRoom) ([]byte, error) {
 			TotalLocations: len(room.apx.state.Locations[ts]),
 			ChecksDone:     checksDone,
 			Status:         room.apx.state.ClientStatuses.Get(ts.Team, ts.Slot),
-			LastActivity:   lastActivity,
+			LastActivity:   activityTimersMap[ts],
 		})
 		teamCheckTotals[ts.Team] += checksDone
 	}
@@ -2206,11 +2202,11 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Check for cache hit first
 	if cached, ok := room.sphereCache.Get(slotId); ok {
 		w.Write(cached)
 		return
 	}
+
 	slotInfo, ok := room.apx.state.SlotInfo[TeamSlot{0, slotId}]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
@@ -2224,20 +2220,20 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 		json.NewEncoder(w).Encode(map[string]string{"error": "datapackage not found"})
 		return
 	}
-	checkedLocations := room.checkedLocations.GetSlot(slotId)
 
+	ts := TeamSlot{0, slotId}
 	result := make([]SphereResult, 0, len(room.apx.state.Spheres))
 	for _, sphere := range room.apx.state.Spheres {
-		locIDs, ok := sphere[TeamSlot{0, slotId}]
+		locIDs, ok := sphere[ts]
 		if !ok {
 			continue
 		}
 		entries := make([]LocationEntry, 0, len(locIDs))
-		locs_checked := 0
+		locsChecked := 0
 		for _, locID := range locIDs {
-			checked := checkedLocations[locID]
+			checked := room.apx.state.Checks.IsChecked(ts, locID)
 			if checked {
-				locs_checked++
+				locsChecked++
 			}
 			entries = append(entries, LocationEntry{
 				ID:      locID,
@@ -2248,7 +2244,7 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 		result = append(result, SphereResult{
 			Locations: entries,
 			Total:     len(entries),
-			Checked:   locs_checked,
+			Checked:   locsChecked,
 		})
 	}
 
@@ -2281,7 +2277,6 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 		if !ok {
 			continue
 		}
-		checkedLocations := room.checkedLocations.GetSlot(slotInfo.Slot)
 
 		slotResult := make([]SphereResult, 0, len(room.apx.state.Spheres))
 		for _, sphere := range room.apx.state.Spheres {
@@ -2292,7 +2287,7 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 			entries := make([]LocationEntry, 0, len(locIDs))
 			locsChecked := 0
 			for _, locID := range locIDs {
-				checked := checkedLocations[locID]
+				checked := room.apx.state.Checks.IsChecked(teamSlot, locID)
 				if checked {
 					locsChecked++
 				}

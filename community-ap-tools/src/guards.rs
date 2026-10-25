@@ -37,7 +37,7 @@ pub struct MergedSlotInfo {
     pub locations: usize,
     pub checks: usize,
     pub status: SlotStatus,
-    pub last_activity: String,
+    pub last_activity: i64,
     pub lobby_slot_id: Uuid,
     pub discord_handle: String,
     pub discord_id: String,
@@ -142,7 +142,7 @@ pub struct SlotInfo {
     pub locations: usize,
     pub checks: usize,
     pub status: SlotStatus,
-    pub last_activity: String,
+    pub last_activity: i64,
 }
 
 macro_rules! try_err_outcome {

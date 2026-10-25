@@ -244,23 +244,26 @@ function createTrackerTable(tableId)
         const row = cell.getRow();
         const goaled = row.getData().status === STATUS_GOAL;
     
-        if (value === null)
+        if (value === 0)
         {
             return "Never";
         }
+    
+        const secondsSince = Math.floor(Date.now() / 1000) - value;
+    
         let timeSinceClassname = "last-active-recent";
         if (!goaled) {
-            if (value >= 3600) {
+            if (secondsSince >= 3600) {
                 timeSinceClassname = "last-active-hardbk";
-            } else if (value >= 1800) {
+            } else if (secondsSince >= 1800) {
                 timeSinceClassname = "last-active-softbk";
             }
         }
         
-        const text = timeSince(value) + " ago"
+        const text = timeSince(secondsSince) + " ago";
         return `<div class="${timeSinceClassname}">${text}</div>`;
     }
-
+    
     const lastActivitySorter = function (a, b, aRow, bRow) {
         const aGoaled = aRow.getData().status === STATUS_GOAL;
         const bGoaled = bRow.getData().status === STATUS_GOAL;
@@ -269,7 +272,7 @@ function createTrackerTable(tableId)
             return aGoaled ? 1 : -1;
         }
     
-        return a - b;
+        return b - a;
     }
 
     const onDiscordHandleClick = function (event, cell) {
