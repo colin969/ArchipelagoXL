@@ -43,6 +43,7 @@
         <div><strong style="display: inline-block; width: 16ch">Server:</strong>{{ apx.normal_addr }}</div>
         {% endif %}
         <div><strong style="display: inline-block; width: 16ch">{% if !apx.reduced_access %}Reduced&nbsp;{% endif %}Server:</strong>{{ apx.reduced_addr }}</div>
+        <div><strong style="display: inline-block; width: 16ch">Tracker:</strong><a href="{{ apx_public_url }}/dashboard/{{ apx.lobby_room_id }}/tracker">{{ apx_public_url }}/dashboard/{{ apx.lobby_room_id }}/tracker</a></div>
     </div>
     {% endif %}
     <table class="styled" id="my-slots">

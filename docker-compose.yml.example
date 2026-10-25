@@ -75,6 +75,7 @@ services:
       ROCKET_ADDRESS: "0.0.0.0"
       ADMIN_ROOMS_ONLY: false
       APX_ROOT: "http://apx:9001"
+      APX_PUBLIC_URL: "http://localhost:9001"
       APX_API_KEY: "changeme"
       APX_WS_ROOT: "example.com"
       AP_TOOLS_PUBLIC_URL: "example.com"

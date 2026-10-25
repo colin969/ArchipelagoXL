@@ -61,6 +61,7 @@ pub struct RoomTpl<'a> {
     has_room_url: bool,
     is_my_room: bool,
     current_user_has_yaml_in_room: bool,
+    apx_public_url: String,
     apx_room_info: Option<ApxRoomInfoDisplay>,
     game_display_names: HashMap<String, String>,
     // Map from original player name to AP truncated slot name
@@ -236,6 +237,7 @@ pub async fn room_inner<'a>(
         room,
         yamls,
         is_my_room,
+        apx_public_url: lobby_config.apx_public_url.clone(),
         current_user_has_yaml_in_room: user_has_yaml,
         game_display_names,
         truncated_names,

@@ -278,7 +278,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.Use(srv.loggingMiddleware)
 	api.HandleFunc("/room/{roomId}", srv.handleRoomStatus).Methods(http.MethodGet)
 	// Webhost compatible APIs
-	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
+	api.HandleFunc("/room_status/{roomId}", newCachedRoomHandler(srv, "room_webhost_status", 15*time.Second, srv.roomWebhostApiStatusSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}", newCachedRoomHandler(srv, "tracker", 60*time.Second, srv.trackerSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/overview", newCachedRoomHandler(srv, "tracker_overview", 15*time.Second, srv.trackerOverviewSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/players", newCachedRoomHandler(srv, "tracker_players", 300*time.Second, srv.trackerPlayersSupply)).Methods(http.MethodGet)
@@ -891,56 +891,21 @@ type WebhostApiRoomStatusResponse struct {
 	Timeout      int         `json:"timeout"`
 }
 
-func (rm *RoomManager) handleRoomWebhostApiStatus(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	roomId := vars["roomId"]
-	w.Header().Set("Content-Type", "application/json")
-
-	if !isValidLobbyRoomId(roomId) {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
-		return
-	}
-
-	room, ok := rm.registry.Get(roomId)
-	if !ok {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "room not found"})
-		return
-	}
-
+func (rm *RoomManager) roomWebhostApiStatusSupply(room *HostedRoom) ([]byte, error) {
 	lastActivity := room.lastActivity.Load()
-	players := make([][2]string, len(room.apx.state.SlotInfo))
+	players := make([][2]string, 0, len(room.apx.state.SlotInfo))
 	for _, player := range room.apx.state.SlotInfo {
 		players = append(players, [2]string{player.Name, player.Game})
 	}
 
-	json.NewEncoder(w).Encode(WebhostApiRoomStatusResponse{
+	return json.Marshal(WebhostApiRoomStatusResponse{
 		Downloads:    []any{},
 		Players:      players,
 		LastActivity: time.Unix(lastActivity, 0).UTC().Format(http.TimeFormat),
 		LastPort:     rm.config.WsPort,
 		Timeout:      int(RoomTimeout.Seconds()),
-		Tracker:      room.lobbyRoomId, // Just use the same
+		Tracker:      room.lobbyRoomId,
 	})
-}
-
-func (rm *RoomManager) handleSlotDashboard(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	roomId := vars["roomId"]
-	teamId := vars["teamId"]
-	slotId := vars["slotId"]
-
-	if !isValidLobbyRoomId(roomId) {
-		http.Error(w, "invalid room id", http.StatusBadRequest)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html")
-	renderTemplate(w, "base", map[string]string{
-		"RoomID": roomId,
-		"TeamID": teamId,
-		"SlotID": slotId,
-	}, "templates/base_dashboard.gohtml", "templates/dashboard_slot.gohtml")
 }
 
 type TrackerAlias struct {

@@ -1278,7 +1278,7 @@ pub struct TrackerInfoCache(
 pub struct ApRoomCache(pub Arc<Mutex<HashMap<String, (Instant, TrackerInfo)>>>);
 pub struct RoomOwnerCache(pub Mutex<HashMap<Uuid, i64>>);
 
-const TRACKER_CACHE_TTL: Duration = Duration::from_secs(30);
+const TRACKER_CACHE_TTL: Duration = Duration::from_secs(15);
 
 #[rocket::main]
 async fn main() -> crate::error::Result<()> {
