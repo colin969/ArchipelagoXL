@@ -820,7 +820,7 @@ async fn release(
     lobby_room_id: &str,
     slot_name: &str,
     config: &State<Config>,
-) -> crate::error::Result<Redirect> {
+) -> crate::error::Result<(rocket::http::Status, String)> {
     let apx_api_root = config
         .apx_api_root
         .as_ref()
@@ -841,11 +841,11 @@ async fn release(
         .send()
         .await?;
 
-    if !response.status().is_success() {
-        Err(anyhow!("Release failed: {}", response.status()))?;
-    }
+    let status = rocket::http::Status::from_code(response.status().as_u16())
+        .unwrap_or(rocket::http::Status::InternalServerError);
+    let body = response.text().await.unwrap_or_default();
 
-    Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
+    Ok((status, body))
 }
 
 #[allow(unused_variables)]

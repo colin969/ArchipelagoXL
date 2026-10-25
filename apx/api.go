@@ -2656,7 +2656,7 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	slotName := vars["slotName"]
 
-	_, ok = room.apx.state.NameToSlot[slotName]
+	slotInfo, ok := room.apx.state.NameToSlot[slotName]
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -2664,7 +2664,7 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Release
+	room.apx.ReleasePlayer(slotInfo.Team, slotInfo.Slot)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "released", "slot": slotName})

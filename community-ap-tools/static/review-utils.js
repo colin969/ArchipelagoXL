@@ -490,7 +490,7 @@ function createTrackerTable(tableId)
 
     setInterval(() => {
         table.replaceData(`/api/dashboard/${window.lobby_room_id}/tracker_info`);
-    }, 40000);
+    }, 15000);
 }
 
 function forceReviewTableRefresh() {
