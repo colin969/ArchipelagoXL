@@ -128,35 +128,6 @@ func (r *RoomRegistry) Remove(roomId string) {
 	delete(r.rooms, roomId)
 }
 
-type CheckedLocations struct {
-	checkedLocations   map[int]map[int64]bool
-	checkedLocationsMu sync.RWMutex
-}
-
-func (cl *CheckedLocations) Get() map[int]map[int64]bool {
-	cl.checkedLocationsMu.RLock()
-	defer cl.checkedLocationsMu.RUnlock()
-	return cl.checkedLocations
-}
-
-func (cl *CheckedLocations) GetSlot(slotId int) map[int64]bool {
-	cl.checkedLocationsMu.RLock()
-	defer cl.checkedLocationsMu.RUnlock()
-	return cl.checkedLocations[slotId]
-}
-
-func (cl *CheckedLocations) Set(newCl map[int]map[int64]bool) {
-	cl.checkedLocationsMu.Lock()
-	defer cl.checkedLocationsMu.Unlock()
-	cl.checkedLocations = newCl
-}
-
-func newCheckedLocations() CheckedLocations {
-	return CheckedLocations{
-		checkedLocations: make(map[int]map[int64]bool),
-	}
-}
-
 type ApxRoomInfo struct {
 	LobbyRoomId       string `json:"lobby_room_id"`
 	NormalId          int    `json:"normal_id"`
@@ -175,7 +146,6 @@ type HostedRoom struct {
 	reducedHandler       *apxHandler
 	apx                  *ApxRoom
 	locationIdToName     map[string]map[int]string
-	checkedLocations     *CheckedLocations
 	sphereCache          *slotSphereCache
 	completeSphere1Slots map[int]struct{}
 	normalHandler        *apxHandler
@@ -1800,14 +1770,12 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		log.Fatalf("loading datapackages: %v", err)
 	}
 
-	checkedLocs := newCheckedLocations()
 	room := &HostedRoom{
 		lastActivity:         &lastActivity,
 		lobbyRoomId:          lobbyRoomId,
 		apx:                  apx,
 		sphereCache:          newSlotSphereCache(),
 		completeSphere1Slots: map[int]struct{}{},
-		checkedLocations:     &checkedLocs,
 		ctx:                  ctx,
 		cancel:               cancel,
 		deathlinkDisabled:    deathlinkDisabled,
@@ -2333,19 +2301,23 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 
 	sphere1 := room.apx.state.Spheres[0]
 
-	// Check if status of incomplete slots has changed
-	checkedLocs := room.checkedLocations.Get()
 	room.completeSphere1Mu.Lock()
 	for teamSlot, locIDs := range sphere1 {
 		if _, done := room.completeSphere1Slots[teamSlot.Slot]; done {
 			continue
 		}
-		if !isSphere1Incomplete(locIDs, checkedLocs[teamSlot.Slot]) {
+		allChecked := true
+		for _, locID := range locIDs {
+			if !room.apx.state.Checks.IsChecked(teamSlot, locID) {
+				allChecked = false
+				break
+			}
+		}
+		if allChecked {
 			room.completeSphere1Slots[teamSlot.Slot] = struct{}{}
 		}
 	}
 
-	// Build list of all incomplete slots
 	result := make([]int, 0)
 	for teamSlot := range room.apx.state.SlotInfo {
 		if _, done := room.completeSphere1Slots[teamSlot.Slot]; !done {
@@ -2485,15 +2457,6 @@ func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *htt
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(altNames)
-}
-
-func isSphere1Incomplete(locIDs []int64, checkedLocations map[int64]bool) bool {
-	for _, locID := range locIDs {
-		if !checkedLocations[locID] {
-			return true
-		}
-	}
-	return false
 }
 
 // Slot IDs are keys, so JSON turns them to strings, we want the numbers

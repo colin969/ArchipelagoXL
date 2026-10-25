@@ -178,51 +178,43 @@ func TestUploadRoomRequestFromForm(t *testing.T) {
 func TestIsSphere1Incomplete(t *testing.T) {
 	cases := []struct {
 		name    string
-		spheres TrackerSpheres
-		checked map[int64]bool
-		slotId  int32
+		locIDs  []int64
+		checked []int64
+		slotId  int
 		want    bool
 	}{
 		{
-			name: "all checked",
-			spheres: TrackerSpheres{
-				TrackerSphereLocations{1: []int64{100, 200, 300}},
-			},
-			checked: map[int64]bool{100: true, 200: true, 300: true},
+			name:    "all checked",
+			locIDs:  []int64{100, 200, 300},
+			checked: []int64{100, 200, 300},
 			slotId:  1,
 			want:    false,
 		},
 		{
-			name: "one unchecked",
-			spheres: TrackerSpheres{
-				TrackerSphereLocations{1: []int64{100, 200, 300}},
-			},
-			checked: map[int64]bool{100: true, 200: true},
+			name:    "one unchecked",
+			locIDs:  []int64{100, 200, 300},
+			checked: []int64{100, 200},
 			slotId:  1,
 			want:    true,
 		},
 		{
-			name: "no locations for slot",
-			spheres: TrackerSpheres{
-				TrackerSphereLocations{2: []int64{100}},
-			},
-			checked: map[int64]bool{},
+			name:    "no locations for slot",
+			locIDs:  []int64{},
+			checked: []int64{},
 			slotId:  1,
 			want:    false,
 		},
 		{
-			name: "nil checked map",
-			spheres: TrackerSpheres{
-				TrackerSphereLocations{1: []int64{100}},
-			},
-			checked: nil,
+			name:    "none checked",
+			locIDs:  []int64{100},
+			checked: []int64{},
 			slotId:  1,
 			want:    true,
 		},
 		{
 			name:    "empty sphere",
-			spheres: TrackerSpheres{TrackerSphereLocations{}},
-			checked: map[int64]bool{},
+			locIDs:  []int64{},
+			checked: []int64{},
 			slotId:  1,
 			want:    false,
 		},
@@ -230,9 +222,31 @@ func TestIsSphere1Incomplete(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sphere1 := tc.spheres[0]
-			locIDs := sphere1[int(tc.slotId)]
-			if got := isSphere1Incomplete(locIDs, tc.checked); got != tc.want {
+			ts := TeamSlot{Team: 0, Slot: tc.slotId}
+			locs := map[TeamSlot]map[int64]*Location{
+				ts: {},
+			}
+			for _, id := range tc.locIDs {
+				locs[ts][id] = &Location{}
+			}
+			checks := newChecksState(locs)
+			if len(tc.checked) > 0 {
+				checks.mu.Lock()
+				for _, id := range tc.checked {
+					checks.checked[ts][id] = struct{}{}
+				}
+				checks.mu.Unlock()
+			}
+
+			allChecked := true
+			for _, locID := range tc.locIDs {
+				if !checks.IsChecked(ts, locID) {
+					allChecked = false
+					break
+				}
+			}
+			got := !allChecked
+			if got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
