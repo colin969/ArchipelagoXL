@@ -97,7 +97,6 @@ func (h *TrackerWS) buildPatch(apx *ApxRoom, dirty map[TeamSlot]struct{}) []byte
 
 	patches := make([]TrackerPlayerState, 0, len(dirty))
 	for ts := range dirty {
-		checked := state.Checks.GetChecked(ts)
 		lastActivity := int64(0)
 		if v, ok := activityTimers[ts]; ok {
 			lastActivity = v
@@ -110,7 +109,7 @@ func (h *TrackerWS) buildPatch(apx *ApxRoom, dirty map[TeamSlot]struct{}) []byte
 			Team:           ts.Team,
 			Slot:           ts.Slot,
 			TotalLocations: len(state.Locations[ts]),
-			ChecksDone:     len(checked),
+			ChecksDone:     state.Checks.GetTotalChecked(ts),
 			Status:         int(clientStatuses[ts]),
 			LastActivity:   lastActivity,
 			LastConn:       lastConn,
@@ -132,7 +131,6 @@ func (h *TrackerWS) buildSnapshot(apx *ApxRoom) []byte {
 
 	playerStates := make([]TrackerPlayerState, 0, len(state.SlotInfo))
 	for ts := range state.SlotInfo {
-		checked := state.Checks.GetChecked(ts)
 		lastActivity := int64(0)
 		if v, ok := activityTimers[ts]; ok {
 			lastActivity = v
@@ -145,7 +143,7 @@ func (h *TrackerWS) buildSnapshot(apx *ApxRoom) []byte {
 			Team:           ts.Team,
 			Slot:           ts.Slot,
 			TotalLocations: len(state.Locations[ts]),
-			ChecksDone:     len(checked),
+			ChecksDone:     state.Checks.GetTotalChecked(ts),
 			Status:         int(clientStatuses[ts]),
 			LastActivity:   lastActivity,
 			LastConn:       lastConn,

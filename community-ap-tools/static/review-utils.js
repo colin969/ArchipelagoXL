@@ -181,28 +181,40 @@ function createAllChecksTable(tableId, sphereSidebar) {
     });
 }
 
+const STATUS_DISCONNECTED = 0;
+const STATUS_CONNECTED = 5;
+const STATUS_READY = 10;
+const STATUS_PLAYING = 20;
+const STATUS_GOAL = 30;
+
+const statusStringMap = {
+    [STATUS_DISCONNECTED]: "Disconnected",
+    [STATUS_CONNECTED]: "Connected",
+    [STATUS_READY]: "Ready",
+    [STATUS_PLAYING]: "Playing",
+    [STATUS_GOAL]: "GoalCompleted",
+};
 
 function createTrackerTable(tableId)
 {
     const statusFormatter = function (cell, formatterParams) {
         const value = cell.getValue();
-        return `<div class="slot-status slot-status-${value.replace(/\s/g, "")}"></span>`;
+        const cls = statusStringMap[value] ?? "Unknown";
+        return `<div class="slot-status slot-status-${cls}"></div>`;
     }
 
     const checksFormatter = function (cell, formatterParams) {
-        const values = cell.getValue();
-        return `${values[0]} / ${values[1]}`;
+        const row = cell.getRow().getData();
+        return `${row.checks} / ${row.locations}`;
     }
 
     const checksCalc = function (values, data, calcParams) {
         let totalFound = 0;
         let totalExisting = 0;
-
-        for (const value of values) {
-            totalFound += value[0];
-            totalExisting += value[1];
+        for (const row of data) {
+            totalFound += row.checks;
+            totalExisting += row.locations;
         }
-
         return [totalFound, totalExisting];
     }
 
@@ -212,24 +224,26 @@ function createTrackerTable(tableId)
     }
 
     const checksPercentFormatter = function (cell, formatterParams) {
-        const values = cell.getValue();
-        const percent = ((values[0] / values[1]) * 100).toFixed(1);
+        const row = cell.getRow().getData();
+        const percent = ((row.checks / row.locations) * 100).toFixed(1);
         return `${percent}%`;
     }
-
-    const checksSorter = function (a, b) {
-        return a[1] - b[1];
+    
+    const checksSorter = function (a, b, aRow, bRow) {
+        return aRow.getData().locations - bRow.getData().locations;
     }
 
-    const checksPercentSorter = function (a, b) {
-        return (a[0] / a[1]) - (b[0] / b[1]);
+    const checksPercentSorter = function (a, b, aRow, bRow) {
+        const aData = aRow.getData();
+        const bData = bRow.getData();
+        return (aData.checks / aData.locations) - (bData.checks / bData.locations);
     }
 
     const lastActivityFormatter = function (cell, formatterParams) {
         const value = cell.getValue();
         const row = cell.getRow();
-        const goaled = row.getData().status === "GoalCompleted";
-
+        const goaled = row.getData().status === STATUS_GOAL;
+    
         if (value === null)
         {
             return "Never";
@@ -248,13 +262,13 @@ function createTrackerTable(tableId)
     }
 
     const lastActivitySorter = function (a, b, aRow, bRow) {
-        const aGoaled = aRow.getData().status === "GoalCompleted";
-        const bGoaled = bRow.getData().status === "GoalCompleted";
-
+        const aGoaled = aRow.getData().status === STATUS_GOAL;
+        const bGoaled = bRow.getData().status === STATUS_GOAL;
+    
         if (aGoaled !== bGoaled) {
             return aGoaled ? 1 : -1;
         }
-
+    
         return a - b;
     }
 
@@ -417,7 +431,7 @@ function createTrackerTable(tableId)
             { title: "Checks", field: "checks", formatter: checksFormatter, sorter: checksSorter, bottomCalc: checksCalc, bottomCalcFormatter: checksCalcFormatter},
             { title: "Percent", field: "percent", mutator: function (value, data) {
                 return data.checks;
-            }, formatter: checksPercentFormatter, sorter: checksPercentSorter, bottomCalc: checksCalc, bottomCalcFormatter: checksPercentFormatter },
+            }, formatter: checksPercentFormatter, sorter: checksPercentSorter, bottomCalc: checksCalc, bottomCalcFormatter: checksPercentFormatter },            
             { title: "S1", field: "incomplete_sphere1", mutator: function (value, data) {
                 return !data.incomplete_sphere1;
             }, hozAlign: "center", formatter: "tickCross" }, 
@@ -439,7 +453,7 @@ function createTrackerTable(tableId)
 
         // Update summary underneath table
         const total = data.length;
-        const goaled = data.filter(row => row.status === "GoalCompleted").length;
+        const goaled = data.filter(row => row.status === STATUS_GOAL).length;
         const percent = total > 0 ? ((goaled / total) * 100).toFixed(1) : "0.0";
         const goaledEl = document.getElementById("slot-goaled");
         if (goaledEl) {
@@ -459,15 +473,15 @@ function createTrackerTable(tableId)
     const hideGoaled = document.getElementById("hide-goaled");
     hideGoaled.checked = localStorage.getItem("hide-goaled") === "true";
     if (hideGoaled.checked) {
-        table.addFilter("status", "!=", "GoalCompleted");
+        table.addFilter("status", "!=", STATUS_GOAL);
     }
 
     hideGoaled.addEventListener("change", function () {
         localStorage.setItem("hide-goaled", this.checked);
         if (this.checked) {
-            table.addFilter("status", "!=", "GoalCompleted");
+            table.addFilter("status", "!=", STATUS_GOAL);
         } else {
-            table.removeFilter("status", "!=", "GoalCompleted");
+            table.removeFilter("status", "!=", STATUS_GOAL);
         }
     });
 
@@ -490,7 +504,7 @@ function refreshSlotsToPing() {
         const seen = new Set();
         const neverConnected = [];
         for (const row of window.review_data) {
-            if (row["checks"][0] == 0 && row["status"] == "Disconnected" && !seen.has(row["discord_id"])) {
+            if (row.checks === 0 && row.status === STATUS_DISCONNECTED && !seen.has(row["discord_id"])) {
                 seen.add(row["discord_id"]);
                 neverConnected.push([row["discord_handle"], row["discord_id"]]);
             }
@@ -542,7 +556,7 @@ function refreshSphere1ToPing() {
         if (
             // Cursed I know, but we flip it on first render
             row["incomplete_sphere1"] === false &&
-            row["status"] !== "GoalCompleted" &&
+            row["status"] !== STATUS_GOAL &&
             !seen.has(row["discord_id"])
         ) {
             seen.add(row["discord_id"]);

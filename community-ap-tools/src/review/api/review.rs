@@ -518,24 +518,25 @@ async fn get_tracker_info(
         .slots
         .into_iter()
         .map(|slot| {
-            let yaml = &lobby_room.yamls[slot.id - 1];
+            let yaml = &lobby_room.yamls[slot.slot - 1];
 
             MergedSlotInfo {
-                deathlinks_sent: *room_state.deaths.get(&slot.id).unwrap_or(&0),
+                deathlinks_sent: *room_state.deaths.get(&slot.slot).unwrap_or(&0),
                 deathlink_excluded: room_state
                     .bounce_tag_exclusions
-                    .get(&slot.id)
+                    .get(&slot.slot)
                     .map_or(false, |tags| tags.contains(&deathlink_tag)),
                 bounce_tag_exclusions: room_state
                     .bounce_tag_exclusions
-                    .get(&slot.id)
+                    .get(&slot.slot)
                     .cloned()
                     .unwrap_or_default(),
-                incomplete_sphere1: incomplete_sphere1s.contains(&slot.id),
-                slot_bounces_excluded: room_state.slot_bounce_exclusions.contains(&slot.id),
-                id: slot.id,
+                incomplete_sphere1: incomplete_sphere1s.contains(&slot.slot),
+                slot_bounces_excluded: room_state.slot_bounce_exclusions.contains(&slot.slot),
+                id: slot.slot,
                 name: slot.name,
                 game: slot.game,
+                locations: slot.locations,
                 checks: slot.checks,
                 status: slot.status,
                 last_activity: slot.last_activity,
@@ -543,7 +544,7 @@ async fn get_tracker_info(
                 discord_handle: yaml.discord_handle.clone(),
                 discord_id: yaml.discord_id.to_string(),
                 has_patch: yaml.has_patch,
-                full_feed: room_state.full_feed_slots.contains(&slot.id),
+                full_feed: room_state.full_feed_slots.contains(&slot.slot),
             }
         })
         .collect();
@@ -570,7 +571,7 @@ async fn get_all_spheres(
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
     let client = reqwest::Client::new();
-    let url = format!("{}/api/{}/spheres", apx_api_root, lobby_room_id);
+    let url = format!("{}/api/room/{}/spheres", apx_api_root, lobby_room_id);
     let resp = client
         .get(&url)
         .header("X-API-Key", apx_api_key)
@@ -602,7 +603,7 @@ async fn get_slot_spheres(
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
     let client = reqwest::Client::new();
-    let url = format!("{}/api/{}/spheres/{}", apx_api_root, lobby_room_id, slot_id);
+    let url = format!("{}/api/room/{}/spheres/{}", apx_api_root, lobby_room_id, slot_id);
     let resp = client
         .get(&url)
         .header("X-API-Key", apx_api_key)

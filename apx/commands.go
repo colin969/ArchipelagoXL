@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -828,6 +829,8 @@ func (s *ApxRoom) handleAdminSendLocationCommand(ctx context.Context, commandCtx
 		return fmt.Errorf("Location '%s' not found for game %s", location, slotInfo.Game)
 	}
 
+	log.Printf("registering loc %s - %d for %s", location, locId, slotInfo.Name)
+
 	s.RegisterChecks(context.Background(), TeamSlot{slotInfo.Team, slotInfo.Slot}, []int64{locId})
 
 	return nil
@@ -933,38 +936,34 @@ func handleAuthedCommand(handler commandHandler) commandHandler {
 
 // Return list of args with respect to quotes around args with spaces
 func splitArgs(args string) []string {
-	quotesOpen := false
-	argsList := make([]string, 0)
+	var result []string
+	var current strings.Builder
+	inQuote := rune(0)
 
-	// Find next space or quote
-	runningArg := ""
-	for _, arg := range strings.Split(args, " ") {
-		if len(arg) > 0 {
-			if !quotesOpen && strings.HasPrefix(arg, "\"") {
-				quotesOpen = true
-				runningArg = arg[1:] + " "
-			} else if quotesOpen {
-				runningArg += arg + " "
-			} else {
-				argsList = append(argsList, arg)
+	for _, ch := range args {
+		switch {
+		case inQuote != 0 && ch == inQuote:
+			// Closing quote - end quoted segment without including the quote char
+			inQuote = 0
+		case inQuote == 0 && (ch == '"' || ch == '\''):
+			// Opening quote
+			inQuote = ch
+		case inQuote == 0 && ch == ' ':
+			// Space outside quotes - flush current arg
+			if current.Len() > 0 {
+				result = append(result, current.String())
+				current.Reset()
 			}
-			if quotesOpen && strings.HasSuffix(arg, "\"") {
-				quotesOpen = false
-				cleanArg := strings.TrimSpace(runningArg)
-				cleanArg = cleanArg[:len(cleanArg)-1]
-				argsList = append(argsList, cleanArg)
-				runningArg = ""
-			}
+		default:
+			current.WriteRune(ch)
 		}
 	}
 
-	// Unclosed quote :(
-	if len(runningArg) > 0 {
-		cleanArg := strings.TrimSpace(runningArg)
-		argsList = append(argsList, cleanArg)
+	if current.Len() > 0 {
+		result = append(result, current.String())
 	}
 
-	return argsList
+	return result
 }
 
 func valueToBool(s string) bool {

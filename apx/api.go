@@ -310,7 +310,8 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	// Webhost compatible APIs
 	api.HandleFunc("/room_status/{roomId}", srv.handleRoomWebhostApiStatus).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}", newCachedRoomHandler(srv, "tracker", 60*time.Second, srv.trackerSupply)).Methods(http.MethodGet)
-	api.HandleFunc("/tracker/{roomId}/players", newCachedRoomHandler(srv, "tracker_players", 30*time.Second, srv.trackerPlayersSupply)).Methods(http.MethodGet)
+	api.HandleFunc("/tracker/{roomId}/overview", newCachedRoomHandler(srv, "tracker_overview", 15*time.Second, srv.trackerOverviewSupply)).Methods(http.MethodGet)
+	api.HandleFunc("/tracker/{roomId}/players", newCachedRoomHandler(srv, "tracker_players", 300*time.Second, srv.trackerPlayersSupply)).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/live", srv.handleTrackerWS).Methods(http.MethodGet)
 	api.HandleFunc("/tracker/{roomId}/{teamId}/{slotId}/live", srv.handleSlotTrackerWS).Methods(http.MethodGet)
 	// /tracker/.../slot/...
@@ -1190,6 +1191,61 @@ func (rm *RoomManager) trackerSupply(room *HostedRoom) ([]byte, error) {
 		ActivityTimers:      activityTimers,
 		ConnectionTimers:    connectionTimers,
 		PlayerStatus:        playerStatus,
+	})
+}
+
+type TrackerSlimSlotOverview struct {
+	Team           int          `json:"team"`
+	Slot           int          `json:"slot"`
+	Name           string       `json:"name"`
+	Game           string       `json:"game"`
+	TotalLocations int          `json:"locations"`
+	ChecksDone     int          `json:"checks"`
+	Status         ClientStatus `json:"status"`
+	LastActivity   string       `json:"last_activity"`
+}
+
+type TrackerApiOverview struct {
+	Slots           []TrackerSlimSlotOverview `json:"slots"`
+	TotalChecksDone []TrackerTotalChecksDone  `json:"total_checks_done"`
+}
+
+func (rm *RoomManager) trackerOverviewSupply(room *HostedRoom) ([]byte, error) {
+	teamCheckTotals := make(map[int]int)
+	slots := make([]TrackerSlimSlotOverview, 0, len(room.apx.state.SlotInfo))
+
+	activityTimersMap := room.apx.state.SlotActivityTimers.GetAll()
+
+	for ts, slotInfo := range room.apx.state.SlotInfo {
+		lastActivity := ""
+		if v, ok := activityTimersMap[ts]; ok {
+			lastActivity = time.Unix(v, 0).UTC().Format(http.TimeFormat)
+		}
+		checksDone := room.apx.state.Checks.GetTotalChecked(ts)
+		slots = append(slots, TrackerSlimSlotOverview{
+			Team:           ts.Team,
+			Slot:           ts.Slot,
+			Name:           slotInfo.Name,
+			Game:           slotInfo.Game,
+			TotalLocations: len(room.apx.state.Locations[ts]),
+			ChecksDone:     checksDone,
+			Status:         room.apx.state.ClientStatuses.Get(ts.Team, ts.Slot),
+			LastActivity:   lastActivity,
+		})
+		teamCheckTotals[ts.Team] += checksDone
+	}
+
+	totalChecksDone := make([]TrackerTotalChecksDone, 0, len(teamCheckTotals))
+	for team, count := range teamCheckTotals {
+		totalChecksDone = append(totalChecksDone, TrackerTotalChecksDone{
+			Team:       team,
+			ChecksDone: count,
+		})
+	}
+
+	return json.Marshal(TrackerApiOverview{
+		Slots:           slots,
+		TotalChecksDone: totalChecksDone,
 	})
 }
 
@@ -2544,6 +2600,8 @@ func (rm *RoomManager) handleRoomCommand(w http.ResponseWriter, r *http.Request)
 		},
 		serverRunner: &ServerRunner{},
 	}
+
+	cmd.Command = strings.TrimPrefix(cmd.Command, "/")
 
 	handled, err := room.apx.commandRouter.server.Handle(r.Context(), &runner, cmd.Command)
 	if err != nil {

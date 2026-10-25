@@ -528,6 +528,12 @@ func (ls *Checks) GetChecked(ts TeamSlot) []int64 {
 	return ids
 }
 
+func (ls *Checks) GetTotalChecked(ts TeamSlot) int {
+	ls.mu.RLock()
+	defer ls.mu.RUnlock()
+	return len(ls.checked[ts])
+}
+
 func (ls *Checks) GetMissing(ts TeamSlot) []int64 {
 	ls.mu.RLock()
 	defer ls.mu.RUnlock()

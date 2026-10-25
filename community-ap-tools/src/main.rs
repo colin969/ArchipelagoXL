@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     str::FromStr,
 };
 
@@ -30,7 +30,6 @@ use wq::rocket_routes::QueueTokens;
 mod auth;
 mod datapackage;
 mod error;
-mod filters;
 mod guards;
 mod jobs;
 mod queues;
@@ -211,7 +210,7 @@ async fn fetch_full_feed_slots(
 
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{}/api/{}/full_feed", apx_api_root, room_id))
+        .get(format!("{}/api/room/{}/full_feed", apx_api_root, room_id))
         .header("X-API-Key", apx_api_key)
         .send()
         .await?;
@@ -235,7 +234,7 @@ async fn fetch_room_state(
 
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{}/api/{}/state", apx_api_root, room_id))
+        .get(format!("{}/api/room/{}/state", apx_api_root, room_id))
         .header("X-API-Key", apx_api_key)
         .send()
         .await?;
@@ -259,7 +258,7 @@ async fn fetch_deathlinks(
 
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{}/api/{}/deathlinks", apx_api_root, room_id))
+        .get(format!("{}/api/room/{}/deathlinks", apx_api_root, room_id))
         .header("X-API-Key", apx_api_key)
         .send()
         .await?;
@@ -283,7 +282,7 @@ async fn fetch_exclusions(
     let client = reqwest::Client::new();
     let response = client
         .get(format!(
-            "{}/api/{}/bounce_exclusions",
+            "{}/api/room/{}/bounce_exclusions",
             apx_api_root, room_id
         ))
         .header("X-API-Key", apx_api_key)
@@ -310,7 +309,7 @@ async fn fetch_slot_exclusions(
     let client = reqwest::Client::new();
     let response = client
         .get(format!(
-            "{}/api/{}/slot_bounce_exclusions",
+            "{}/api/room/{}/slot_bounce_exclusions",
             apx_api_root, room_id
         ))
         .header("X-API-Key", apx_api_key)
@@ -337,7 +336,7 @@ async fn fetch_incomplete_sphere1s(
     let client = reqwest::Client::new();
     let response = client
         .get(format!(
-            "{}/api/{}/incomplete_sphere1",
+            "{}/api/room/{}/incomplete_sphere1",
             apx_api_root, room_id
         ))
         .header("X-API-Key", apx_api_key)
@@ -404,15 +403,15 @@ async fn deathlinks(
         .iter()
         .zip(lobby_room.yamls.iter())
         .map(|(slot, lobby_slot)| DeathlinksSlot {
-            id: slot.id,
+            id: slot.slot,
             name: slot.name.clone(),
             game: slot.game.clone(),
             discord_handle: lobby_slot.discord_handle.clone(),
             // Definitely a cleaner way of doing this
             is_excluded: excluded_slots
-                .get(&slot.id)
+                .get(&slot.slot)
                 .map_or(false, |slots| slots.contains(&deathlink_tag)),
-            count: *deathlinks.get(&slot.id).unwrap_or(&0),
+            count: *deathlinks.get(&slot.slot).unwrap_or(&0),
         })
         .collect();
 
@@ -717,7 +716,7 @@ async fn hint(
     item_name: &str,
     apx_room_info: ApxRoomInfo,
     config: &State<Config>,
-) -> crate::error::Result<Redirect> {
+) -> crate::error::Result<(rocket::http::Status, String)> {
     if !["item", "location"].contains(&ty) {
         Err(anyhow::anyhow!(
             "Wrong hint type. Only item/location are supported"
@@ -737,9 +736,12 @@ async fn hint(
         shlex::try_quote(item_name)?
     );
 
-    sendRoomCommand(cmd, apx_room_info, config).await?;
+    let response = send_room_command(cmd, apx_room_info, config).await?;
+    let status = rocket::http::Status::from_code(response.status().as_u16())
+        .unwrap_or(rocket::http::Status::InternalServerError);
+    let body = response.text().await.unwrap_or_default();
 
-    Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
+    Ok((status, body))
 }
 
 #[rocket::get("/api/dashboard/<lobby_room_id>/give/<ty>/<slot_name>/<item_name>")]
@@ -751,7 +753,7 @@ async fn give(
     item_name: &str,
     apx_room_info: ApxRoomInfo,
     config: &State<Config>,
-) -> crate::error::Result<Redirect> {
+) -> crate::error::Result<(rocket::http::Status, String)> {
     if !["item", "location"].contains(&ty) {
         Err(anyhow::anyhow!(
             "Wrong give type. Only item/location are supported"
@@ -771,36 +773,45 @@ async fn give(
         shlex::try_quote(item_name)?
     );
 
-    sendRoomCommand(cmd, apx_room_info, config).await?;
+    let response = send_room_command(cmd, apx_room_info, config).await?;
+    let status = rocket::http::Status::from_code(response.status().as_u16())
+        .unwrap_or(rocket::http::Status::InternalServerError);
+    let body = response.text().await.unwrap_or_default();
 
-    Ok(Redirect::to(format!("/dashboard/{}", lobby_room_id)))
+    Ok((status, body))
 }
 
 // Fix turn into apx route
-async fn sendRoomCommand(
+async fn send_room_command(
     cmd: String,
     apx_room_info: ApxRoomInfo,
     config: &State<Config>,
-) -> crate::error::Result<()> {
+) -> crate::error::Result<reqwest::Response> {
+    let apx_api_root = config
+        .apx_api_root
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API not configured"))?;
+    let apx_api_key = config
+        .apx_api_key
+        .as_ref()
+        .ok_or_else(|| anyhow!("APX API key not configured"))?;
+
     let client = reqwest::Client::new();
 
     let mut headers = HeaderMap::new();
     headers.insert(
         HeaderName::from_static("x-api-key"),
-        HeaderValue::from_str(&config.apx_api_key)?,
+        HeaderValue::from_str(&apx_api_key)?,
     );
 
-    let apx_cmd_url = config
-        .apx_api_root
-        .join(&format!("/room/{}/command", apx_room_info.lobby_room_id))?;
-    let _ = client
+    let apx_cmd_url = apx_api_root
+        .join(&format!("/api/room/{}/command", apx_room_info.lobby_room_id))?;
+    Ok(client
         .post(apx_cmd_url)
         .headers(headers)
         .json(&serde_json::json!({ "command": cmd }))
         .send()
-        .await?;
-
-    Ok(())
+        .await?)
 }
 
 #[rocket::get("/api/dashboard/<lobby_room_id>/release/<slot_name>")]
@@ -819,7 +830,7 @@ async fn release(
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
-    let mut url = apx_api_root.join(&format!("/api/{}/release/", lobby_room_id))?;
+    let mut url = apx_api_root.join(&format!("/api/room/{}/release/", lobby_room_id))?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("Invalid APX URL"))?
         .push(slot_name);
@@ -856,7 +867,7 @@ async fn get_game_names(
         .ok_or_else(|| anyhow::anyhow!("APX API key not configured"))?;
 
     let url = apx_api_root.join(&format!(
-        "/api/{}/names/{}/{}",
+        "/api/room/{}/names/{}/{}",
         lobby_room_id, type_name, game_name
     ))?;
 
@@ -878,7 +889,7 @@ async fn notify_proxy_password_refresh(lobby_room_id: &str, config: &State<Confi
         return;
     };
 
-    let apx_url = match apx_root.join(&format!("/api/{}/refresh_passwords", lobby_room_id)) {
+    let apx_url = match apx_root.join(&format!("/api/room/{}/refresh_passwords", lobby_room_id)) {
         Ok(url) => url,
         Err(e) => {
             eprintln!("[REFRESH_PASSWORDS] Failed to build APX URL: {}", e);
@@ -1084,7 +1095,7 @@ async fn debug_slot_tap(
         .ok_or_else(|| anyhow!("APX API key not configured"))?
         .clone();
 
-    let apx_url = apx_api_root.join(&format!("/api/{}/debug/slot/{}", lobby_room_id, slot_id))?;
+    let apx_url = apx_api_root.join(&format!("/api/room/{}/debug/slot/{}", lobby_room_id, slot_id))?;
 
     // Convert http(s) -> ws(s)
     let ws_url = apx_url.as_str().replacen("http", "ws", 1);
@@ -1155,7 +1166,7 @@ async fn set_alt_connect_name(
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
-    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name", lobby_room_id))?;
+    let mut url = apx_api_root.join(&format!("/api/room/{}/alt_connect_name", lobby_room_id))?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("Invalid APX URL"))?
         .push(alt_name);
@@ -1194,7 +1205,7 @@ async fn delete_alt_connect_name(
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
-    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name/", lobby_room_id))?;
+    let mut url = apx_api_root.join(&format!("/api/room/{}/alt_connect_name/", lobby_room_id))?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("Invalid APX URL"))?
         .push(alt_name);
@@ -1225,7 +1236,7 @@ async fn get_alt_connect_names_by_slot(
         .as_ref()
         .ok_or_else(|| anyhow!("APX API key not configured"))?;
 
-    let mut url = apx_api_root.join(&format!("/api/{}/alt_connect_name/slot/", lobby_room_id))?;
+    let mut url = apx_api_root.join(&format!("/api/room/{}/alt_connect_name/slot/", lobby_room_id))?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("Invalid APX URL"))?
         .push(slot_name);
@@ -1266,7 +1277,6 @@ pub struct TrackerInfoCache(
 );
 pub struct ApRoomCache(pub Arc<Mutex<HashMap<String, (Instant, TrackerInfo)>>>);
 pub struct RoomOwnerCache(pub Mutex<HashMap<Uuid, i64>>);
-pub struct SlotMappingCache(pub Mutex<HashMap<String, BTreeMap<usize, String>>>);
 
 const TRACKER_CACHE_TTL: Duration = Duration::from_secs(30);
 
@@ -1394,7 +1404,6 @@ async fn main() -> crate::error::Result<()> {
         ))))
         .manage(ApRoomCache(Arc::new(Mutex::new(HashMap::new()))))
         .manage(RoomOwnerCache(Mutex::new(HashMap::new())))
-        .manage(SlotMappingCache(Mutex::new(HashMap::new())))
         .attach(OAuth2::<Discord>::fairing("discord"))
         .launch()
         .await
