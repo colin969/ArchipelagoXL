@@ -315,7 +315,7 @@ func (h *SlotTrackerWS) buildSnapshot(apx *ApxRoom, slot int) []byte {
 	ts := TeamSlot{0, slot}
 
 	type slotSnapshot struct {
-		Locations []int64         `json:"locations"`
+		Locations [][2]int64      `json:"locations"`
 		Checks    []int64         `json:"checks"`
 		Items     []NetworkItem   `json:"items"`
 		Hints     []WsTrackerHint `json:"hints"`
@@ -323,9 +323,24 @@ func (h *SlotTrackerWS) buildSnapshot(apx *ApxRoom, slot int) []byte {
 		TotalLocs int             `json:"total_locs"`
 	}
 
-	locs := make([]int64, 0, len(state.Locations[ts]))
-	for locId := range state.Locations[ts] {
-		locs = append(locs, locId)
+	locs := make([][2]int64, 0, len(state.Locations[ts]))
+	spheresShown := apx.state.ServerOptions.GetTrackerSpheres()
+	if spheresShown == 0 {
+		// Spheres not shown, just return locs
+		for locId := range state.Locations[ts] {
+			locs = append(locs, [2]int64{-1, locId})
+		}
+	} else {
+		// Spheres shown, hide any below the allowed limit
+		for idx, sphere := range state.SphereLocs {
+			storedSphere := int64(idx + 1)
+			if int64(spheresShown) < storedSphere {
+				storedSphere = -1
+			}
+			for locId := range sphere[ts] {
+				locs = append(locs, [2]int64{storedSphere, locId})
+			}
+		}
 	}
 	rawHints := state.Hints.GetSlotHints(ts)
 	trackerHints := make([]WsTrackerHint, 0, len(rawHints))

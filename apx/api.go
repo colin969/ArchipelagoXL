@@ -1714,7 +1714,6 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 		standaloneSlotData: standaloneSlotData,
 	}
 	apx.commandRouter = newCommandRouter(apx)
-	apx.buildRoomInfoFromState()
 	apx.populateReadData()
 	go apx.trackerWS.Run(ctx, apx)
 	go apx.slotTrackerWS.Run(ctx, apx)
@@ -1739,6 +1738,8 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 				return nil, fmt.Errorf("Failed to apply save snapshot for room %s, possible bad state: %v", apx.lobbyRoomId, err)
 			}
 		}
+
+		apx.buildRoomInfoFromState()
 	}
 
 	if err := apx.loadDataPackages(rm.diskDataPackages); err != nil {

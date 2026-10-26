@@ -193,6 +193,11 @@ func newCommandRouter(s *ApxRoom) *CommandRouter {
 				handler:     handleAuthedCommand(s.handleKillCommand),
 			},
 			{
+				name:        "option",
+				description: "Set a server option",
+				handler:     handleAuthedCommand(s.handleAdminOptionCommand),
+			},
+			{
 				name:        "release",
 				description: "Release a players items",
 				handler:     handleAuthedCommand(s.handleAdminReleaseCommand),
@@ -245,6 +250,16 @@ func newCommandRouter(s *ApxRoom) *CommandRouter {
 			name:        "countdown",
 			description: "Start a countdown (default: 10 seconds)",
 			handler:     s.handleCountdownCommand,
+		},
+		chatCommand{
+			name:        "kill",
+			description: "Send a deathlink to a specific player (they must have DeathLink enabled)",
+			handler:     handleAuthedCommand(s.handleKillCommand),
+		},
+		chatCommand{
+			name:        "option",
+			description: "Set a server option",
+			handler:     handleAuthedCommand(s.handleAdminOptionCommand),
 		},
 		chatCommand{
 			name:        "release",
@@ -669,14 +684,50 @@ func (s *ApxRoom) handleAdminLogoutCommand(ctx context.Context, commandCtx *Comm
 
 func (s *ApxRoom) handleAdminOptionCommand(_ context.Context, commandCtx *CommandContext, args string) error {
 	argsList := splitArgs(args)
-	if len(argsList) < 2 {
-		return fmt.Errorf("Usage: !admin option <option> <value>\nOptions list: password, server_password, hint_cost")
+	if len(argsList) == 0 {
+		return fmt.Errorf("Usage: !admin option <option> [value]\nOptions: password, server_password, hint_cost, location_check_points, release_mode, collect_mode, remaining_mode, countdown_mode, item_cheat, disable_item_cheat, tracker_spheres")
 	}
 
 	option := argsList[0]
+
+	if len(argsList) == 1 {
+		so := s.state.ServerOptions
+		switch option {
+		case "password":
+			commandCtx.Write(fmt.Sprintf("password = %q", so.GetPassword()))
+		case "server_password", "admin_password":
+			commandCtx.Write(fmt.Sprintf("server_password = %q", so.GetAdminPassword()))
+		case "hint_cost":
+			commandCtx.Write(fmt.Sprintf("hint_cost = %d", so.GetHintCost()))
+		case "location_check_points":
+			commandCtx.Write(fmt.Sprintf("location_check_points = %d", so.GetLocationCheckPoints()))
+		case "release_mode":
+			commandCtx.Write(fmt.Sprintf("release_mode = %s", permissionToString(so.GetReleaseMode())))
+		case "collect_mode":
+			commandCtx.Write(fmt.Sprintf("collect_mode = %s", permissionToString(so.GetCollectMode())))
+		case "remaining_mode":
+			commandCtx.Write(fmt.Sprintf("remaining_mode = %s", permissionToString(so.GetRemainingMode())))
+		case "countdown_mode":
+			commandCtx.Write(fmt.Sprintf("countdown_mode = %s", permissionToString(so.GetCountdownMode())))
+		case "item_cheat", "disable_item_cheat":
+			commandCtx.Write(fmt.Sprintf("item_cheat = %v", so.ItemCheatAllowed()))
+		case "tracker_spheres":
+			commandCtx.Write(fmt.Sprintf("tracker_spheres = %d", so.GetTrackerSpheres()))
+		default:
+			return fmt.Errorf("Unknown option: %q", option)
+		}
+		return nil
+	}
+
 	value := strings.Join(argsList[1:], " ")
 
 	switch option {
+	case "tracker_spheres":
+		sphereCount, err := strconv.Atoi(value)
+		if err != nil || sphereCount < 0 {
+			return fmt.Errorf("Usage: !admin option tracker_spheres <count>")
+		}
+		s.state.ServerOptions.SetTrackerSpheres(sphereCount)
 	case "password":
 		newPassword := processNewPassword(value)
 		s.state.ServerOptions.SetPassword(newPassword)
@@ -957,6 +1008,20 @@ func (s *ApxRoom) handleAdminHintLocationCommand(ctx context.Context, commandCtx
 
 	s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, nil, 0, 0)
 
+	return nil
+}
+
+func (s *ApxRoom) handleAdminTrackerSpheresCommand(_ context.Context, _ *CommandContext, args string) error {
+	sphereCount, err := strconv.Atoi(args)
+	if err != nil {
+		return fmt.Errorf("Usage: !admin tracker_spheres <spheres_shown>")
+	}
+
+	if sphereCount < 0 {
+		sphereCount = 0
+	}
+
+	s.state.ServerOptions.SetTrackerSpheres(sphereCount)
 	return nil
 }
 

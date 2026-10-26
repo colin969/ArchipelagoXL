@@ -253,6 +253,7 @@ type SphereLocGroup map[TeamSlot]map[int64]*Location
 type SphereLocs []SphereLocGroup
 
 type ServerOptions struct {
+	trackerSpheres      int
 	password            string
 	adminPassword       string
 	countdownMode       Permission
@@ -264,6 +265,36 @@ type ServerOptions struct {
 	compatibility       int
 	mu                  sync.RWMutex
 	itemCheat           bool
+}
+
+func (so *ServerOptions) ToMap() map[string]any {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return map[string]any{
+		"password":              so.password,
+		"server_password":       so.adminPassword,
+		"hint_cost":             so.hintCost,
+		"location_check_points": so.locationCheckPoints,
+		"release_mode":          permissionToString(so.releaseMode),
+		"collect_mode":          permissionToString(so.collectMode),
+		"remaining_mode":        permissionToString(so.remainingMode),
+		"countdown_mode":        permissionToString(so.countdownMode),
+		"disable_item_cheat":    !so.itemCheat,
+		"compatibility":         so.compatibility,
+		"tracker_spheres":       so.trackerSpheres,
+	}
+}
+
+func (so *ServerOptions) SetTrackerSpheres(sphereCount int) {
+	so.mu.Lock()
+	defer so.mu.Unlock()
+	so.trackerSpheres = sphereCount
+}
+
+func (so *ServerOptions) GetTrackerSpheres() int {
+	so.mu.RLock()
+	defer so.mu.RUnlock()
+	return so.trackerSpheres
 }
 
 func (so *ServerOptions) SetPassword(password string) {
@@ -2642,6 +2673,7 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 	if v, ok := raw["password"]; ok {
 		if s, ok := v.(string); ok {
 			opts.password = s
+			log.Printf("restored password: %q", s)
 		}
 	}
 	if v, ok := raw["server_password"]; ok {
@@ -2690,6 +2722,11 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 			opts.compatibility = n
 		}
 	}
+	if v, ok := raw["tracker_spheres"]; ok {
+		if n, ok := toInt(v); ok {
+			opts.trackerSpheres = n
+		}
+	}
 	return &opts
 }
 
@@ -2698,6 +2735,8 @@ func toInt(v any) (int, bool) {
 	case int:
 		return n, true
 	case int64:
+		return int(n), true
+	case float64:
 		return int(n), true
 	}
 	return 0, false

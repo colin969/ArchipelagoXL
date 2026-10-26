@@ -104,6 +104,23 @@ func permissionFromString(mode string) (Permission, bool) {
 	}
 }
 
+func permissionToString(p Permission) string {
+	switch p {
+	case PermissionEnabled:
+		return "enabled"
+	case PermissionGoal:
+		return "goal"
+	case PermissionAuto:
+		return "auto"
+	case PermissionAutoEnabled:
+		return "auto-enabled"
+	case PermissionDisabled:
+		return "disabled"
+	default:
+		return "disabled"
+	}
+}
+
 type RoomInfoMessage struct {
 	Permissions          map[string]Permission `json:"permissions"`
 	DatapackageChecksums map[string]string     `json:"datapackage_checksums"`

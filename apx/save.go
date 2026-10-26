@@ -36,6 +36,7 @@ type SaveState struct {
 	SlotConnectionTimers map[string]int64                `json:"slot_connection_timers"`
 	SeedName             string                          `json:"seed_name"`
 	Hints                []Hint                          `json:"hints"`
+	ServerOptions        map[string]any                  `json:"server_options"`
 }
 
 type SafeSaveHandler struct {
@@ -75,6 +76,8 @@ func snapshotState(s *ApState) *SaveState {
 		SlotActivityTimers:   make(map[string]int64),
 		SlotConnectionTimers: make(map[string]int64),
 	}
+
+	ss.ServerOptions = s.ServerOptions.ToMap()
 
 	s.Checks.mu.RLock()
 	for ts, locs := range s.Checks.checked {
@@ -327,9 +330,7 @@ func applySnapshot(s *ApState, ss *SaveState) error {
 		if s.ClientStatuses.status[team] == nil {
 			s.ClientStatuses.status[team] = make(map[int]ClientStatus)
 		}
-		for slot, status := range slots {
-			s.ClientStatuses.status[team][slot] = status
-		}
+		maps.Copy(s.ClientStatuses.status[team], slots)
 	}
 	s.ClientStatuses.mu.Unlock()
 
@@ -372,6 +373,10 @@ func applySnapshot(s *ApState, ss *SaveState) error {
 		s.SlotConnectionTimers.timers[teamSlotFromKey(key)] = entry
 	}
 	s.SlotConnectionTimers.mu.Unlock()
+
+	if len(ss.ServerOptions) > 0 {
+		s.ServerOptions = parseEmbeddedServerOptions(ss.ServerOptions)
+	}
 
 	return nil
 }
@@ -677,6 +682,8 @@ func apStateFromDefinition(def *RoomDefinition) (*ApState, error) {
 		}
 		clientStatuses.status[ts.Team][ts.Slot] = ClientStatusUnknown
 	}
+
+	log.Println(def.ServerOptions)
 
 	apState := &ApState{
 		Checks:               newChecksState(locations),
