@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 type CmdPeek struct {
@@ -137,7 +136,11 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 		connectedMsg.SlotData = slotData
 	}
 
-	err := wsjson.Write(ctx, connState.clientConn, connectedMsg)
+	data, err := apJsonMarshal(connectedMsg)
+	if err != nil {
+		return err
+	}
+	err = connState.clientConn.Write(ctx, websocket.MessageText, data)
 	if err != nil {
 		return err
 	}
@@ -264,11 +267,19 @@ func (s ApxRoom) sendConnectionRefused(ctx context.Context, connState *connectio
 		}
 	}
 
-	if err := wsjson.Write(ctx, connState.clientConn, []any{msg}); err != nil {
+	data, err := apJsonMarshal([]any{msg})
+	if err != nil {
 		connState.cancel()
 		_ = connState.clientConn.CloseNow()
 		return err
 	}
+	err = connState.clientConn.Write(ctx, websocket.MessageText, data)
+	if err != nil {
+		connState.cancel()
+		_ = connState.clientConn.CloseNow()
+		return err
+	}
+
 	connState.authFailCount++
 	if connState.authFailCount > 10 {
 		_ = connState.clientConn.Close(websocket.StatusNormalClosure, reason)

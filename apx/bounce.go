@@ -229,14 +229,14 @@ func (s ApxRoom) handleDeathLink(ctx context.Context, connState *connectionState
 	if probability != 1 && rand.Float64() >= probability {
 		log.Println("deathlink dropped by probability func")
 		msg.Cmd = "Bounced"
-		_ = connState.SendMessage(ctx, []any{msg})
+		enqueueMessage([]any{msg}, connState.registeredClient)
 		return nil
 	}
 
 	if !s.bounceInfo.CanSendDeathlink(time.Now()) {
 		log.Println("deathlink dropped by cooldown")
 		msg.Cmd = "Bounced"
-		_ = connState.SendMessage(ctx, []any{msg})
+		enqueueMessage([]any{msg}, connState.registeredClient)
 		return nil
 	}
 

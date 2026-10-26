@@ -214,11 +214,18 @@ function initLoadingTable() {
 async function initialLoad() {
   console.log("Doing initial load");
 
+  let pingInterval;
+  let activityTicker;
+
   const playersUrl = `/api/tracker/${ROOM_ID}/players`;
   const liveUrl = `/api/tracker/${ROOM_ID}/live`;
 
   // Get players info
   const playersRes = await fetch(playersUrl);
+  if (!playersRes.ok) {
+    alert("Failed to get players list :(");
+    return;
+  }
   const playersJson = await playersRes.json();
 
   // Get initial live connection

@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/time/rate"
 )
@@ -1043,7 +1042,7 @@ func (h *HintsState) AddPaidSlotHint(ctx context.Context, ts TeamSlot, hint Hint
 	}
 
 	if !hint.Found && cost > 0 && points < cost && client != nil {
-		SendChatMessageToClient(ctx, client.clientConn, client.Slot,
+		SendChatMessageToClient(ctx, client, client.Slot,
 			fmt.Sprintf("A hint costs %d points. You have %d points.", cost, points))
 		return hint, false
 	}
@@ -1633,7 +1632,7 @@ func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMes
 	return nil
 }
 
-func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, slotId int, msg string) {
+func SendChatMessageToClient(ctx context.Context, client *RegisteredClient, slotId int, msg string) {
 	message := PrintJsonMessage{
 		Data: []JsonMessagePart{
 			{
@@ -1648,7 +1647,7 @@ func SendChatMessageToClient(ctx context.Context, clientConn *websocket.Conn, sl
 		Message: new(msg),
 	}
 
-	_ = wsjson.Write(ctx, clientConn, []any{message})
+	enqueueMessage([]any{message}, client)
 }
 
 func (cr *connectionRegistry) SendChatMessageToSlot(ctx context.Context, slotId int, msg string, metrics *metrics) error {
@@ -1695,30 +1694,6 @@ type connectionState struct {
 	adminAuthed             atomic.Bool
 	fromReducedPort         bool
 	authenticated           bool
-}
-
-type testate struct {
-	slotName                *string
-	cancel                  context.CancelFunc
-	clientConn              *websocket.Conn
-	registeredClient        *RegisteredClient
-	prevDatapackageGamesReq string
-	remoteAddr              string
-	pendingDatapackGames    []string
-	authFailCount           int
-	fromReducedPort         bool
-	authenticated           bool
-}
-
-func (cs *connectionState) SendMessage(ctx context.Context, msg []any) error {
-	if cs.clientConn != nil {
-		err := wsjson.Write(ctx, cs.clientConn, msg)
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-	return fmt.Errorf("client conn not open")
 }
 
 type MessageType string
@@ -1779,7 +1754,12 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 	defer cancel()
 
 	// Send RoomInfo as opening message
-	if err := wsjson.Write(ctx, c, []any{s.roomInfo.Load()}); err != nil {
+	data, err := apJsonMarshal([]any{s.roomInfo.Load()})
+	if err != nil {
+		s.logf("failed to build RoomInfo: %v", err)
+		return
+	}
+	if err = c.Write(ctx, websocket.MessageText, data); err != nil {
 		s.logf("failed to send RoomInfo: %v", err)
 		return
 	}
@@ -2142,9 +2122,9 @@ func (s *ApxRoom) handleLocationScouts(ctx context.Context, connState *connectio
 		}
 	}
 
-	return wsjson.Write(ctx, connState.clientConn, []any{LocationInfoMessage{
+	return enqueueMessage([]any{LocationInfoMessage{
 		Locations: replyLocs,
-	}})
+	}}, connState.registeredClient)
 }
 
 func (s *ApxRoom) handleLocationChecks(ctx context.Context, connState *connectionState, raw json.RawMessage) error {
@@ -2359,9 +2339,9 @@ func (s *ApxRoom) handleGet(ctx context.Context, connState *connectionState, raw
 		keys[key] = val
 	}
 
-	return wsjson.Write(ctx, connState.clientConn, []any{RetrievedMessage{
+	return enqueueMessage([]any{RetrievedMessage{
 		Keys: keys,
-	}})
+	}}, connState.registeredClient)
 }
 
 func (s *ApxRoom) handleSet(ctx context.Context, connState *connectionState, raw json.RawMessage) error {

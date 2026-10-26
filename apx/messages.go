@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 )
 
 const (
@@ -695,7 +694,11 @@ func sendInvalidPacket(ctx context.Context, conn *websocket.Conn, problemType Pa
 			lokiLogger.Log(slotName, LogSourceApx, raw, "InvalidPacket")
 		}
 	}
-	return wsjson.Write(ctx, conn, []any{msg})
+	data, err := apJsonMarshal([]any{msg})
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageText, data)
 }
 
 var bufPool = sync.Pool{

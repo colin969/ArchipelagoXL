@@ -121,8 +121,8 @@ function applySnapshot(data) {
   if (data["hints"]?.length) {
     hintsTable.setData(data["hints"].map((h, i) => ({
       id:       i,
-      finder:   players[h["finding_player"]] ? players[h["finding_player"]].name : `Unknown Player: ${h["finding_player"]}`,
-      receiver: players[h["receiving_player"]] ? players[h["receiving_player"]].name : `Unknown Player: ${h["receiving_player"]}`,
+      finder:        h["finding_player"],
+      receiver:      h["receiving_player"],
       game:   players[h["finding_player"]] ? players[h["finding_player"]].game: `Unknown Player: ${h["finding_player"]}`,
       item:     h["item"],
       location: h["location"],
@@ -164,8 +164,8 @@ function applyPatch(data) {
   if (data["hints"]) {
     hintsTable.setData(data["hints"].map((h, i) => ({
       id:       i,
-      finder:   players[h["finding_player"]] ? players[h["finding_player"]].name: `Unknown Player: ${h["finding_player"]}`,
-      receiver: players[h["receiving_player"]] ? players[h["receiving_player"]].name : `Unknown Player: ${h["receiving_player"]}`,
+      finder:        h["finding_player"],
+      receiver:      h["receiving_player"],
       game:   players[h["finding_player"]] ? players[h["finding_player"]].game: `Unknown Player: ${h["finding_player"]}`,
       item:     h["item"],
       location: h["location"],
@@ -265,6 +265,23 @@ function initLoadingTables() {
     ],
   });
 
+  // Prevent user data being executed as html
+  function escapeHtml(str) {
+    const d = document.createElement("div");
+    d.appendChild(document.createTextNode(str));
+    return d.innerHTML;
+  }
+
+  function playerCellFormatter(cell) {
+    const slotId = cell.getValue();
+    const player = players[slotId];
+    const name = escapeHtml(player ? player.name : `Unknown Player: ${slotId}`);
+    if (slotId !== SLOT_ID) {
+      return `<a href="/dashboard/${ROOM_ID}/tracker/${TEAM_ID}/${slotId}">${name}</a>`;
+    }
+    return name;
+  }
+
   hintsTable = new Tabulator("#slot-hints-table", {
     height: "40vh",
     layout: "fitColumns",
@@ -274,8 +291,8 @@ function initLoadingTables() {
                     Loading...
                   </div>`,
     columns: [
-      {title: "Finder", field: "finder"},
-      {title: "Receiver", field: "receiver"},
+      {title: "Finder", field: "finder", formatter: playerCellFormatter},
+      {title: "Receiver", field: "receiver", formatter: playerCellFormatter},
       {title: "Item", field: "item"},
       {title: "Location", field: "location"},
       {title: "Game", field: "game"},
