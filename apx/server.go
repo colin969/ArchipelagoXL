@@ -841,15 +841,14 @@ func newReceivedItems() ReceivedItems {
 	return ReceivedItems{receivedItems: make(map[ReceivedItemsKey][]NetworkItem)}
 }
 
-func (ri *ReceivedItems) Add(team int, adderSlot int, items []NetworkItem) {
+func (ri *ReceivedItems) Add(team int, slot int, items []NetworkItem) {
 	ri.mu.Lock()
 	defer ri.mu.Unlock()
 
 	for _, item := range items {
-		slot := int(item.Player)
 		keyAll := ReceivedItemsKey{team, slot, true}
 		ri.receivedItems[keyAll] = append(ri.receivedItems[keyAll], item)
-		if int(item.Player) != adderSlot {
+		if slot != int(item.Player) {
 			keyForeign := ReceivedItemsKey{team, slot, false}
 			ri.receivedItems[keyForeign] = append(ri.receivedItems[keyForeign], item)
 		}

@@ -564,6 +564,10 @@ func (s *ApxRoom) handleGetItemCommand(ctx context.Context, commandCtx *CommandC
 	newItem := NetworkItem{itemID, -1, int32(client.Slot), 0}
 	s.state.ReceivedItems.Add(client.Team, client.Slot, []NetworkItem{newItem})
 
+	if s.slotTrackerWS != nil {
+		s.slotTrackerWS.MarkDirty(client.Slot, SlotTrackerDirtyItems)
+	}
+
 	text := fmt.Sprintf("Cheat console: sending %q to %s", args, *client.slotName)
 
 	msg := formatGenericMessageWithItem(
@@ -883,7 +887,11 @@ func (s *ApxRoom) handleAdminSendCommand(ctx context.Context, commandCtx *Comman
 
 	s.state.ReceivedItems.Add(slotInfo.Team, slotInfo.Slot, []NetworkItem{networkItem})
 
-	text := fmt.Sprintf("Cheat console: sending %q to %s", item, player)
+	if s.slotTrackerWS != nil {
+		s.slotTrackerWS.MarkDirty(slotInfo.Slot, SlotTrackerDirtyItems)
+	}
+
+	text := fmt.Sprintf("Cheat console: sending %q to %s", item, slotInfo.Name)
 
 	msg := formatGenericMessageWithItem(
 		&slotInfo.Team,
