@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -185,6 +186,11 @@ func newCommandRouter(s *ApxRoom) *CommandRouter {
 				name:        "logout",
 				description: "Logout",
 				handler:     handleAuthedCommand(s.handleAdminLogoutCommand),
+			},
+			{
+				name:        "kill",
+				description: "Send a deathlink to a specific player (they must have DeathLink enabled)",
+				handler:     handleAuthedCommand(s.handleKillCommand),
 			},
 			{
 				name:        "release",
@@ -746,6 +752,39 @@ func (s *ApxRoom) handleAdminOptionCommand(_ context.Context, commandCtx *Comman
 
 	commandCtx.Write(fmt.Sprintf("Changed '%s' to '%s'", option, value))
 
+	return nil
+}
+
+func (s *ApxRoom) handleKillCommand(ctx context.Context, commandCtx *CommandContext, args string) error {
+	slotInfo, ok := s.state.NameToSlot[args]
+	if !ok {
+		return fmt.Errorf("No player found for name '%s'", args)
+	}
+
+	clients := s.connections.GetSlotClients(TeamSlot{slotInfo.Team, slotInfo.Slot})
+	filteredClients := make([]*RegisteredClient, 0)
+	for _, c := range clients {
+		tags := s.connections.GetTags(c)
+		if slices.Contains(tags, "DeathLink") {
+			filteredClients = append(filteredClients, c)
+		}
+	}
+
+	if len(filteredClients) == 0 {
+		return fmt.Errorf("No clients with deathlink found for slot '%s'", args)
+	}
+
+	bounceTags := []string{"DeathLink"}
+	packetData := map[string]any{
+		"time":   float64(time.Now().UnixNano()) / 1e9,
+		"source": "Admin",
+	}
+	bouncePacket := BounceMessage{
+		Cmd:  MessageTypeBounced,
+		Tags: &bounceTags,
+		Data: &packetData,
+	}
+	enqueueMessage([]any{bouncePacket}, filteredClients...)
 	return nil
 }
 

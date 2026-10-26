@@ -1393,6 +1393,12 @@ func (cr *connectionRegistry) GetSlotClients(teamSlot TeamSlot) []*RegisteredCli
 	return clients
 }
 
+func (cr *connectionRegistry) GetTags(client *RegisteredClient) []string {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+	return cr.tags[client]
+}
+
 func (cr *connectionRegistry) GetAllClients() []*RegisteredClient {
 	cr.mu.RLock()
 	defer cr.mu.RUnlock()
@@ -1549,7 +1555,7 @@ func (cr *connectionRegistry) broadcastBounceToSlot(ctx context.Context, msg Bou
 	cr.mu.RUnlock()
 
 	out := msg
-	out.Cmd = "Bounced"
+	out.Cmd = MessageTypeBounced
 	if metrics != nil && len(targets) > 0 && slotName != nil && gameName != nil {
 		metrics.bounceResultPackets.WithLabelValues(*cr.lobbyRoomId, *slotName, *gameName).Add(float64(len(targets)))
 	}
@@ -1619,7 +1625,7 @@ func (cr *connectionRegistry) broadcastBounce(ctx context.Context, msg BounceMes
 
 	// Content is the same, just a different cmd sending out
 	// TODO: Only encode once
-	msg.Cmd = "Bounced"
+	msg.Cmd = MessageTypeBounced
 	numBytes, err := BroadcastJSON(ctx, targets, []any{msg})
 	if err != nil {
 		return err
