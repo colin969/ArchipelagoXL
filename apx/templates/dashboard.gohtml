@@ -2,10 +2,13 @@
 
 {{define "title"}} Tracker - {{.RoomId}}{{end}}
 
-{{define "breadcrumb"}}
-<a class="nav__link" href="/dashboard/{{.RoomId}}">Room</a>
-<span class="nav__sep">›</span>
-<a class="nav__link nav__link--active" href="/dashboard/{{.RoomId}}/tracker">Tracker</a>
+{{define "header-row"}}
+<div class="breadcrumb">
+  <a class="nav__link" href="/dashboard/{{.RoomId}}">Room</a>
+  <span class="nav__sep">›</span>
+  <a class="nav__link nav__link--active" href="/dashboard/{{.RoomId}}/tracker">Tracker</a>
+</div>
+<div id="interval-header"></div>
 {{end}}
 
 
@@ -233,15 +236,17 @@ async function initialLoad() {
     clearInterval(activityTicker);
   });
 
-  let firstMessage = true
   websocket.addEventListener("message", (e) => {
     const parsed = JSON.parse(e.data)
-    if (firstMessage) {
-      firstMessage = false
-      // Merge first message snapshot and players res to create table structure
-      setupTable(playersJson, parsed["data"]["player_state"])
-    } else if (parsed["event"] == "patch") {
-      updateTable(parsed["data"])
+    const event  = parsed["event"];
+
+    if (event === "interval") {
+        const seconds = Math.round(parsed["ms"] / 1000);
+        document.getElementById("interval-header").textContent = `Updates every ${seconds}s`;
+    } else if (event === "snapshot") {
+        setupTable(playersJson, parsed["data"]["player_state"]);
+    } else if (event === "patch") {
+        updateTable(parsed["data"]);
     }
   });
 }

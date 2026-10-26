@@ -2,12 +2,15 @@
 
 {{define "title"}} Tracker - {{.RoomId}} - {{.Name}} {{end}}
 
-{{define "breadcrumb"}}
-<a class="nav__link" href="/dashboard/{{.RoomId}}">Room</a>
-<span class="nav__sep">›</span>
-<a class="nav__link" href="/dashboard/{{.RoomId}}/tracker">Tracker</a>
-<span class="nav__sep">›</span>
-<a class="nav__link nav__link--active" href="/dashboard/{{.RoomId}}/tracker/{{.Team}}/{{.Slot}}">Slot - {{.Name}}</a>
+{{define "header-row"}}
+<div class="breadcrumb">
+  <a class="nav__link" href="/dashboard/{{.RoomId}}">Room</a>
+  <span class="nav__sep">›</span>
+  <a class="nav__link" href="/dashboard/{{.RoomId}}/tracker">Tracker</a>
+  <span class="nav__sep">›</span>
+  <a class="nav__link nav__link--active" href="/dashboard/{{.RoomId}}/tracker/{{.Team}}/{{.Slot}}">Slot - {{.Name}}</a>
+</div>
+<div id="interval-header"></div>
 {{end}}
 
 {{define "content"}}
@@ -198,7 +201,7 @@ async function initialLoad() {
 
   const websocket = new WebSocket(liveUrl);
 
-    websocket.addEventListener("error", () => {
+  websocket.addEventListener("error", () => {
   
   })
 
@@ -216,7 +219,12 @@ async function initialLoad() {
     const parsed = JSON.parse(e.data);
     const event  = parsed["event"];
     const data   = parsed["data"];
-      if (event === "snapshot") {
+
+    if (event === "interval") {
+      console.log(parsed["ms"])
+      const seconds = Math.round(parsed["ms"] / 1000);
+      document.getElementById("interval-header").textContent = `Updates every ${seconds}s`;
+    } else if (event === "snapshot") {
       applySnapshot(data);
     } else if (event === "patch") {
       applyPatch(data);

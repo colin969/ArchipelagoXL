@@ -1227,6 +1227,11 @@ func (rm *RoomManager) handleTrackerWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.CloseNow()
 
+	intervalMsg, _ := json.Marshal(map[string]any{"event": "interval", "ms": room.apx.trackerWS.interval.Milliseconds()})
+	if err := c.Write(r.Context(), websocket.MessageText, intervalMsg); err != nil {
+		return
+	}
+
 	snapshot := room.apx.trackerWS.buildSnapshot(room.apx)
 	if err := c.Write(r.Context(), websocket.MessageText, snapshot); err != nil {
 		return
@@ -1297,6 +1302,11 @@ func (rm *RoomManager) handleSlotTrackerWS(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer c.CloseNow()
+
+	intervalMsg, _ := json.Marshal(map[string]any{"event": "interval", "ms": room.apx.slotTrackerWS.interval.Milliseconds()})
+	if err := c.Write(r.Context(), websocket.MessageText, intervalMsg); err != nil {
+		return
+	}
 
 	snapshot := room.apx.slotTrackerWS.buildSnapshot(room.apx, slotId)
 	if err := c.Write(r.Context(), websocket.MessageText, snapshot); err != nil {
