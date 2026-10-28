@@ -967,6 +967,8 @@ func (s *ApxRoom) handleAdminHintCommand(ctx context.Context, commandCtx *Comman
 		s.notifyHintsChanged(affectedSlots)
 	}
 
+	commandCtx.Write("todo: write a better response")
+
 	return nil
 }
 
@@ -1016,20 +1018,8 @@ func (s *ApxRoom) handleAdminHintLocationCommand(ctx context.Context, commandCtx
 
 	s.state.Hints.AddPaidSlotHint(ctx, teamSlot, hint, nil, 0, 0)
 
-	return nil
-}
+	commandCtx.Write("todo: write a better response")
 
-func (s *ApxRoom) handleAdminTrackerSpheresCommand(_ context.Context, _ *CommandContext, args string) error {
-	sphereCount, err := strconv.Atoi(args)
-	if err != nil {
-		return fmt.Errorf("Usage: !admin tracker_spheres <spheres_shown>")
-	}
-
-	if sphereCount < 0 {
-		sphereCount = 0
-	}
-
-	s.state.ServerOptions.SetTrackerSpheres(sphereCount)
 	return nil
 }
 

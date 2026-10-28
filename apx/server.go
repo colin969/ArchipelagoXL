@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -204,7 +205,8 @@ func (ris *RoomInfoStore) HasPassword() bool {
 type ApxRoom struct {
 	datapackages       *DataPackageStore
 	metrics            *metrics
-	logf               func(f string, v ...any)
+	logger             *slog.Logger
+	logFile            *os.File
 	config             *Config
 	roomInfo           *RoomInfoStore
 	altConnectNames    *ConnectNames
@@ -663,6 +665,15 @@ func (s *ApxRoom) BroadcastRoomUpdatePermissions() {
 	enqueueMessage([]any{msg}, allTargets...)
 }
 
+type checkLogEntry struct {
+	loc          int64
+	locName      string
+	item         int64
+	itemName     string
+	receiver     int32
+	receiverName string
+}
+
 func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locations []int64) error {
 	newChecks := make(map[int64]struct{})
 
@@ -671,8 +682,13 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 
 	checked := s.state.Checks.checked[teamSlot]
 	known := s.state.Locations[teamSlot]
+	finderPlayer, ok := s.state.SlotInfo[teamSlot]
+	if !ok {
+		return fmt.Errorf("Trying to check location for non-existent player?")
+	}
 
 	var newItems []NetworkItem
+	var logEntries []checkLogEntry
 	for _, locID := range locations {
 		if _, alreadyChecked := checked[locID]; alreadyChecked {
 			continue
@@ -689,9 +705,36 @@ func (s *ApxRoom) RegisterChecks(ctx context.Context, teamSlot TeamSlot, locatio
 			Player:   loc.Player,
 			Flags:    loc.Flags,
 		})
+		itemPlayer, ok := s.state.SlotInfo[TeamSlot{teamSlot.Team, int(loc.Player)}]
+		if !ok {
+			continue
+		}
+		itemName, ok := s.datapackages.ItemIDToName[itemPlayer.Game][loc.Item]
+		if !ok {
+			continue
+		}
+		locName, ok := s.datapackages.LocationIDToName[finderPlayer.Game][locID]
+		if !ok {
+			continue
+		}
+		logEntries = append(logEntries, checkLogEntry{locID, locName, loc.Item, itemName, loc.Player, itemPlayer.Name})
 	}
 
 	s.state.Checks.mu.Unlock()
+
+	for _, e := range logEntries {
+		s.logger.Info("checked",
+			"team", teamSlot.Team,
+			"finder", teamSlot.Slot,
+			"finder_name", finderPlayer.Name,
+			"loc", e.loc,
+			"location_name", e.locName,
+			"receiver", e.receiver,
+			"receiver_name", e.receiverName,
+			"item", e.item,
+			"item_name", e.itemName,
+		)
+	}
 
 	// Send items out to relevant clients
 	if len(newItems) > 0 {
@@ -1725,7 +1768,6 @@ type connectionState struct {
 	registeredClient        *RegisteredClient
 	prevDatapackageGamesReq string
 	remoteAddr              string
-	pendingDatapackGames    []string
 	authFailCount           int
 	adminAuthed             atomic.Bool
 	fromReducedPort         bool
@@ -1740,6 +1782,7 @@ const (
 	wsReadLimit    = 1 << 24   // 16 MB
 	dpReadLimit    = 1 << 26   // 64 MB
 	maxUploadLimit = 100 << 20 // 100 MB (with patches)
+	saveInterval   = 120 * time.Second
 )
 
 type apxHandler struct {
@@ -1774,7 +1817,7 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		s.logf("client connection: %v", err)
+		s.logger.Debug("conn failure", "ip", r.RemoteAddr, "error", err)
 		return
 	}
 	defer c.CloseNow()
@@ -1792,29 +1835,38 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 	// Send RoomInfo as opening message
 	data, err := apJsonMarshal([]any{s.roomInfo.Load()})
 	if err != nil {
-		s.logf("failed to build RoomInfo: %v", err)
+		s.logger.Error("failed to build RoomInfo", "error", err)
 		return
 	}
 	if err = c.Write(ctx, websocket.MessageText, data); err != nil {
-		s.logf("failed to send RoomInfo: %v", err)
 		return
 	}
 
 	connState := &connectionState{
-		authenticated:        false,
-		cancel:               cancel,
-		clientConn:           c,
-		pendingDatapackGames: []string{},
-		authFailCount:        0,
-		remoteAddr:           r.RemoteAddr,
-		fromReducedPort:      reduced,
+		authenticated:   false,
+		cancel:          cancel,
+		clientConn:      c,
+		authFailCount:   0,
+		remoteAddr:      r.RemoteAddr,
+		fromReducedPort: reduced,
 	}
 
 	// Start keepalive ping pong
-	go s.keepalive(ctx, c, cancel)
+	go s.keepalive(ctx, connState, cancel)
 
 	defer func() {
 		if connState.registeredClient != nil {
+			player := derefStr(connState.slotName)
+			if connState.authenticated {
+				s.logger.Info("disconnect",
+					"team", connState.registeredClient.Team,
+					"slot", connState.registeredClient.Slot,
+					"player", player,
+					"tags", s.connections.GetTags(connState.registeredClient),
+				)
+			}
+
+			// Unregister client, should really not have the lock here, move to another func?
 			s.connections.mu.RLock()
 			for _, key := range connState.registeredClient.notifyKeys {
 				s.state.DataStorage.UnnotifyClient(key, connState.registeredClient)
@@ -1828,11 +1880,20 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 		_, raw, err := c.Read(ctx)
 		if err != nil {
 			status := websocket.CloseStatus(err)
-			if status != websocket.StatusNormalClosure && !errors.Is(err, io.EOF) {
-				if connState.slotName != nil {
-					s.logf("client read inner [%s]: %v", *connState.slotName, err)
-				} else {
-					s.logf("client read inner: %v", err)
+			if status != websocket.StatusNormalClosure &&
+				status != websocket.StatusGoingAway &&
+				status != websocket.StatusNoStatusRcvd &&
+				!errors.Is(err, io.EOF) &&
+				!errors.Is(err, context.Canceled) &&
+				ctx.Err() == nil {
+				if connState.registeredClient != nil && connState.authenticated {
+					player := derefStr(connState.slotName)
+					s.logger.Error("client read error",
+						"team", connState.registeredClient.Team,
+						"slot", connState.registeredClient.Slot,
+						"player", player,
+						"error", err,
+					)
 				}
 			}
 			return
@@ -1844,8 +1905,16 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 
 		var messages []json.RawMessage
 		if err := json.Unmarshal(raw, &messages); err != nil {
-			s.logf("client unmarshal: %v", err)
-			continue
+			if connState.authenticated {
+				s.logger.Error("client message unmarshal error",
+					"error", err,
+					"team", connState.registeredClient.Team,
+					"slot", connState.registeredClient.Slot,
+					"player", connState.registeredClient.slotName,
+				)
+			}
+			_ = c.Close(websocket.StatusUnsupportedData, "invalid message format")
+			return
 		}
 
 		for _, message := range messages {
@@ -1869,10 +1938,26 @@ func (s ApxRoom) serveConn(w http.ResponseWriter, r *http.Request, reduced bool)
 				s.metrics.incomingPackets.WithLabelValues(s.lobbyRoomId, *connState.slotName, *connState.registeredClient.game, cmd).Inc()
 			}
 
-			if err := s.handleMessage(ctx, connState, MessageType(cmd), message); err != nil {
-				if !isNormalClose(err) && ctx.Err() == nil {
-					s.logf("client read outer: %v", err)
+			err = s.handleMessage(ctx, connState, MessageType(cmd), message)
+			if err != nil {
+				status := websocket.CloseStatus(err)
+				if status != websocket.StatusNormalClosure &&
+					status != websocket.StatusGoingAway &&
+					status != websocket.StatusNoStatusRcvd &&
+					!errors.Is(err, io.EOF) &&
+					!errors.Is(err, context.Canceled) &&
+					ctx.Err() == nil {
+					if connState.registeredClient != nil && connState.authenticated {
+						player := derefStr(connState.slotName)
+						s.logger.Debug("client processing error",
+							"team", connState.registeredClient.Team,
+							"slot", connState.registeredClient.Slot,
+							"player", player,
+							"error", err,
+						)
+					}
 				}
+				return
 			}
 		}
 	}
@@ -1897,7 +1982,7 @@ const (
 	pingTimeout  = 40 * time.Second
 )
 
-func (s ApxRoom) keepalive(ctx context.Context, c *websocket.Conn, cancel context.CancelFunc) {
+func (s ApxRoom) keepalive(ctx context.Context, client *connectionState, cancel context.CancelFunc) {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 	for {
@@ -1906,11 +1991,12 @@ func (s ApxRoom) keepalive(ctx context.Context, c *websocket.Conn, cancel contex
 			return
 		case <-ticker.C:
 			pingCtx, pingCancel := context.WithTimeout(ctx, pingTimeout)
-			err := c.Ping(pingCtx)
+			err := client.clientConn.Ping(pingCtx)
 			pingCancel()
 			if err != nil {
 				if ctx.Err() == nil {
-					s.logf("client ping timeout, dropping connection: %v", err)
+					slot := derefStr(client.slotName)
+					s.logger.Debug("ping timeout", "slot", slot)
 				}
 				cancel()
 				return
@@ -2017,7 +2103,6 @@ func (s ApxRoom) handleMessage(ctx context.Context, connState *connectionState, 
 		case MessageTypeConnect:
 			return s.handleConnect(ctx, connState, raw)
 		default:
-			s.logf("unknown command: %q", cmd)
 			return nil
 		}
 	}
@@ -2292,6 +2377,25 @@ func (s *ApxRoom) handleUpdateHint(ctx context.Context, connState *connectionSta
 	s.notifyHintsChanged(affectedHintSlots)
 
 	return nil
+}
+
+func (s *ApxRoom) PeriodicSaver(ctx context.Context) {
+	ticker := time.NewTicker(saveInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			err := s.Persist(ctx)
+			if err != nil {
+				s.logger.Error("save failure", "kind", "periodic", "error", err)
+			} else {
+				s.logger.Error("save", "kind", "periodic")
+			}
+		}
+	}
 }
 
 func formatHintMessage(hint Hint) PrintJsonMessage {
@@ -2672,7 +2776,6 @@ func parseEmbeddedServerOptions(raw map[string]any) *ServerOptions {
 	if v, ok := raw["password"]; ok {
 		if s, ok := v.(string); ok {
 			opts.password = s
-			log.Printf("restored password: %q", s)
 		}
 	}
 	if v, ok := raw["server_password"]; ok {
@@ -2781,4 +2884,11 @@ func formatGenericMessageWithItem(team *int, slot *int, msgType string, text str
 		Message: &text,
 		Item:    item,
 	}
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

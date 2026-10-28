@@ -458,6 +458,7 @@ func TestLobbyRoomIdValidationPathStaysInStorage(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
+			resolved = resolved + ".zst"
 			if !strings.HasPrefix(resolved, storagePath) {
 				t.Errorf("resolved path %q escapes storage path %q", resolved, storagePath)
 			}

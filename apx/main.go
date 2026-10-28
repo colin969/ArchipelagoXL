@@ -32,6 +32,7 @@ type Config struct {
 	ApiListenAddr          string `json:"apx_api_listen"`
 	SlotDataStoragePath    string `json:"slot_data_storage_path"`
 	DataPackageStoragePath string `json:"datapackage_storage_path"`
+	LogStoragePath         string `json:"log_storage_path"`
 	ApiKey                 string `json:"apx_api_key"`
 	TLSCertFile            string `json:"tls_cert_file"`
 	LokiEndpoint           string `json:"loki_endpoint"`
@@ -359,6 +360,11 @@ func getConfig() (*Config, error) {
 		sdStoragePath = "./data/slot_data/"
 	}
 	cfg.SlotDataStoragePath = sdStoragePath
+	logStoragePath := os.Getenv("LOG_STORAGE_PATH")
+	if logStoragePath == "" {
+		logStoragePath = "./data/logs/"
+	}
+	cfg.LogStoragePath = logStoragePath
 	dpStoragePath := os.Getenv("DATAPACKAGE_STORAGE_PATH")
 	if dpStoragePath == "" {
 		dpStoragePath = "./data/datapackages/"

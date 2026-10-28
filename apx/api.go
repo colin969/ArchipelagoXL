@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"maps"
 	"math/rand"
 	"net"
@@ -236,6 +237,10 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	if metrics != nil {
 		savedCount := dpDiskStorage.SavedCount()
 		metrics.totalDatapackages.Set(float64(savedCount))
+	}
+
+	if err := os.MkdirAll(cfg.LogStoragePath, 0755); err != nil {
+		return nil, nil, fmt.Errorf("creating logs dir")
 	}
 
 	if !cfg.StandaloneMode {
@@ -524,6 +529,7 @@ func (rm *RoomManager) saveSlotDataToDisk(lobbyRoomId string, md *multidata.Mult
 	if err != nil {
 		return nil, err
 	}
+	path = path + ".zst"
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
@@ -1535,6 +1541,12 @@ func (rm *RoomManager) handleRoomDelete(w http.ResponseWriter, r *http.Request) 
 		room.Close()
 	}
 
+	// Log file deletion
+	logPath, err := safePathFromJoin(roomId, rm.config.LogStoragePath)
+	if err == nil {
+		os.Remove(logPath + ".jsonl")
+	}
+
 	// TODO: Slot data deletion. Probably a really rare race cond that could prevent deletion?
 
 	record, err := rm.store.FindByLobbyRoomId(roomId)
@@ -1685,10 +1697,26 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	path, err := safePathFromJoin(lobbyRoomId, rm.config.LogStoragePath)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	path = path + ".json"
+	logFile, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		cancel()
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
 	// Create APX room
 	apx := &ApxRoom{
 		lastActivity:     &lastActivity,
-		logf:             log.Printf,
+		logger:           slog.New(slog.NewJSONHandler(logFile, nil)),
+		logFile:          logFile,
 		config:           rm.config,
 		roomInfo:         roomInfoStore,
 		altConnectNames:  altConnectNames,
@@ -1739,6 +1767,7 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 	apx.populateReadData()
 	go apx.trackerWS.Run(ctx, apx)
 	go apx.slotTrackerWS.Run(ctx, apx)
+	go apx.PeriodicSaver(ctx)
 
 	if err := apx.loadDataPackages(rm.diskDataPackages); err != nil {
 		log.Fatalf("loading datapackages: %v", err)
@@ -1778,6 +1807,11 @@ func (rm *RoomManager) startNewHostedRoom(lobbyRoomId string, roomDef *RoomDefin
 
 	log.Printf("room %s: listening on id %d", lobbyRoomId, room.normalHandler.id)
 	log.Printf("room %s: reduced listening on id %d", lobbyRoomId, room.reducedHandler.id)
+
+	apx.logger.Info("start",
+		"normal_id", room.normalHandler.id,
+		"reduced_id", room.reducedHandler.id,
+	)
 
 	// Add room to registry
 	err = rm.registry.Add(room)
@@ -2836,7 +2870,15 @@ func (rm *RoomManager) cleanOrphanedDataPackagesOnStartup() error {
 }
 
 func (hs *HostedRoom) Close() bool {
-	if hs.apx.metrics != nil {
+	if hs.apx.logFile != nil {
+		defer hs.apx.logFile.Close()
+	}
+
+	if hs.apx != nil {
+		hs.apx.logger.Info("stop")
+	}
+
+	if hs.apx != nil && hs.apx.metrics != nil {
 		hs.apx.metrics.activeRooms.Dec()
 	}
 	hs.cancel()
@@ -2845,7 +2887,10 @@ func (hs *HostedRoom) Close() bool {
 		ss := snapshotState(hs.apx.state)
 		err := hs.apx.saveHandler.Save(context.Background(), hs.apx.lobbyRoomId, ss)
 		if err != nil {
+			hs.apx.logger.Error("save failure", "kind", "close", "error", err)
 			log.Printf("Failed to save room %s: %v", hs.apx.lobbyRoomId, err)
+		} else {
+			hs.apx.logger.Error("save", "kind", "close")
 		}
 		return err == nil
 	}
@@ -2889,7 +2934,7 @@ func safePathFromJoin(lobbyRoomId string, storagePath string) (string, error) {
 	if !isValidLobbyRoomId(lobbyRoomId) {
 		return "", fmt.Errorf("invalid lobby_room_id: %q", lobbyRoomId)
 	}
-	resolved, err := filepath.Abs(filepath.Join(storagePath, lobbyRoomId+".zst"))
+	resolved, err := filepath.Abs(filepath.Join(storagePath, lobbyRoomId))
 	if err != nil {
 		return "", err
 	}

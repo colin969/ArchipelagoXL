@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -37,12 +36,9 @@ func (s ApxRoom) handleAuthedConnect(ctx context.Context, connState *connectionS
 	// Update msg from alt connect name if it matches
 	msg.Name = s.resolveAltName(msg.Name)
 
-	log.Printf("[WS] reconnect (authed): game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v",
-		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData)
-
 	// If they're trying to switch slots, drop the connection. Shouldn't break anything important.
 	if connState.slotName != nil && *connState.slotName != msg.Name {
-		s.logf("slot switch attempt from %q to %q, dropping", *connState.slotName, msg.Name)
+		s.logger.Info("slot switch attempt", "from", *connState.slotName, "to", msg.Name)
 		return connState.clientConn.Close(websocket.StatusNormalClosure, "SlotSwitch")
 	}
 
@@ -72,9 +68,6 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	if realName != nil {
 		msg.Name = *realName
 	}
-
-	log.Printf("[WS] connect: game=%q name=%q uuid=%q version=%+v tags=%v slotData=%v addr=%s",
-		msg.Game, msg.Name, msg.UUID, msg.Version, msg.Tags, *msg.SlotData, connState.remoteAddr)
 
 	connState.slotName = &msg.Name
 
@@ -108,13 +101,6 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	// Restrict full feed client access
 	if !connState.fromReducedPort && !s.isFullFeedAllowed(slotInfo.Slot) {
 		return s.sendConnectionRefused(ctx, connState, "FullFeedDenial", msg.Name)
-	}
-
-	if len(connState.pendingDatapackGames) > 0 {
-		if err := s.sendDataPackages(ctx, connState.clientConn, connState.pendingDatapackGames); err != nil {
-			s.logf("error sending pending datapackages: %v", err)
-		}
-		connState.pendingDatapackGames = nil
 	}
 
 	// TODO: Send connected message back
@@ -176,7 +162,13 @@ func (s ApxRoom) handleConnect(ctx context.Context, connState *connectionState, 
 	printMsg := simplePrintJsonMessage("Tutorial", "You are connected :)")
 	enqueueMessage([]any{printMsg}, &client)
 
-	log.Printf("[WS] Connected to %s", msg.Name)
+	s.logger.Info("connect",
+		"team", teamSlot.Team,
+		"slot", teamSlot.Slot,
+		"player", slotInfo.Name,
+		"game", slotInfo.Game,
+		"tags", msg.Tags,
+	)
 
 	return nil
 }
@@ -192,8 +184,8 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 	text := packet.Text
 
 	trimmed := strings.TrimSpace(text)
-	if strings.HasPrefix(trimmed, "!") {
-		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "!"))
+	if after, ok := strings.CutPrefix(trimmed, "!"); ok {
+		rest := strings.TrimSpace(after)
 		// Wrap client in a command context so funcs understand it
 		commandCtx := CommandContext{
 			Write: func(text string) {
@@ -202,12 +194,15 @@ func (s ApxRoom) handleSay(ctx context.Context, connState *connectionState, raw 
 			connState: connState,
 		}
 		if handled, err := s.commandRouter.client.Handle(ctx, &commandCtx, rest); handled {
+			s.logger.Info("client command", "team", connState.registeredClient.Team, "slot", connState.registeredClient.Slot, "command", rest)
 			if err != nil {
 				enqueueMessage([]any{formatGenericMessage(nil, nil, "CommandResult", fmt.Sprintf("%v", err))}, connState.registeredClient)
 			}
 			return err
 		}
 	}
+
+	s.logger.Info("client say", "team", connState.registeredClient.Team, "slot", connState.registeredClient.Slot, "msg", text)
 
 	slot := connState.registeredClient.Slot
 	team := connState.registeredClient.Team
@@ -258,7 +253,7 @@ func (s ApxRoom) isFullFeedAllowed(slotKey int) bool {
 }
 
 func (s ApxRoom) sendConnectionRefused(ctx context.Context, connState *connectionState, reason string, name string) error {
-	s.logf("%s for %s", reason, name)
+	s.logger.Debug("connection refused", "to", name, "for", reason)
 	msg := ConnectionRefusedMessage{Errors: []string{reason}}
 
 	if s.lokiLogger != nil {
