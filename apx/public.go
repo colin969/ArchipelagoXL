@@ -9,8 +9,13 @@ import (
 )
 
 type dashboardBase struct {
-	RoomId string
-	Error  string
+	PublicUrl         string
+	WsUrl             string
+	RoomId            string
+	RoomNormalId      int
+	RoomReducedId     int
+	RoomReducedAccess bool
+	Error             string
 }
 
 type RoomPlayer struct {
@@ -34,20 +39,46 @@ type dashboardSlotData struct {
 	DataPackageChecksum string
 }
 
+func (rm *RoomManager) getDashboardBase(room *HostedRoom) dashboardBase {
+	roomId := ""
+	roomNormalId := 0
+	roomReducedId := 0
+	roomReducedAccess := false
+	if room != nil {
+		roomId = room.lobbyRoomId
+		roomNormalId = room.normalHandler.id
+		roomReducedId = room.reducedHandler.id
+		roomReducedAccess = room.reducedAccess
+	}
+	return dashboardBase{
+		PublicUrl:         rm.config.PublicUrl,
+		WsUrl:             rm.config.WsUrl,
+		RoomId:            roomId,
+		RoomNormalId:      roomNormalId,
+		RoomReducedId:     roomReducedId,
+		RoomReducedAccess: roomReducedAccess,
+	}
+}
+
+func (rm *RoomManager) getDashboardBaseWithError(err string) dashboardBase {
+	return dashboardBase{
+		PublicUrl: rm.config.PublicUrl,
+		Error:     err,
+	}
+}
+
 func (rm *RoomManager) handleFrontendDashboardTracker(w http.ResponseWriter, r *http.Request) {
 	room, ok := rm.roomFromRequest(r)
 
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
-		renderTemplate(w, "base", dashboardBase{
-			Error: "room not found",
-		}, "templates/base_dashboard.gohtml", "templates/dashboard_error.gohtml")
+		renderTemplate(w, "base", rm.getDashboardBaseWithError("room not found"), "templates/base.gohtml", "templates/dashboard_error.gohtml")
 		return
 	}
 
-	base := getDashboardBase(room)
+	base := rm.getDashboardBase(room)
 	renderTemplate(w, "base", base,
-		"templates/base_dashboard.gohtml", "templates/dashboard.gohtml")
+		"templates/base.gohtml", "templates/dashboard.gohtml")
 }
 
 func (rm *RoomManager) handleFrontendDashboardRoom(w http.ResponseWriter, r *http.Request) {
@@ -55,13 +86,11 @@ func (rm *RoomManager) handleFrontendDashboardRoom(w http.ResponseWriter, r *htt
 
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
-		renderTemplate(w, "base", dashboardBase{
-			Error: "room not found",
-		}, "templates/base_dashboard.gohtml", "templates/dashboard_error.gohtml")
+		renderTemplate(w, "base", rm.getDashboardBaseWithError("room not found"), "templates/base.gohtml", "templates/dashboard_error.gohtml")
 		return
 	}
 
-	base := getDashboardBase(room)
+	base := rm.getDashboardBase(room)
 
 	players := make([]RoomPlayer, 0, len(room.apx.state.SlotInfo))
 	for _, slotInfo := range room.apx.state.SlotInfo {
@@ -83,7 +112,7 @@ func (rm *RoomManager) handleFrontendDashboardRoom(w http.ResponseWriter, r *htt
 	}
 
 	renderTemplate(w, "base", data,
-		"templates/base_dashboard.gohtml", "templates/dashboard_room.gohtml")
+		"templates/base.gohtml", "templates/dashboard_room.gohtml")
 }
 
 func (rm *RoomManager) handleFrontendDashboardSlotTracker(w http.ResponseWriter, r *http.Request) {
@@ -91,9 +120,7 @@ func (rm *RoomManager) handleFrontendDashboardSlotTracker(w http.ResponseWriter,
 
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
-		renderTemplate(w, "base", dashboardBase{
-			Error: "room not found",
-		}, "templates/base_dashboard.gohtml", "templates/dashboard_error.gohtml")
+		renderTemplate(w, "base", rm.getDashboardBaseWithError("room not found"), "templates/base.gohtml", "templates/dashboard_error.gohtml")
 		return
 	}
 
@@ -112,13 +139,11 @@ func (rm *RoomManager) handleFrontendDashboardSlotTracker(w http.ResponseWriter,
 	slotInfo, ok := room.apx.state.SlotInfo[TeamSlot{teamId, slotId}]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
-		renderTemplate(w, "base", dashboardBase{
-			Error: "team slot not found in room",
-		}, "templates/base_dashboard.gohtml", "templates/dashboard_error.gohtml")
+		renderTemplate(w, "base", rm.getDashboardBaseWithError("team slot not found in room"), "templates/base.gohtml", "templates/dashboard_error.gohtml")
 		return
 	}
 
-	base := getDashboardBase(room)
+	base := rm.getDashboardBase(room)
 
 	data := dashboardSlotData{
 		dashboardBase:       base,
@@ -130,18 +155,23 @@ func (rm *RoomManager) handleFrontendDashboardSlotTracker(w http.ResponseWriter,
 	}
 
 	renderTemplate(w, "base", data,
-		"templates/base_dashboard.gohtml", "templates/dashboard_slot.gohtml")
+		"templates/base.gohtml", "templates/dashboard_slot.gohtml")
 }
 
 func (rm *RoomManager) registerDashboardRoutes(r *mux.Router) {
+	r.HandleFunc("/upload", rm.withAuth(rm.handleFrontendUpload)).Methods(http.MethodGet)
+
 	dashboard := r.PathPrefix("/dashboard/{roomId}").Subrouter()
 	dashboard.HandleFunc("", rm.handleFrontendDashboardRoom).Methods(http.MethodGet)
 	dashboard.HandleFunc("/tracker", rm.handleFrontendDashboardTracker).Methods(http.MethodGet)
 	dashboard.HandleFunc("/tracker/{teamId}/{slotId}", rm.handleFrontendDashboardSlotTracker).Methods(http.MethodGet)
 }
 
-func getDashboardBase(room *HostedRoom) dashboardBase {
-	return dashboardBase{
-		RoomId: room.lobbyRoomId,
-	}
+type publicUploadPageData struct {
+	Error string
+}
+
+func (rm *RoomManager) handleFrontendUpload(w http.ResponseWriter, r *http.Request) {
+	renderTemplate(w, "base", publicUploadPageData{},
+		"templates/base.gohtml", "templates/upload.gohtml")
 }

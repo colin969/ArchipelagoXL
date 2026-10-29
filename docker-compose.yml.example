@@ -286,13 +286,15 @@ services:
       WS_PORT: "9002"
       APX_API_LISTENADDR: "0.0.0.0:9001"
       APX_API_KEY: "changeme"
-      AP_ROOM_HOST: "ap-webhost"
-      AP_API_ROOT: "http://ap-webhost:9888"
-      AP_ADMIN_API_KEY: "ap_changeme"
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/apx"
       TLS_CERT_FILE: ""
       TLS_KEY_FILE: ""
       PER_SLOT_PASSWORDS: false
       LOKI_ENDPOINT: "http://loki:3100"
+      OAUTH_DISCORD_CLIENT_ID: ""
+      OAUTH_DISCORD_CLIENT_SECRET: ""
+      OAUTH_DISCORD_REDIRECT_URI: ""
+      DISCORD_ADMIN_IDS: "1234,5678,9012"
       GOEXPERIMENT: "jsonv2"
     ports:
       - "9002:9002"

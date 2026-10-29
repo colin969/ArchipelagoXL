@@ -2,108 +2,91 @@
 
 {{define "title"}}Upload Room{{end}}
 
+{{define "header-row"}}
+<div class="breadcrumb">
+  <span class="nav__link nav__link--active">Upload Room</span>
+</div>
+{{end}}
+
 {{define "content"}}
-<h1 class="page__title">Upload Room</h1>
+<h1 class="page__title">Create Room</h1>
 
 {{if .Error}}
 <div class="flash flash--error">{{.Error}}</div>
 {{end}}
-{{if .Success}}
-<div class="flash flash--success">{{.Success}}</div>
-{{end}}
 
-<form method="POST" action="/admin/upload" enctype="multipart/form-data" id="upload-form">
-
-    <div class="card">
-        <div class="card__title">Multidata File</div>
-
-        <div class="form-row">
-            <label for="file">File <span style="color:#a22020">*</span></label>
-            <input type="file" id="file" name="file" accept=".archipelago,.zip" required>
-            <span class="form-hint">Accepts .archipelago or .zip containing an .archipelago file.</span>
-        </div>
-
-        <div class="form-row">
-            <label for="lobby_room_id">Lobby Room ID</label>
-            <input type="text" id="lobby_room_id" name="lobby_room_id"
-                   placeholder="Leave blank to auto-generate"
-                   value="{{.FormValues.LobbyRoomId}}">
-            <span class="form-hint">24-character alphanumeric ID. Auto-generated if empty.</span>
-        </div>
+<div class="card">
+  <div class="card__title">Upload Multidata</div>
+  <form id="upload-form" enctype="multipart/form-data">
+    <div class="form-row">
+      <label for="file">Multidata File / Zip</label>
+      <input type="file" id="file" name="file" accept=".archipelago,.zip" required>
     </div>
 
-    <div class="card">
-        <div class="card__title">Room Options</div>
-
-        <label class="form-check">
-            <input type="checkbox" name="per_slot_passwords"
-                   {{if .FormValues.PerSlotPasswords}}checked{{end}}>
-            Per-slot passwords
-            <span class="form-hint" style="margin:0 0 0 0.25rem">(fetched from lobby on start)</span>
-        </label>
-
-        <label class="form-check">
-            <input type="checkbox" name="deathlink_disabled"
-                   {{if .FormValues.DeathlinkDisabled}}checked{{end}}>
-            Disable DeathLink
-        </label>
-
-        <label class="form-check">
-            <input type="checkbox" name="reduced_access"
-                   {{if .FormValues.ReducedAccess}}checked{{end}}>
-            Reduced access
-            <span class="form-hint" style="margin:0 0 0 0.25rem">(full-feed opt-in per slot)</span>
-        </label>
+    <div class="form-check">
+      <input type="checkbox" id="deathlink_disabled" name="deathlink_disabled" value="true">
+      <label for="deathlink_disabled">Disable DeathLink</label>
     </div>
 
-    <button type="submit" class="btn btn--confirm" id="submit-btn">
-        Upload &amp; Start Room
-    </button>
+    <div class="form-check">
+      <input type="checkbox" id="per_slot_passwords" name="per_slot_passwords" value="true">
+      <label for="per_slot_passwords">Per-slot Passwords</label>
+    </div>
 
-</form>
+    <div class="form-check">
+      <input type="checkbox" id="reduced_access" name="reduced_access" value="true">
+      <label for="reduced_access">Reduced Access</label>
+    </div>
+
+    <div id="upload-flash"></div>
+
+    <button type="submit" class="btn btn--confirm" id="submit-btn">Upload &amp; Create Room</button>
+  </form>
+</div>
 {{end}}
 
 {{define "scripts"}}
 <script>
-(function () {
-    const form = document.getElementById('upload-form');
-    const btn  = document.getElementById('submit-btn');
+document.getElementById("upload-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
 
-    form.addEventListener('submit', async function (e) {
-        e.preventDefault();
+  const btn       = document.getElementById("submit-btn");
+  const flashEl   = document.getElementById("upload-flash");
+  const form      = e.target;
+  const formData  = new FormData(form);
 
-        btn.disabled = true;
-        btn.textContent = 'Uploading…';
+  for (const name of ["deathlink_disabled", "per_slot_passwords", "reduced_access"]) {
+    const el = form.elements[name];
+    if (!el.checked) {
+      formData.set(name, "false");
+    }
+  }
 
-        try {
-            const formData = new FormData(form);
-            const resp = await fetch('/admin/upload', {
-                method: 'POST',
-                // No Content-Type header — browser sets multipart boundary automatically
-                body: formData,
-            });
+  btn.disabled    = true;
+  btn.textContent = "Uploading...";
+  flashEl.innerHTML = "";
 
-            if (resp.redirected) {
-                window.location.href = resp.url;
-                return;
-            }
-
-            if (!resp.ok) {
-                const text = await resp.text();
-                // Server returned an error page — replace body to show it
-                document.open();
-                document.write(text);
-                document.close();
-                return;
-            }
-
-            window.location.href = '/admin/rooms';
-        } catch (err) {
-            btn.disabled = false;
-            btn.textContent = 'Upload & Start Room';
-            alert(`Upload failed: ${err}`);
-        }
+  try {
+    const res = await fetch("/api/room", {
+      method: "POST",
+      body: formData,
     });
-})();
+
+    const json = await res.json();
+
+    if (!res.ok) {
+      flashEl.innerHTML = `<div class="flash flash--error" style="margin-top:1rem">${json.error ?? "Unknown error"}</div>`;
+      return;
+    }
+
+    // Redirect to the room dashboard
+    window.location.href = `/dashboard/${json.lobby_room_id}`;
+  } catch (err) {
+    flashEl.innerHTML = `<div class="flash flash--error" style="margin-top:1rem">Request failed: ${err}</div>`;
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = "Upload & Create Room";
+  }
+});
 </script>
 {{end}}

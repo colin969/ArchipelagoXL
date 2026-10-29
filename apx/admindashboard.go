@@ -1,28 +1,14 @@
 package main
 
 import (
-	"apx/multidata"
-	"archive/zip"
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"html/template"
-	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
 )
-
-type uploadPageData struct {
-	ActiveNav  string
-	Error      string
-	Success    string
-	ApiKey     string
-	FormValues uploadRoomRequest
-}
 
 type roomsPageData struct {
 	ActiveNav string
@@ -39,90 +25,6 @@ type statsPageData struct {
 	RoomCount          int
 	TotalConnections   int
 	CachedDataPackages int
-}
-
-func (rm *RoomManager) handleAdminUpload(w http.ResponseWriter, r *http.Request) {
-	data := uploadPageData{
-		ActiveNav: "upload",
-		ApiKey:    rm.config.ApiKey,
-	}
-
-	if r.Method == http.MethodPost {
-		if err := r.ParseMultipartForm(100 << 20); err != nil {
-			data.Error = "failed to parse form"
-			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
-			return
-		}
-
-		uploadReq := uploadRoomRequestFromForm(r)
-		if uploadReq.LobbyRoomId == "" {
-			uploadReq.LobbyRoomId = randomId(24)
-		}
-
-		if !isValidLobbyRoomId(uploadReq.LobbyRoomId) {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
-			return
-		}
-
-		data.FormValues = uploadReq
-
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			data.Error = "no file provided"
-			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
-			return
-		}
-		defer file.Close()
-
-		fileBytes, err := io.ReadAll(file)
-		if err != nil {
-			data.Error = "failed to read file"
-			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
-			return
-		}
-
-		if strings.HasSuffix(strings.ToLower(header.Filename), ".zip") {
-			zr, err := zip.NewReader(bytes.NewReader(fileBytes), int64(len(fileBytes)))
-			if err != nil {
-				data.Error = fmt.Sprintf("invalid zip: %v", err)
-				renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
-				return
-			}
-			fileBytes, err = multidata.ReadArchipelagoFromZip(zr)
-			if err != nil {
-				data.Error = fmt.Sprintf("reading zip: %v", err)
-				renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
-				return
-			}
-		}
-
-		md, err := multidata.ParseMultidata(fileBytes)
-		if err != nil {
-			data.Error = fmt.Sprintf("invalid multidata: %v", err)
-			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
-			return
-		}
-
-		lobbyRoomId := uploadReq.LobbyRoomId
-
-		_, err = rm.startRoomFromMultiData(lobbyRoomId, md, nil, nil,
-			uploadReq.PerSlotPasswords, uploadReq.DeathlinkDisabled, uploadReq.ReducedAccess, 1, true)
-		if err != nil {
-			data.Error = fmt.Sprintf("failed to start room: %v", err)
-			renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
-			return
-		}
-
-		if rm.metrics != nil {
-			rm.metrics.activeRooms.Inc()
-		}
-
-		http.Redirect(w, r, "/admin/rooms", http.StatusSeeOther)
-		return
-	}
-
-	renderTemplate(w, "base", data, "templates/base_admin.gohtml", "templates/upload.gohtml")
 }
 
 func (rm *RoomManager) handleAdminRooms(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +95,6 @@ func renderTemplate(w http.ResponseWriter, name string, data any, files ...strin
 func (rm *RoomManager) registerAdminRoutes(r *mux.Router) {
 	admin := r.PathPrefix("/admin").Subrouter()
 	admin.Use(rm.adminAuthMiddleware)
-	admin.HandleFunc("/upload", rm.handleAdminUpload).Methods(http.MethodGet, http.MethodPost)
 	admin.HandleFunc("/rooms", rm.handleAdminRooms).Methods(http.MethodGet)
 	admin.HandleFunc("/stats", rm.handleAdminStats).Methods(http.MethodGet)
 }

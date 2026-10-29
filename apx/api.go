@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,6 +46,7 @@ type SphereResult struct {
 
 type RoomManager struct {
 	config           *Config
+	oauth            *OauthHandler
 	registry         *RoomRegistry
 	metrics          *metrics
 	tlsCfg           *tls.Config
@@ -257,6 +259,7 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		tlsCfg:           tlsCfg,
 		store:            store,
 		diskDataPackages: dpDiskStorage,
+		oauth:            SetupOauth(cfg, store.Pool()),
 	}
 
 	// If store disabled, no DB to read
@@ -267,11 +270,11 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 		}
 	}
 
-	roomLoggedHandler := func(h http.HandlerFunc) http.HandlerFunc {
-		return srv.logRequestMiddleware(h).ServeHTTP
-	}
-
 	r := mux.NewRouter()
+
+	if srv.oauth != nil {
+		srv.oauth.RegisterRoutes(r)
+	}
 
 	r.HandleFunc("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP)
 	if !(cfg.DisableAdminDashboard || cfg.StandaloneMode) {
@@ -303,40 +306,38 @@ func startRoomManager(cfg *Config, reg *prometheus.Registry, metrics *metrics, t
 	api.HandleFunc("/datapackage/{checksum}", srv.handleDatapackageByChecksum).Methods(http.MethodGet)
 	if !cfg.StandaloneMode {
 		mgmt := api.PathPrefix("").Subrouter()
-		mgmt.Use(srv.authMiddleware)
 		mgmt.HandleFunc("/rooms", srv.handleListRooms).Methods(http.MethodGet)
 		mgmt.HandleFunc("/room", srv.handleUploadRoom).Methods(http.MethodPost)
 	}
 	roomAdmin := api.PathPrefix("/room/{roomId}").Subrouter()
-	roomAdmin.Use(srv.authMiddleware)
 	roomAdmin.Use(srv.validateRoomIdMiddleware)
 	if !cfg.StandaloneMode {
 		roomAdmin.HandleFunc("", srv.handleRoomDelete).Methods(http.MethodDelete)
 		roomAdmin.HandleFunc("/start", srv.handleRoomStart).Methods(http.MethodPost)
 		roomAdmin.HandleFunc("/stop", srv.handleRoomStop).Methods(http.MethodPost)
 	}
-	roomAdmin.HandleFunc("/state", srv.handleRoomState).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/command", srv.handleRoomCommand).Methods(http.MethodPost)
-	roomAdmin.HandleFunc("/names/{typeName}/{gameName}", srv.handleItemNames).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/release/{slotName}", roomLoggedHandler(srv.handleRelease)).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/refresh_slot_passwords", roomLoggedHandler(srv.handlePasswordRefresh)).Methods(http.MethodPost)
-	roomAdmin.HandleFunc("/server_password", srv.handleAdminPassword).Methods(http.MethodGet, http.MethodDelete, http.MethodPost)
-	roomAdmin.HandleFunc("/slot_password/{slotId}", srv.handlePassword).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/deathlinks", srv.handleDeathlinks).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/full_feed", srv.handleFullFeed).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/full_feed/{slotId}", roomLoggedHandler(srv.handleFullFeedUser)).Methods(http.MethodPost, http.MethodDelete)
-	roomAdmin.HandleFunc("/bounce_exclusions", srv.handleBounceExclusionsList).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/bounce_exclusions/{slotId}/{tag}", roomLoggedHandler(srv.handleBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
-	roomAdmin.HandleFunc("/slot_bounce_exclusions", srv.handleSlotBounceExclusionsList).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/slot_bounce_exclusions/{slotId}", roomLoggedHandler(srv.handleSlotBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
-	roomAdmin.HandleFunc("/deathlink_probability", srv.handleDeathlinkProbability).Methods(http.MethodGet, http.MethodPost)
-	roomAdmin.HandleFunc("/spheres", srv.handleAllSpheres).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/incomplete_sphere1", srv.handleIncompleteSphere1).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/spheres/{slotId}", srv.handleSpheresForSlot).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/debug/slot/{slotId}", roomLoggedHandler(srv.handleDebugTap))
+	roomAdmin.HandleFunc("/state", srv.withRoomAuthApi(srv.handleRoomState)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/command", srv.withRoomAuthApi(srv.handleRoomCommand)).Methods(http.MethodPost)
+	roomAdmin.HandleFunc("/names/{typeName}/{gameName}", srv.withRoomAuthApi(srv.handleItemNames)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/release/{slotName}", srv.withRoomAuthApi(srv.handleRelease)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/refresh_slot_passwords", srv.withRoomAuthApi(srv.handlePasswordRefresh)).Methods(http.MethodPost)
+	roomAdmin.HandleFunc("/server_password", srv.withRoomAuthApi(srv.handleAdminPassword)).Methods(http.MethodGet, http.MethodDelete, http.MethodPost)
+	roomAdmin.HandleFunc("/slot_password/{slotId}", srv.withRoomAuthApi(srv.handlePassword)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/deathlinks", srv.withRoomAuthApi(srv.handleDeathlinks)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/full_feed", srv.withRoomAuthApi(srv.handleFullFeed)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/full_feed/{slotId}", srv.withRoomAuthApi(srv.handleFullFeedUser)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/bounce_exclusions", srv.withRoomAuthApi(srv.handleBounceExclusionsList)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/bounce_exclusions/{slotId}/{tag}", srv.withRoomAuthApi(srv.handleBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/slot_bounce_exclusions", srv.withRoomAuthApi(srv.handleSlotBounceExclusionsList)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/slot_bounce_exclusions/{slotId}", srv.withRoomAuthApi(srv.handleSlotBounceExclusions)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/deathlink_probability", srv.withRoomAuthApi(srv.handleDeathlinkProbability)).Methods(http.MethodGet, http.MethodPost)
+	roomAdmin.HandleFunc("/spheres", srv.withRoomAuthApi(srv.handleAllSpheres)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/incomplete_sphere1", srv.withRoomAuthApi(srv.handleIncompleteSphere1)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/spheres/{slotId}", srv.withRoomAuthApi(srv.handleSpheresForSlot)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/debug/slot/{slotId}", srv.withRoomAuthApi(srv.handleDebugTap))
 	// Alt names need more work to be listable and deletable, will reset on restart for now
-	roomAdmin.HandleFunc("/alt_connect_name/slot/{slotName}", roomLoggedHandler(srv.handleAltConnectNamesBySlot)).Methods(http.MethodGet)
-	roomAdmin.HandleFunc("/alt_connect_name/{altName}", roomLoggedHandler(srv.handleAltConnectName)).Methods(http.MethodPost, http.MethodDelete)
+	roomAdmin.HandleFunc("/alt_connect_name/slot/{slotName}", srv.withRoomAuthApi(srv.handleAltConnectNamesBySlot)).Methods(http.MethodGet)
+	roomAdmin.HandleFunc("/alt_connect_name/{altName}", srv.withRoomAuthApi(srv.handleAltConnectName)).Methods(http.MethodPost, http.MethodDelete)
 
 	// Check every 2m, kill after 2h
 	srv.startRoomKiller(time.Duration(2)*time.Minute, RoomTimeout)
@@ -457,30 +458,6 @@ func startStandaloneWsRouter(rm *RoomManager, normalPort int, reducedPort int) e
 	return startOne(reducedPort, true)
 }
 
-// Only works on room routes
-func (rm *RoomManager) logRequestMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		roomId := vars["roomId"]
-
-		room, ok := rm.registry.Get(roomId)
-		if ok && room.apx.lokiLogger != nil {
-			body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
-			if err == nil {
-				r.Body = io.NopCloser(bytes.NewReader(body))
-				msg, _ := json.Marshal(map[string]string{
-					"method": r.Method,
-					"path":   r.URL.Path,
-					"body":   string(body),
-				})
-				room.apx.lokiLogger.LogApi(LogLevelDebug, msg)
-			}
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
 func (rm *RoomManager) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	rooms := rm.registry.List()
 	result := make([]ApxRoomInfo, 0, len(rooms))
@@ -587,27 +564,44 @@ func (rm *RoomManager) buildSlotDataBlob(md *multidata.MultiData) ([]byte, map[i
 func (rm *RoomManager) handleUploadRoom(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	uploadReq := uploadRoomRequestFromForm(r)
+	var customId bool
 
-	if uploadReq.LobbyRoomId == "" {
+	session := rm.getSession(r)
+
+	if session.IsAdmin && uploadReq.LobbyRoomId != "" {
+		customId = true
+	}
+	if uploadReq.LobbyRoomId == "" || !session.IsAdmin {
 		uploadReq.LobbyRoomId = randomId(24)
 	}
 
-	if !isValidLobbyRoomId(uploadReq.LobbyRoomId) {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
-		return
+	// Validate custom id
+	if customId {
+		if !isValidLobbyRoomId(uploadReq.LobbyRoomId) {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "lobby room id must be alphanumeric"})
+			return
+		}
 	}
 
-	exists, err := rm.store.LobbyRoomIdExists(uploadReq.LobbyRoomId)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to check room id"})
-		return
-	}
-	if exists {
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]string{"error": "lobby_room_id already in use"})
-		return
+	// Find a valid unused id, unless asked for a custom
+	for {
+		exists, err := rm.store.LobbyRoomIdExists(uploadReq.LobbyRoomId)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to check room id"})
+			return
+		}
+		if exists && customId {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "lobby_room_id already in use"})
+			return
+		}
+		if exists {
+			uploadReq.LobbyRoomId = randomId(24)
+		} else {
+			break
+		}
 	}
 
 	// 100mb, kinda big, needed for the stupidly large rooms. Maybe add extra auth on a frontend if you want to contain it.
@@ -1853,17 +1847,88 @@ func (rm *RoomManager) loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (rm *RoomManager) authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key := r.Header.Get("X-API-Key")
-		if rm.config.ApiKey == "" || key != rm.config.ApiKey {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+type roomHandler func(http.ResponseWriter, *http.Request, *HostedRoom)
+
+func (rm *RoomManager) getSession(r *http.Request) Session {
+	if key := r.Header.Get("X-API-Key"); key != "" && rm.config.ApiKey != "" && key == rm.config.ApiKey {
+		uid := "_admin_"
+		return Session{
+			IsAdmin:             true,
+			IsLoggedIn:          true,
+			RoomCreationAllowed: true,
+			UserID:              &uid,
+		}
+	}
+
+	if rm.oauth != nil {
+		session := rm.oauth.sessions.Get(r)
+		return session
+	}
+
+	return Session{}
+}
+
+func (rm *RoomManager) isAuthed(r *http.Request) bool {
+	// Try API key
+	if key := r.Header.Get("X-API-Key"); key != "" && rm.config.ApiKey != "" && key == rm.config.ApiKey {
+		return true
+	}
+
+	// Try Session
+	if rm.oauth != nil {
+		session := rm.oauth.sessions.Get(r)
+		if session.IsAdmin {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (rm *RoomManager) withAuth(handler func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authed := rm.isAuthed(r)
+		if authed {
+			handler(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
-	})
+
+		// Forced to discord currently, make configurable later?
+		http.Redirect(w, r, "/auth/discord/login?redirect="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
+	}
+}
+
+func (rm *RoomManager) withAuthApi(handler func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authed := rm.isAuthed(r)
+		if authed {
+			handler(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	}
+}
+
+func (rm *RoomManager) withRoomAuthApi(handler roomHandler) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		room, ok := rm.roomFromRequestApi(w, r)
+		if !ok {
+			return
+		}
+
+		authed := rm.isAuthed(r)
+		if authed {
+			handler(w, r, room)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	}
 }
 
 func (rm *RoomManager) validateRoomIdMiddleware(next http.Handler) http.Handler {
@@ -1879,11 +1944,7 @@ func (rm *RoomManager) validateRoomIdMiddleware(next http.Handler) http.Handler 
 	})
 }
 
-func (rm *RoomManager) handlePasswordRefresh(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
+func (rm *RoomManager) handlePasswordRefresh(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	if !rm.config.LobbyEnabled {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{"error": "lobby not enabled"})
@@ -1903,12 +1964,7 @@ type PasswordRequest struct {
 	Password string `json:"password"`
 }
 
-func (rm *RoomManager) handleAdminPassword(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleAdminPassword(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	switch r.Method {
 	case http.MethodPost:
 		var req PasswordRequest
@@ -1927,12 +1983,7 @@ func (rm *RoomManager) handleAdminPassword(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (rm *RoomManager) handlePassword(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handlePassword(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	if !rm.config.LobbyEnabled {
 		w.WriteHeader(http.StatusForbidden)
 		json.NewEncoder(w).Encode(map[string]string{"error": "lobby not enabled"})
@@ -1957,30 +2008,17 @@ func (rm *RoomManager) handlePassword(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"password": password})
 }
 
-func (rm *RoomManager) handleDeathlinks(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
+func (rm *RoomManager) handleDeathlinks(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	deathlinks := room.apx.bounceInfo.Get()
 	json.NewEncoder(w).Encode(deathlinks)
 }
 
-func (rm *RoomManager) handleFullFeed(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
+func (rm *RoomManager) handleFullFeed(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	fullFeed := room.apx.fullFeed.Get()
 	json.NewEncoder(w).Encode(fullFeed)
 }
 
-func (rm *RoomManager) handleFullFeedUser(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleFullFeedUser(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	vars := mux.Vars(r)
 	slotId, err := strconv.Atoi(vars["slotId"])
 	if err != nil {
@@ -2023,21 +2061,12 @@ func (rm *RoomManager) handleFullFeedUser(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func (rm *RoomManager) handleBounceExclusionsList(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
+func (rm *RoomManager) handleBounceExclusionsList(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(room.apx.bounceInfo.GetTagExclusions())
 }
 
-func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 	vars := mux.Vars(r)
 	slotId, err := strconv.Atoi(vars["slotId"])
@@ -2085,22 +2114,12 @@ func (rm *RoomManager) handleBounceExclusions(w http.ResponseWriter, r *http.Req
 	}
 }
 
-func (rm *RoomManager) handleSlotBounceExclusionsList(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleSlotBounceExclusionsList(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(room.apx.bounceInfo.GetSlotExclusions())
 }
 
-func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 	vars := mux.Vars(r)
 	slotId, err := strconv.Atoi(vars["slotId"])
@@ -2126,12 +2145,7 @@ func (rm *RoomManager) handleSlotBounceExclusions(w http.ResponseWriter, r *http
 	}
 }
 
-func (rm *RoomManager) handleDeathlinkProbability(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleDeathlinkProbability(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
@@ -2162,12 +2176,7 @@ func (rm *RoomManager) handleDeathlinkProbability(w http.ResponseWriter, r *http
 	}
 }
 
-func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 
 	vars := mux.Vars(r)
@@ -2233,12 +2242,7 @@ func (rm *RoomManager) handleSpheresForSlot(w http.ResponseWriter, r *http.Reque
 	w.Write(b)
 }
 
-func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 
 	result := make(map[string]json.RawMessage, len(room.apx.state.NameToSlot))
@@ -2294,12 +2298,7 @@ func (rm *RoomManager) handleAllSpheres(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if len(room.apx.state.Spheres) == 0 {
@@ -2337,12 +2336,7 @@ func (rm *RoomManager) handleIncompleteSphere1(w http.ResponseWriter, r *http.Re
 	json.NewEncoder(w).Encode(result)
 }
 
-func (rm *RoomManager) handleDebugTap(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleDebugTap(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	vars := mux.Vars(r)
 	slotId, err := strconv.Atoi(vars["slotId"])
 	if err != nil {
@@ -2390,12 +2384,7 @@ type AltConnectNameRequest struct {
 	SlotName string `json:"slot_name"`
 }
 
-func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	vars := mux.Vars(r)
 	altName := vars["altName"]
 
@@ -2446,12 +2435,7 @@ func (rm *RoomManager) handleAltConnectName(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleAltConnectNamesBySlot(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	vars := mux.Vars(r)
 	slotName := vars["slotName"]
 
@@ -2516,12 +2500,7 @@ func (rm *RoomManager) roomFromRequest(r *http.Request) (*HostedRoom, bool) {
 	return room, true
 }
 
-func (rm *RoomManager) handleRoomState(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleRoomState(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	fullFeedMap := room.apx.fullFeed.Get()
 	fullFeedSlots := make([]int, 0, len(fullFeedMap))
 	for slotId := range fullFeedMap {
@@ -2541,12 +2520,7 @@ type RoomCommand struct {
 	Command string `json:"command"`
 }
 
-func (rm *RoomManager) handleRoomCommand(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleRoomCommand(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	var cmd RoomCommand
 	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -2580,18 +2554,14 @@ func (rm *RoomManager) handleRoomCommand(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	vars := mux.Vars(r)
 	gameName := vars["gameName"]
 	typeName := vars["typeName"]
 	log.Printf("[handleItemNames] requested game=%q type=%q", gameName, typeName)
 
 	var names map[int64]string
+	var ok bool
 	switch typeName {
 	case "item":
 		names, ok = room.apx.datapackages.ItemIDToName[gameName]
@@ -2618,12 +2588,7 @@ func (rm *RoomManager) handleItemNames(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
-	room, ok := rm.roomFromRequestApi(w, r)
-	if !ok {
-		return
-	}
-
+func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request, room *HostedRoom) {
 	vars := mux.Vars(r)
 	slotName := vars["slotName"]
 
@@ -2636,6 +2601,7 @@ func (rm *RoomManager) handleRelease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	room.apx.ReleasePlayer(slotInfo.Team, slotInfo.Slot)
+	room.apx.SetClientStatus(context.Background(), slotInfo.Team, slotInfo.Slot, slotInfo.Name, ClientStatusGoal)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "released", "slot": slotName})

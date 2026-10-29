@@ -23,26 +23,32 @@ import (
 )
 
 type Config struct {
-	TLSKeyFile             string `json:"tls_key_file"`
-	DatabaseURL            string `json:"database_url"`
-	SavesPath              string `json:"saves_path"`
-	LobbyRootUrl           string `json:"lobby_root_url"`
-	LobbyRoomId            string `json:"lobby_room_id"`
-	LobbyApiKey            string `json:"lobby_api_key"`
-	ApiListenAddr          string `json:"apx_api_listen"`
-	SlotDataStoragePath    string `json:"slot_data_storage_path"`
-	DataPackageStoragePath string `json:"datapackage_storage_path"`
-	LogStoragePath         string `json:"log_storage_path"`
-	ApiKey                 string `json:"apx_api_key"`
-	TLSCertFile            string `json:"tls_cert_file"`
-	LokiEndpoint           string `json:"loki_endpoint"`
-	WsPort                 int    `json:"ws_port"`
-	NormalPort             int    `json:"normal_port"`
-	ReducedPort            int    `json:"reduced_port"`
-	PerSlotPasswords       bool   `json:"per_slot_passwords"`
-	LobbyEnabled           bool   `json:"lobby_enabled"`
-	DisableAdminDashboard  bool   `json:"disable_frontend"`
-	StandaloneMode         bool
+	TLSKeyFile               string   `json:"tls_key_file"`
+	DatabaseURL              string   `json:"database_url"`
+	SavesPath                string   `json:"saves_path"`
+	LobbyRootUrl             string   `json:"lobby_root_url"`
+	LobbyRoomId              string   `json:"lobby_room_id"`
+	LobbyApiKey              string   `json:"lobby_api_key"`
+	ApiListenAddr            string   `json:"apx_api_listen"`
+	SlotDataStoragePath      string   `json:"slot_data_storage_path"`
+	DataPackageStoragePath   string   `json:"datapackage_storage_path"`
+	LogStoragePath           string   `json:"log_storage_path"`
+	ApiKey                   string   `json:"apx_api_key"`
+	TLSCertFile              string   `json:"tls_cert_file"`
+	LokiEndpoint             string   `json:"loki_endpoint"`
+	WsPort                   int      `json:"ws_port"`
+	NormalPort               int      `json:"normal_port"`
+	ReducedPort              int      `json:"reduced_port"`
+	PerSlotPasswords         bool     `json:"per_slot_passwords"`
+	LobbyEnabled             bool     `json:"lobby_enabled"`
+	DisableAdminDashboard    bool     `json:"disable_frontend"`
+	OauthDiscordClientId     string   `json:"oauth_discord_client_id"`
+	OauthDiscordClientSecret string   `json:"oauth_discord_client_secret"`
+	OauthDiscordRedirectUrl  string   `json:"oauth_discord_redirect_url"`
+	DiscordAdminIds          []string `json:"discord_admin_ids"`
+	PublicUrl                string   `json:"public_url"`
+	WsUrl                    string   `json:"ws_url"`
+	StandaloneMode           bool
 }
 
 type ApxArgs struct {
@@ -321,6 +327,28 @@ func getConfig() (*Config, error) {
 			return nil, fmt.Errorf("invalid DISABLE_FRONTEND %q: %w", v, err)
 		}
 		cfg.DisableAdminDashboard = enabled
+	}
+	if v := os.Getenv("OAUTH_DISCORD_CLIENT_ID"); v != "" {
+		cfg.OauthDiscordClientId = v
+	}
+	if v := os.Getenv("OAUTH_DISCORD_CLIENT_SECRET"); v != "" {
+		cfg.OauthDiscordClientSecret = v
+	}
+	if v := os.Getenv("OAUTH_DISCORD_REDIRECT_URI"); v != "" {
+		cfg.OauthDiscordRedirectUrl = v
+	}
+	if v := os.Getenv("DISCORD_ADMIN_IDS"); v != "" {
+		parts := strings.Split(v, ",")
+		for i, p := range parts {
+			parts[i] = strings.TrimSpace(p)
+		}
+		cfg.DiscordAdminIds = parts
+	}
+	if v := os.Getenv("PUBLIC_URL"); v != "" {
+		cfg.PublicUrl = v
+	}
+	if v := os.Getenv("WS_URL"); v != "" {
+		cfg.WsUrl = v
 	}
 	if v := os.Getenv("SAVES_PATH"); v != "" {
 		cfg.SavesPath = v

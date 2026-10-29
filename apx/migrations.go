@@ -98,6 +98,14 @@ var migrations = []struct {
 		);
 		CREATE INDEX ON room_datapackage_refs (checksum);
 	`},
+	{8, `
+		CREATE TABLE session_keys (
+			id        SERIAL PRIMARY KEY,
+			hash_key  BYTEA NOT NULL,
+			block_key BYTEA NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+	`},
 }
 
 func runMigrations(db *sql.DB) error {
