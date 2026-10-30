@@ -12,10 +12,10 @@
 
 <div class="desc-box">
   {{if .RoomReducedAccess}}
-  <div><b>Server:</b> ap-{{.RoomReducedId}}.{{.WsUrl}}</div>
+  <div><strong style="display: inline-block; width: 16ch">Server:</strong> ap-{{.RoomReducedId}}.{{.WsUrl}}</div>
   {{else}}
-  <div><b>Server:</b> ap-{{.RoomNormalId}}.{{.WsUrl}}</div>
-  <div><b>Reduced Text Server:</b> ap-{{.RoomReducedId}}.{{.WsUrl}}</div>
+  <div><strong style="display: inline-block; width: 16ch">Server:</strong> ap-{{.RoomNormalId}}.{{.WsUrl}}</div>
+  <div><strong style="display: inline-block; width: 16ch">Reduced Server:</strong> ap-{{.RoomReducedId}}.{{.WsUrl}}</div>
   {{end}}
   <a href="/dashboard/{{.RoomId}}/tracker"><button class="btn">View Tracker</button></a>
 </div>

@@ -1868,28 +1868,35 @@ func (rm *RoomManager) getSession(r *http.Request) Session {
 	return Session{}
 }
 
-func (rm *RoomManager) isAuthed(r *http.Request) bool {
+func (rm *RoomManager) isAuthed(r *http.Request) (authed bool, loggedIn bool) {
 	// Try API key
 	if key := r.Header.Get("X-API-Key"); key != "" && rm.config.ApiKey != "" && key == rm.config.ApiKey {
-		return true
+		return true, true
 	}
 
 	// Try Session
 	if rm.oauth != nil {
 		session := rm.oauth.sessions.Get(r)
 		if session.IsAdmin {
-			return true
+			return true, true
 		}
+		return false, true
 	}
 
-	return false
+	return false, false
 }
 
 func (rm *RoomManager) withAuth(handler func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		authed := rm.isAuthed(r)
+		authed, loggedIn := rm.isAuthed(r)
 		if authed {
 			handler(w, r)
+			return
+		}
+
+		if loggedIn {
+			w.WriteHeader(http.StatusForbidden)
+			renderTemplate(w, "base", rm.getDashboardBaseWithError("forbidden"), "templates/base.gohtml", "templates/dashboard_error.gohtml")
 			return
 		}
 
@@ -1900,9 +1907,16 @@ func (rm *RoomManager) withAuth(handler func(http.ResponseWriter, *http.Request)
 
 func (rm *RoomManager) withAuthApi(handler func(http.ResponseWriter, *http.Request)) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		authed := rm.isAuthed(r)
+		authed, loggedIn := rm.isAuthed(r)
 		if authed {
 			handler(w, r)
+			return
+		}
+
+		if loggedIn {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
 			return
 		}
 
@@ -1919,9 +1933,16 @@ func (rm *RoomManager) withRoomAuthApi(handler roomHandler) func(http.ResponseWr
 			return
 		}
 
-		authed := rm.isAuthed(r)
+		authed, loggedIn := rm.isAuthed(r)
 		if authed {
 			handler(w, r, room)
+			return
+		}
+
+		if loggedIn {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
 			return
 		}
 

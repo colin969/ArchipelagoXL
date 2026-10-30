@@ -16,6 +16,7 @@ type dashboardBase struct {
 	RoomReducedId     int
 	RoomReducedAccess bool
 	Error             string
+	Session           Session
 }
 
 type RoomPlayer struct {
@@ -39,7 +40,8 @@ type dashboardSlotData struct {
 	DataPackageChecksum string
 }
 
-func (rm *RoomManager) getDashboardBase(room *HostedRoom) dashboardBase {
+func (rm *RoomManager) getDashboardBase(r *http.Request, room *HostedRoom) dashboardBase {
+	session := rm.getSession(r)
 	roomId := ""
 	roomNormalId := 0
 	roomReducedId := 0
@@ -57,6 +59,7 @@ func (rm *RoomManager) getDashboardBase(room *HostedRoom) dashboardBase {
 		RoomNormalId:      roomNormalId,
 		RoomReducedId:     roomReducedId,
 		RoomReducedAccess: roomReducedAccess,
+		Session:           session,
 	}
 }
 
@@ -76,7 +79,7 @@ func (rm *RoomManager) handleFrontendDashboardTracker(w http.ResponseWriter, r *
 		return
 	}
 
-	base := rm.getDashboardBase(room)
+	base := rm.getDashboardBase(r, room)
 	renderTemplate(w, "base", base,
 		"templates/base.gohtml", "templates/dashboard.gohtml")
 }
@@ -90,7 +93,7 @@ func (rm *RoomManager) handleFrontendDashboardRoom(w http.ResponseWriter, r *htt
 		return
 	}
 
-	base := rm.getDashboardBase(room)
+	base := rm.getDashboardBase(r, room)
 
 	players := make([]RoomPlayer, 0, len(room.apx.state.SlotInfo))
 	for _, slotInfo := range room.apx.state.SlotInfo {
@@ -143,7 +146,7 @@ func (rm *RoomManager) handleFrontendDashboardSlotTracker(w http.ResponseWriter,
 		return
 	}
 
-	base := rm.getDashboardBase(room)
+	base := rm.getDashboardBase(r, room)
 
 	data := dashboardSlotData{
 		dashboardBase:       base,
@@ -168,10 +171,15 @@ func (rm *RoomManager) registerDashboardRoutes(r *mux.Router) {
 }
 
 type publicUploadPageData struct {
+	dashboardBase
 	Error string
 }
 
 func (rm *RoomManager) handleFrontendUpload(w http.ResponseWriter, r *http.Request) {
-	renderTemplate(w, "base", publicUploadPageData{},
+	base := rm.getDashboardBase(r, nil)
+
+	renderTemplate(w, "base", publicUploadPageData{
+		dashboardBase: base,
+	},
 		"templates/base.gohtml", "templates/upload.gohtml")
 }

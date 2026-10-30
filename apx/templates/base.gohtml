@@ -99,6 +99,10 @@
             console.log(`[dp] loaded and cached ${checksum}`);
             return data;
         }
+
+        function clickNav(path) {
+            window.location.href = path;
+        }
     </script>
     {{block "styles" .}}{{end}}
     <style>
@@ -141,23 +145,42 @@
         .nav {
             background-color: var(--bg-secondary);
             border-bottom: 1px solid var(--outline);
-            padding: 0 1rem;
+            padding-right: 1rem;
             display: flex;
             align-items: stretch;
             height: 2.5rem;
             gap: 0.25rem;
         }
+        .nav-menu {
+            height: 100%;
+        }
+        .nav-menu-content {
+            display: none;
+            position: absolute;
+            background-color: var(--bg-secondary);
+        }
+        .nav-menu-button {
+            cursor: pointer;
+            padding: 0.4rem 0.6rem;
+        }
+        .nav-menu-button:hover {
+            background-color: var(--bg-primary);
+        }
+        .nav-menu:hover .nav-menu-content {
+            display: block;
+        }
+
         .nav__brand {
+            padding: 0 1rem;
             display: flex;
             align-items: center;
-            font-size: 0.9rem;
             font-weight: bold;
             color: var(--accent);
-            padding-right: 1.5rem;
             letter-spacing: 0.05em;
-            text-transform: uppercase;
+            height: 100%;
             user-select: none;
         }
+
         .nav__link {
             display: inline-flex;
             align-items: center;
@@ -190,6 +213,9 @@
         .page__title {
             font-size: 1.4rem;
             margin-bottom: 1.5rem;
+        }
+        .clean-a {
+            text-decoration: unset;
         }
 
         /* ── Card ── */
@@ -267,8 +293,18 @@
             display: flex;
             width: 100%;
             height: 100%;
-            justify-content: space-between;
             align-items: center;
+            gap: 1rem;
+        }
+
+        .header-user {
+            text-align: right;
+            text-wrap: nowrap;
+        }
+
+        #interval-header {
+            flex-grow: 1;
+            text-align: right;
         }
 
         .form-hint {
@@ -314,8 +350,24 @@
 <body>
 
 <nav class="nav">
-    <span class="nav__brand">APX</span>
-    <div class="header-row">{{block "header-row" .}}{{end}}</div>
+    <div class="nav-menu">
+        <div class="nav__brand">APX</div>
+        <div class="nav-menu-content">
+            <div class="nav-menu-button" onclick="clickNav('/upload')">
+            Upload
+            </div>
+        </div>
+    </div>
+    <div class="header-row">
+        <div class="header-row">
+        {{block "header-row" .}}{{end}}
+        </div>
+        {{if .Session.IsLoggedIn}}
+        <div class="header-user">
+        Logged in
+        </div>
+        {{end}}
+    </div>
 </nav>
 
 <main class="page">
