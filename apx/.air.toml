@@ -1,0 +1,3 @@
+[build]
+send_interrupt = true
+kill_delay = "300s"

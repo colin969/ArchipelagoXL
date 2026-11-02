@@ -64,6 +64,6 @@ done
 echo "Lobby is up."
 
 echo "== Starting workers =="
-"$DC" up -d yaml-checker generator option-generator
+"$DC" up -d yaml-checker generator option-generator yaml-checker-0.6.8 generator-0.6.8 option-generator-0.6.8
 
 echo "== Lobby is Ready =="

@@ -20,6 +20,7 @@ from opentelemetry import trace
 from wq import LobbyQueue, JobStatus
 
 import Utils
+from Utils import __version__ as ap_version  # noqa: E402
 from Generate import main as GenMain, PlandoOptions
 from settings import get_settings
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Hardcoded apworlds required by fixed yamls
 # Would be nice to not have to do this later
 FIXED_YAML_APWORLDS = [
-    ("hk", "0.6.7"),
+    ("hk", ap_version),
 ]
 
 async def main(loop):
@@ -81,7 +82,7 @@ async def main(loop):
 
 class YamlAnalysisQueue(LobbyQueue):
     def __init__(self, ap_handler, root_url, aptools_root_url, worker_name, token, loop, fixed_yamls):
-        super().__init__(aptools_root_url, "yaml_analysis", worker_name, token, loop)
+        super().__init__(aptools_root_url, "yaml_analysis", worker_name, token, loop, ap_version)
         self.root_url = root_url
         self.aptools_root_url = aptools_root_url
         self.ap_handler = ap_handler
@@ -164,6 +165,9 @@ class YamlAnalysisQueue(LobbyQueue):
                     "skip_output": True,
                     "csv_output": False,
                     "log_time": False,
+                    # Read by Archipelago 0.6.8 and later. Off because a room counts one
+                    # player per YAML, see the matching check in checker.py
+                    "allow_quantity": False,
                 }
             )
 

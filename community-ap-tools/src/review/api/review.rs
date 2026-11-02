@@ -8,6 +8,7 @@ use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use reqwest::Url;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rocket::{State, routes, serde::json::Json};
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -458,7 +459,12 @@ async fn queue_analysis(
         .require_room_role(room_id, Role::Reviewer, &mut conn)
         .await?;
 
-    crate::jobs::priority_queue_yaml(room_id, yaml_id, queue, pool, redis_pool).await?;
+    // Shouldn't really happen to fall through tbf
+    let ap_version = db::get_room_ap_version(room_id, &mut conn)
+        .await?
+        .unwrap_or_else(|| Version::new(0, 6, 8));
+
+    crate::jobs::priority_queue_yaml(room_id, yaml_id, &ap_version, queue, pool, redis_pool).await?;
 
     Ok(())
 }

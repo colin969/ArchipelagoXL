@@ -6,8 +6,8 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::Context as _;
 use anyhow::anyhow;
+use anyhow::{Context as _};
 use askama::Template;
 use askama_web::WebTemplate;
 use auth::{ModeratorSession, Session};
@@ -22,6 +22,7 @@ use rocket::response::{self, Redirect, Responder, Response};
 use rocket::{Request, State, catch, routes, serde::json::Json};
 use rocket::{catchers, tokio};
 use rocket_oauth2::OAuth2;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -77,9 +78,6 @@ pub struct Deathlink {
 
 #[derive(Deserialize, Debug)]
 struct ExclusionsResponse(HashMap<usize, Vec<String>>);
-
-#[derive(Deserialize, Debug)]
-struct SlotExclusionsResponse(Vec<usize>);
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(default)]
@@ -292,33 +290,6 @@ async fn fetch_exclusions(
 
     let data: ExclusionsResponse = response.json().await?;
     Ok(data.0)
-}
-
-async fn fetch_slot_exclusions(
-    config: &Config,
-    room_id: &str,
-) -> crate::error::Result<HashSet<usize>> {
-    let apx_api_root = config
-        .apx_api_root
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API not configured"))?;
-    let apx_api_key = config
-        .apx_api_key
-        .as_ref()
-        .ok_or_else(|| anyhow!("APX API key not configured"))?;
-
-    let client = reqwest::Client::new();
-    let response = client
-        .get(format!(
-            "{}/api/{}/slot_bounce_exclusions",
-            apx_api_root, room_id
-        ))
-        .header("X-API-Key", apx_api_key)
-        .send()
-        .await?;
-
-    let data: SlotExclusionsResponse = response.json().await?;
-    Ok(data.0.into_iter().collect())
 }
 
 async fn fetch_incomplete_sphere1s(
@@ -1345,11 +1316,18 @@ async fn main() -> crate::error::Result<()> {
         .expect("Failed to create job queue for yaml analysis");
 
     yaml_analysis_queue.start_reclaim_checker();
-    start_unanalyzed_yaml_poller(
-        db_pool.clone(),
-        redis_pool.clone(),
-        yaml_analysis_queue.clone(),
-    );
+    let bases = bases_from_env()
+        .expect("invalid AP_BASES")
+        .unwrap_or_else(|| vec![Version::new(0, 6, 7)]);
+
+    for base in bases {
+        start_unanalyzed_yaml_poller(
+            db_pool.clone(),
+            redis_pool.clone(),
+            yaml_analysis_queue.clone(),
+            base,
+        );
+    }
 
     rocket::build()
         .mount(
@@ -1406,4 +1384,29 @@ async fn main() -> crate::error::Result<()> {
         .unwrap();
 
     Ok(())
+}
+
+/// Parses `AP_BASES` from the environment and returns the enabled versions in the order
+/// they were listed. Returns `None` if the variable isn't set or is empty.
+pub fn bases_from_env() -> crate::error::Result<Option<Vec<Version>>> {
+    let value = match std::env::var("AP_BASES") {
+        Ok(v) => v,
+        _ => return Ok(None),
+    };
+
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let mut versions = Vec::new();
+    for part in trimmed.split(',').map(str::trim) {
+        let version = Version::parse(part)
+            .with_context(|| format!("AP_BASES: {part:?} isn't an Archipelago version"))?;
+        if !versions.contains(&version) {
+            versions.push(version);
+        }
+    }
+
+    Ok(Some(versions))
 }
