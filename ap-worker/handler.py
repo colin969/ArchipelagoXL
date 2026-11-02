@@ -15,7 +15,9 @@ ap_path = os.path.abspath(os.path.dirname(sys.argv[0]))
 sys.path.insert(0, ap_path)
 
 # Register a custom finder to allow dynamic apworld loading
-# This is needed because upstream's APWorldModuleFinder doesn't expose its spec dict
+# This is needed because upstream's APWorldModuleFinder doesn't expose its spec dict before
+# Archipelago 0.6.8, and this harness serves older versions too. From 0.6.8 on both finders are
+# installed and each one returns None for the names it doesn't hold.
 _dynamic_apworld_specs = {}
 
 class _DynamicAPWorldFinder(importlib.abc.MetaPathFinder):
@@ -50,10 +52,11 @@ class ApHandler:
         self.apworlds_dir = apworlds_dir
         self.custom_apworlds_dir = custom_apworlds_dir
         self.refresh_netdata_package()
-        self.tempdir = tempfile.mkdtemp()
-
-    def __del__(self):
-        shutil.rmtree(self.tempdir)
+        # Removed with the handler, and at the latest when the interpreter exits. A `__del__`
+        # that removed it by hand ran after `shutil` was torn down at exit, and ended every
+        # run with a traceback.
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.tempdir = self._tempdir.name
 
     def check_apworld_directory_name(self, apworld_path, apworld_name):
         with zipfile.ZipFile(apworld_path, "r") as zf:

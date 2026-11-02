@@ -15,7 +15,7 @@
 
 {% match self.room_id %}
 {% when Some with (room_id) %}
-<form method="POST" action="{{ ty.as_route_base() }}/{{room_id}}" id="room-form">
+<form method="POST" action="{{ ty.as_route_base() }}/{{room_id}}{{ action_query }}" id="room-form">
 {% when None %}
 <form method="POST" id="room-form">
 {% endmatch %}
@@ -24,6 +24,24 @@
         {% include "shared/room_form_tpl_section.html" %}
         {% endif %}
         <div class="options-tab" id="section-room-options">
+            {% if let Some(base_select) = self.base_select %}
+                {# A room or a template that is being made chooses its version here. It is
+                   not a field of this form: see `BaseSelect`. Choosing loads the form again
+                   and drops what was typed into it, so it comes before everything else. A
+                   room that exists is moved from a tab of its own, further down. #}
+                {% if base_select.switch_url.is_none() %}
+                <label for="ap_version">Archipelago version:</label>
+                <div class="base-select-row">
+                    <select {{ ro }} id="ap_version" data-base-select>
+                        {% for option in base_select.options %}
+                        <option value="{{ option.value }}" {%+ if option.selected %}selected{% endif %}>{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                    <span class="base-select-hint">Choose it first: it loads this form again, with the worlds of that version in the Apworlds tab.</span>
+                </div>
+                {% endif %}
+            {% endif %}
+
             <label for="room_name">Room name:</label>
             <input {{ro}} type="text" name="room.room_name" id="room_name" value="{{self.room.name}}" minlength="1" required>
 
@@ -115,11 +133,49 @@
         </div>
         <input {{ ro }} type="hidden" name="room.tz_offset" id="tz_offset">
 
+        {% if let Some(base_select) = self.base_select %}
+            {% if base_select.switch_url.is_some() %}
+            {# Moving a room that exists to another Archipelago version. Its selector and its
+               button belong to the form `base-form`, below, and not to the form around them.
+               `data-own-action` hides the form's own button while this tab is shown, so that
+               the one button here is the only thing to press. #}
+            <div class="options-tab" id="section-ap-version" data-own-action>
+                <p>
+                    This room is on
+                    <strong>{% for option in base_select.options %}{% if option.selected %}{{ option.label }}{% endif %}{% endfor %}</strong>.
+                </p>
+                {% if let Some(reason) = base_select.locked %}
+                    <p class="message info">It can't move to another version. {{+ reason }}</p>
+                {% else %}
+                    <p>
+                        Moving it to another version validates every YAML of the room again, with
+                        that version. You are shown what the move does before anything happens.
+                    </p>
+                    <p>
+                        This is not saved with the rest of the room: changes on the other tabs
+                        that you haven't saved are lost when you change the version.
+                    </p>
+                    <label for="ap_version">Move the room to:</label>
+                    <div class="base-select-row">
+                        <select {{ ro }} id="ap_version" name="to" form="base-form">
+                            {% for option in base_select.options %}
+                            {% if !option.selected %}
+                            <option value="{{ option.value }}">{{ option.label }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
+                        <button {{ ro }} type="submit" form="base-form">Change version</button>
+                    </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        {% endif %}
+
     </div>
 
     {% if !self.read_only %}
-        <hr>
         <div id="save-button">
+        <hr>
         {% if self.room_id.is_some() %}
             <button>Save {{+ self.ty }}</button>
         {% else %}
@@ -129,9 +185,17 @@
     {% endif %}
 </form>
 
+{% if let Some(base_select) = self.base_select %}
+    {% if let Some(switch_url) = base_select.switch_url %}
+    {# What the selector and the button of the "Archipelago version" tab belong to #}
+    <form method="POST" action="{{ switch_url }}" id="base-form"></form>
+    {% endif %}
+{% endif %}
+
 {% block scripts %}
     <script src="/static/js/room.js?{{ base.js_version}}"></script>
     <script src="/static/js/room_editor.js?{{ base.js_version}}"></script>
+    <script src="/static/js/base_select.js?{{ base.js_version}}"></script>
     <script>
         const closeDateEl = document.getElementById("close_date");
         closeDateEl.addEventListener("change", () => {
@@ -141,6 +205,17 @@
         const closeDate = new Date("{{self.room.close_date}}Z");
         refreshTimezoneOffset(closeDate);
         closeDateEl.value = dateToISOLikeButLocal(closeDate);
+
+        {% if self.ty.is_room() %}
+        // The lobby refuses a submission limit further ahead than this, so the picker stops
+        // there. A room from before there was a limit can be past it, and stays savable for
+        // as long as its limit isn't moved: that one gets no maximum here, or the browser
+        // would refuse the whole form.
+        const latestCloseDate = new Date(Date.now() + {{ crate::views::room_settings::MAX_DAYS_UNTIL_CLOSE }} * 24 * 60 * 60 * 1000);
+        if (closeDate <= latestCloseDate) {
+            closeDateEl.max = dateToISOLikeButLocal(latestCloseDate).slice(0, 16);
+        }
+        {% endif %}
 
         const form = document.getElementById("room-form");
         const messages = document.getElementById("messages");

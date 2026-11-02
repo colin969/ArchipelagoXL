@@ -16,13 +16,16 @@ use rocket::http::Header;
 use rocket::routes;
 use rocket::State;
 use semver::Version;
+use std::collections::BTreeMap;
 
-use crate::error::Result;
+use crate::error::{RedirectTo, Result};
 use crate::index_manager::IndexManager;
 use crate::session::{AdminSession, LoggedInSession};
 use crate::utils::{RenamedFile, ZipFile};
 use crate::views::filters;
-use crate::{Context, TplContext, LobbyConfig};
+use crate::views::options_gen::{base_query, requested_base, selectable_bases};
+use crate::views::utils::BaseOption;
+use crate::{Context, LobbyConfig, TplContext};
 
 #[derive(Template, WebTemplate)]
 #[template(path = "apworld/main.html")]
@@ -30,38 +33,64 @@ struct WorldsListTpl<'a> {
     base: TplContext<'a>,
     index: Index,
     apworlds: Vec<(String, (World, Version))>,
+    // The Archipelago versions to choose from, when there is more than one
+    base_options: Vec<BaseOption>,
+    // Ends the links that are about the version the page shows
+    base_query: String,
 }
 
-#[rocket::get("/worlds")]
+#[rocket::get("/worlds?<base>")]
 #[tracing::instrument(skip_all)]
 async fn list_worlds<'a>(
+    base: Option<&str>,
     index_manager: &'a State<IndexManager>,
     session: Session,
     ctx: &State<Context>,
     lobby_config: &State<LobbyConfig>,
+    redirect_to: &RedirectTo,
 ) -> Result<WorldsListTpl<'a>> {
-    let index = index_manager.index.read().await.clone();
+    // Only `base` can be wrong here, and the page without it always works
+    redirect_to.set("/worlds");
+    let base = requested_base(index_manager, base).await?;
+    let index = index_manager.index_for(&base).await?.clone();
+    let base_options = selectable_bases(index_manager, &base).await;
+    let base_query = base_query(index_manager, &base).await;
     let manifest = Manifest::from_index_with_default_versions(&index)?;
     let (apworlds, _) = manifest.resolve_with(&index);
     let mut apworlds = Vec::from_iter(apworlds);
     apworlds.sort_by_key(|(_, (world, _))| world.display_name.to_lowercase());
 
     Ok(WorldsListTpl {
-        base: TplContext::from_session("apworlds", session, ctx, lobby_config, Some("Apworlds".to_string())).await,
+        base: TplContext::from_session(
+            "apworlds",
+            session,
+            ctx,
+            lobby_config,
+            Some("Apworlds".to_string()),
+        )
+        .await,
         index,
         apworlds,
+        base_options,
+        base_query,
     })
 }
 
-#[rocket::get("/worlds/download_all")]
+#[rocket::get("/worlds/download_all?<base>")]
 #[tracing::instrument(skip_all)]
-async fn download_all(
-    index_manager: &State<IndexManager>,
+async fn download_all<'a>(
+    base: Option<&str>,
+    index_manager: &'a State<IndexManager>,
     _session: LoggedInSession,
-) -> Result<ZipFile<'_>> {
-    let index = index_manager.index.read().await.clone();
-    let manifest = Manifest::from_index_with_default_versions(&index)?;
-    Ok(index_manager.download_apworlds(&manifest).await?)
+    redirect_to: &RedirectTo,
+) -> Result<ZipFile<'a>> {
+    redirect_to.set("/worlds");
+    let base = requested_base(index_manager, base).await?;
+    let manifest = {
+        let index = index_manager.index_for(&base).await?;
+        Manifest::from_index_with_default_versions(&index)?
+    };
+    Ok(index_manager.download_apworlds(&base, &manifest).await?)
 }
 
 #[rocket::get("/worlds/download/<world_name>/<version>")]
@@ -72,7 +101,9 @@ async fn download_world<'a>(
     world_name: &str,
     _session: LoggedInSession,
 ) -> Result<RenamedFile<'a>> {
-    let index = index_manager.index.read().await;
+    // A release is one file whichever Archipelago version it is for, so any release that any
+    // of them has can be downloaded here.
+    let index = index_manager.all_releases().await;
 
     let world = index
         .worlds
@@ -110,9 +141,13 @@ async fn refresh_worlds(
     yaml_validation_queue: &State<YamlValidationQueue>,
     ctx: &State<Context>,
     _session: AdminSession,
-) -> Result<String> {
-    let old_index = index_manager.index.read().await.clone();
+) -> Result<()> {
+    let old_index = index_manager.snapshot().await;
     index_manager.update().await?;
+    // The other lobby processes load the same commit when they hear of it. The rooms are
+    // looked at once, here: what is found goes to the database and the queues, which they
+    // all share. A failure to announce is only reported once that is done.
+    let announced = index_manager.announce().await;
 
     let mut conn = ctx.db_pool.get().await?;
 
@@ -124,7 +159,21 @@ async fn refresh_worlds(
     .await?;
 
     for room in &open_rooms {
-        let (old_resolved, _) = room.settings.manifest.resolve_with(&old_index);
+        if index_manager.index_for(&room.ap_version).await.is_err() {
+            tracing::warn!(
+                room_id = %room.id,
+                "The index no longer describes Archipelago {}, leaving the room's YAMLs as they are",
+                room.ap_version
+            );
+            continue;
+        }
+
+        // What changed for a room is what changed in the view of its Archipelago version. A
+        // version the index didn't describe before had nothing, so everything is new to it.
+        let old_resolved = match old_index.get(&room.ap_version) {
+            Some(old_view) => room.settings.manifest.resolve_with(old_view).0,
+            None => BTreeMap::new(),
+        };
         revalidate_yamls_if_necessary(
             room,
             &old_resolved,
@@ -135,7 +184,10 @@ async fn refresh_worlds(
         .await?;
     }
 
-    Ok("Refreshed worlds".to_string())
+    announced
+        .context("The index was refreshed here, but the other lobby processes weren't told")?;
+
+    Ok(())
 }
 
 pub fn routes() -> Vec<rocket::Route> {

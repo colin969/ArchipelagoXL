@@ -6,7 +6,7 @@ use diesel_async::{AsyncPgConnection, RunQueryDsl};
 use crate::error::Result;
 use crate::schema::rooms;
 use crate::{
-    db::{Json, Paginate, Room, RoomTemplate, RoomTemplateId},
+    db::{ApVersion, Json, Paginate, Room, RoomTemplate, RoomTemplateId},
     schema::room_templates,
 };
 
@@ -31,6 +31,9 @@ pub struct NewRoomTemplate<'a> {
     pub meta_file: String,
     pub is_bundle_room: bool,
     pub locked: bool,
+    /// `Some(None)` is a template that names no Archipelago version. `None` leaves the column
+    /// as it is.
+    pub ap_version: Option<Option<ApVersion>>,
 }
 
 #[tracing::instrument(skip(conn))]

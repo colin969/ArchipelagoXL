@@ -4,6 +4,7 @@ import sentry_sdk
 import aiohttp
 import asyncio
 import enum
+import signal
 import sys
 from multiprocessing import Process, Pipe
 
@@ -28,8 +29,12 @@ class JobCancelledException(Exception):
     """Raised when a job has been cancelled"""
     pass
 
+class WrongBaseException(Exception):
+    """Raised when a job is meant for another Archipelago base than the one this worker runs"""
+    pass
+
 class LobbyQueue:
-    def __init__(self, root_url, queue_name, worker_id, token, loop):
+    def __init__(self, root_url, queue_name, worker_id, token, loop, ap_version):
         if "SENTRY_DSN" in os.environ:
             try:
                 with open("version") as fd:
@@ -47,6 +52,7 @@ class LobbyQueue:
 
         self.queue_name = queue_name
         self.worker_id = worker_id
+        self.ap_version = ap_version
         self.client = aiohttp.ClientSession(root_url)
         self.token = token
         self.loop = loop
@@ -80,12 +86,23 @@ class LobbyQueue:
             del kwargs['otlp_context']
 
         kwargs['headers']['X-Worker-Auth'] = self.token
+        # Each Archipelago base has its own partition of the queue. A lobby that doesn't know
+        # about partitions ignores the field.
+        kwargs['json'] = {**kwargs['json'], "partition": self.ap_version}
         return self.client.post(route, *args, **kwargs)
 
     async def close(self):
         await self.client.close()
 
     async def run(self):
+        # Stop on SIGTERM the way Ctrl-C does. In a container the worker is the first process,
+        # and the kernel only gives that one the signals it asked for: without this a worker
+        # that was told to stop went on until the grace period ran out and it was killed.
+        signal.signal(signal.SIGTERM, signal.default_int_handler)
+
+        print(f"Serving {self.queue_name} jobs for Archipelago {self.ap_version}")
+        sys.stdout.flush()
+
         while True:
             try:
                 job = await self.claim_job()
@@ -100,6 +117,7 @@ class LobbyQueue:
             try:
                 if job is not None:
                     print(f"Claimed job: {job.job_id}")
+                    job.check_base(self.ap_version)
                     await self._handle_job(job)
                 continue
             except Exception as e:
@@ -228,6 +246,12 @@ class Job:
         self.job_id = job_id
         self.params = params
         self.ctx = TraceContextTextMapPropagator().extract(carrier=params['otlp_context'])
+
+    def check_base(self, ap_version):
+        # Jobs from a lobby that doesn't know about bases carry no `ap_version`
+        wanted = self.params.get("ap_version")
+        if wanted is not None and wanted != ap_version:
+            raise WrongBaseException(f"Job {self.job_id} is for Archipelago {wanted} but this worker runs {ap_version}")
 
     async def resolve(self, status, result):
         should_fallback = False

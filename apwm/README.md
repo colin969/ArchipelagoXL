@@ -85,3 +85,172 @@ Additionally, `default_version` can also be:
  - `"latest"`: Uses the latest version.
  - `"latest_supported"`: Uses the latest supported version. Only valid for supported worlds.
  - `"disabled"`: Disables the world by default.
+
+## The `apwm` tool
+
+Built with the `cli` feature. Every subcommand takes the directory holding `index.toml` as `-i`.
+
+| Subcommand | What it does |
+|---|---|
+| `update -i <index>` | Downloads what `index.lock` doesn't know yet and rewrites the lock. Covers the releases of every base. |
+| `download -i <index> -d <dir>` | Downloads every release of every base, or one with `-p <apworld>:<version>`, or the added ones of a `changes.json` with `--from-changes`. |
+| `changes -i <index> -f <git remote> [-r <ref>] -o <dir>` | Compares the index with the one at that remote and writes `changes.json` and the added apworlds. |
+| `install -i <index> -a <apworlds dir> -d <dir> [--base <version>]` | Copies the latest release of each world for a base, the legacy one by default. |
+| `lint -i <index>` | Reports what would break the lobbies reading this index. Exits with 1 on any error. |
+
+### Downloads
+
+A download that fails in a way that may pass is tried again, up to 3 more times: after 2
+seconds, then 4, then 8. That covers a request that didn't get through, a 5xx answer and a body
+that stopped short. Anything else, such as a 404 or a checksum that doesn't match, fails at
+once. The numbers are constants in `src/index/world.rs`; with more retries the wait keeps
+doubling up to 16 seconds. The lobby downloads through the same code.
+
+A release that still can't be downloaded is logged as skipped and left out, and the command
+goes on and exits with 0. For `update` that means a lock without that release's checksum, with
+nothing but the log to say why.
+
+### `changes.json`
+
+For each world that changed, `added_versions` and `removed_versions` list the versions that
+became available, or stopped being available, on at least one base. `added_on` and
+`removed_from` say on which bases, per version. `checksums` holds the hash of each added
+version, or `"supported"` for a core world.
+
+`bases` lists the bases of the index, and `added_bases` the ones it didn't declare before.
+Declaring a base changes no world by itself: the previous index is compared as if it had always
+had that base, so only real differences show up, such as a world entering core on it.
+
+The index's CI reads this file to decide what to test. It runs its apworld jobs once per base,
+and the run for a base takes the versions whose `added_on` lists that base. To link an added
+version to its download, it tells a core world from a custom one by the `"supported"` checksum,
+not by the world's top-level `supported` flag, which only describes the legacy base.
+
+### `lint`
+
+The index's CI runs this on every pull request, as its `apwm-lint` job, and an error fails the
+pull request. It is the only check of the index files' shape there: the script that used to
+look for a misspelled `[version]` table and for a world with no versions is gone, since both are
+errors here.
+
+An index that doesn't parse is reported as such. On one that does, the errors are:
+
+- a `[versions]` entry with more than one key, or with a key other than `url` or `local`;
+- a release in `[versions]` that `[releases]` says can't run on the legacy base;
+- a world with nothing in `[versions]` that is neither `supported` nor `disabled` at the top
+  level;
+- a release whose `min_ap_version` is above its `max_ap_version`;
+- a default version that a base doesn't have, or `latest_supported` on a world that isn't
+  supported on a base;
+- a key that isn't known, in `index.toml`, in a world, in a `[releases]` entry or in a `[base]`
+  table. Unknown keys are ignored when parsing, so a misspelled constraint would otherwise mean
+  "every base".
+
+And the warnings: a `[versions]` entry that isn't a table, a release that the legacy base could
+run but that is only in `[releases]`, a `[releases]` entry that changes nothing, a `[base]` table
+that matches no declared base, and a `[bases]` table that leaves out the legacy base.
+
+It can't tell whether a release really runs on the bases it claims, or whether a world marked
+`supported` is in fact a core world of the legacy base. Those need the release to be loaded on
+each base, which is what the index's CI does: when an added release passes on one base and
+fails on another, its comment on the pull request names the `min_ap_version` or
+`max_ap_version` that would fit. Nothing yet compares a release's own `archipelago.json` with
+the constraints the index gives it.
+
+## Several Archipelago versions
+
+An index can describe more than one Archipelago version at once. Each one is called a base, and
+every base gets its own view of the index: its own list of worlds, and for each world its own
+list of releases. `IndexSet` parses the index and holds one `Index` per base.
+
+Everything in this section is ignored by lobbies from before this was supported. They keep
+reading `archipelago_version` and `[versions]` and nothing else, so those two describe the
+oldest base, the legacy base, and have to stay correct for it.
+
+The index's CI holds that line. Its `legacy-index` jobs run `legacy-index-guard`, a small program
+in the `Archipelago-index-ci` repository built against this crate as it was at commit `029bde7`,
+the last one before multi-base support. It reads the index the way those lobbies do and fails if
+they would not get a working view of the legacy base. That commit is pinned on purpose and must
+never follow this crate.
+
+### Declaring bases
+
+```toml
+archipelago_repo = "https://github.com/ArchipelagoMW/Archipelago.git"
+archipelago_version = "0.6.7"
+index_homepage = "https://github.com/ionium-ap/Archipelago-index"
+index_dir = "index"
+
+[bases."0.6.7"]
+[bases."0.6.8"]
+```
+
+`archipelago_version` is the legacy base. It is always a base, listed or not, and an index
+without a `[bases]` table has only that one.
+
+### Releases that depend on the base
+
+A release in `[versions]` is available on every base. To restrict one, or to add one that the
+legacy base can't run, use `[releases]`:
+
+```toml
+name = "Pokemon Crystal"
+home = "https://discord.com/channels/731205301247803413/1365127145709502575"
+default_url = "https://github.com/gerbiljames/Archipelago/releases/download/{{version}}/pokemon_crystal.apworld"
+
+[versions]
+"5.4.6" = {}
+"6.0.0" = {}
+
+[releases]
+"5.4.6" = { max_ap_version = "0.6.7" }
+"7.0.0" = { min_ap_version = "0.6.8" }
+"7.0.1" = { min_ap_version = "0.6.8", url = "https://github.com/gerbiljames/Archipelago/releases/download/7.0.1-hotfix/pokemon_crystal.apworld" }
+```
+
+The constraints, and the releases in `[releases]`, are made up for the example.
+
+- `min_ap_version` and `max_ap_version` are both inclusive and both optional.
+- A release can be in both tables. `[versions]` keeps it visible to older lobbies, `[releases]`
+  says which bases can run it. Here 5.4.6 is offered on 0.6.7 only.
+- A release that's only in `[releases]` takes `url` or `local` there, or uses `default_url`.
+- A release that needs a base newer than the legacy one must not be in `[versions]`: older
+  lobbies would pick it as the latest.
+- A `[versions]` entry must keep a single key. Older lobbies silently drop its `url` if it has a
+  second one, which is why the constraints live in their own table.
+
+### Worlds that depend on the base
+
+The top-level `supported`, `disabled` and `default_version` of a world describe the legacy base.
+A `[base."<requirement>"]` table overrides any of the three for the bases matching its semver
+requirement:
+
+```toml
+# A custom world that became a core world in 0.6.8
+name = "Gauntlet Legends"
+default_url = "https://example.com/gl-{{version}}/gl.apworld"
+
+[versions]
+"2.1.7" = {}
+
+[releases]
+"2.1.7" = { max_ap_version = "0.6.7" }
+
+[base.">=0.6.8"]
+supported = true
+default_version = "latest_supported"
+```
+
+At most one `[base]` table of a world may match a given base.
+
+A `[base]` table overrides only the keys it names; the others keep their top-level value. That
+matters for a world that left core. Donkey Kong Country 3 is a core world of 0.6.7 and not of
+0.6.8, and is `supported = true` and `disabled = true` at the top level. A table that only says
+`disabled = false` for 0.6.8 would offer it there as a core world, which it isn't: the table
+needs `supported = false` as well. `lint` can't catch that, since it doesn't know which worlds a
+base ships.
+
+A world isn't part of a base's view when it's disabled there or when none of its releases can run
+there. Older lobbies only know the first of those two: a world they must not offer has to be
+`disabled = true` at the top level, and enabled again with `[base."<requirement>"]` for the bases
+that have it.

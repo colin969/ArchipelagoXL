@@ -25,11 +25,15 @@ async fn my_rooms<'a>(
     page: Option<u64>,
     lobby_config: &State<LobbyConfig>,
 ) -> Result<ListRoomsTpl<'a>> {
-    let author_filter = if session.0.is_admin {
+    let is_admin = session.0.is_admin;
+    let author_filter = if is_admin {
         Author::Any
     } else {
         Author::User(session.user_id())
     };
+
+    // One route, two audiences: admins get every room, everyone else only their own.
+    let page_title = if is_admin { "All Rooms" } else { "My Rooms" };
 
     let mut conn = ctx.db_pool.get().await?;
     let current_page = page.unwrap_or(1);
@@ -42,7 +46,14 @@ async fn my_rooms<'a>(
     .await?;
 
     Ok(ListRoomsTpl {
-        base: TplContext::from_session("rooms", session.0, ctx, lobby_config, Some("All Rooms".to_string())).await,
+        base: TplContext::from_session(
+            "rooms",
+            session.0,
+            ctx,
+            lobby_config,
+            Some(page_title.to_string()),
+        )
+        .await,
         rooms,
         current_page,
         max_pages,
