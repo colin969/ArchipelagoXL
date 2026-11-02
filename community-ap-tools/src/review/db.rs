@@ -1,5 +1,6 @@
-use diesel::{prelude::*};
+use diesel::{prelude::*, sql_types::Text};
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
+use semver::Version;
 use serde::{Deserialize, Serialize, Serializer};
 use uuid::Uuid;
 
@@ -696,19 +697,6 @@ pub async fn get_user_role_for_preset(
     Ok(roles.into_iter().filter_map(|r| r.parse().ok()).max())
 }
 
-pub async fn is_user_in_any_team(
-    user_id: i64,
-    conn: &mut AsyncPgConnection,
-) -> anyhow::Result<bool> {
-    use diesel::dsl::exists;
-    let result: bool = diesel::select(exists(
-        team_members::table.filter(team_members::user_id.eq(user_id)),
-    ))
-    .get_result(conn)
-    .await?;
-    Ok(result)
-}
-
 pub async fn list_presets_for_user(
     user_id: i64,
     is_super_admin: bool,
@@ -806,6 +794,26 @@ pub async fn get_room_analysis_statuses(
         .await?)
 }
 
+#[derive(QueryableByName)]
+struct RoomApVersionRow {
+    #[diesel(sql_type = Text)]
+    ap_version: String,
+}
+
+pub async fn get_room_ap_version(
+    room_id: Uuid,
+    conn: &mut AsyncPgConnection,
+) -> anyhow::Result<Option<Version>> {
+    let row = diesel::sql_query("SELECT ap_version FROM rooms WHERE id = $1")
+        .bind::<diesel::sql_types::Uuid, _>(room_id)
+        .get_result::<RoomApVersionRow>(conn)
+        .await
+        .optional()?
+        .map(|r| r.ap_version);
+
+    Ok(row.and_then(|v| Version::parse(&v).ok()))
+}
+
 pub async fn reset_yaml_analysis_status(
     room_id: Uuid,
     yaml_id: Uuid,
@@ -833,6 +841,7 @@ pub struct UnanalyzedYamlRow {
 
 pub async fn get_unanalyzed_yamls(
     conn: &mut AsyncPgConnection,
+    base: &Version,
 ) -> anyhow::Result<Vec<UnanalyzedYamlRow>> {
     Ok(diesel::sql_query(
         "SELECT DISTINCT ON (y.room_id, y.id)
@@ -841,14 +850,18 @@ pub async fn get_unanalyzed_yamls(
             array_to_json(y.apworlds)::text AS apworlds_json
          FROM yamls y
          INNER JOIN team_rooms tr ON tr.room_id = y.room_id
+         INNER JOIN rooms r ON r.id = y.room_id
          LEFT JOIN yaml_analysis_status yas
            ON yas.yaml_id = y.id
           AND yas.room_id = y.room_id
-         WHERE yas.yaml_id IS NULL",
+         WHERE yas.yaml_id IS NULL
+           AND r.ap_version = $1",
     )
+    .bind::<Text, _>(base.to_string())
     .load(conn)
     .await?)
 }
+
 
 pub async fn get_yaml_apworlds(
     yaml_id: Uuid,

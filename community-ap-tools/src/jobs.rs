@@ -20,6 +20,8 @@ pub struct YamlAnalysisParams {
     pub yaml_id: String,
     pub apworlds: Vec<(String, Version)>,
     pub otlp_context: HashMap<String, String>,
+    #[serde(default)]
+    pub ap_version: Option<Version>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -166,6 +168,7 @@ pub fn get_yaml_analysis_callback(
 pub async fn priority_queue_yaml(
     room_id: Uuid,
     yaml_id: Uuid,
+    ap_version: &Version,
     queue: &YamlAnalysisQueue,
     db_pool: &Pool<AsyncPgConnection>,
     redis_pool: &deadpool_redis::Pool,
@@ -212,10 +215,16 @@ pub async fn priority_queue_yaml(
         yaml_id: yaml_id.to_string(),
         apworlds,
         otlp_context: HashMap::new(),
+        ap_version: Some(ap_version.clone()),
     };
 
     match queue
-        .enqueue_job(&params, wq::Priority::High, Duration::from_secs(1800))
+        .enqueue_job_in(
+            Some(&ap_version.to_string()), 
+            &params, 
+            wq::Priority::High, 
+            Duration::from_secs(1800),
+        )
         .await
     {
         Ok(job_id) => {
@@ -237,6 +246,7 @@ pub fn start_unanalyzed_yaml_poller(
     db_pool: Pool<AsyncPgConnection>,
     redis_pool: deadpool_redis::Pool,
     queue: YamlAnalysisQueue,
+    ap_version: Version,
 ) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
@@ -263,7 +273,7 @@ pub fn start_unanalyzed_yaml_poller(
                 }
             };
 
-            let rows: Vec<db::UnanalyzedYamlRow> = match db::get_unanalyzed_yamls(&mut conn).await {
+            let rows: Vec<db::UnanalyzedYamlRow> = match db::get_unanalyzed_yamls(&mut conn, &ap_version).await {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!(
@@ -327,10 +337,16 @@ pub fn start_unanalyzed_yaml_poller(
                     yaml_id: row.yaml_id.to_string(),
                     apworlds,
                     otlp_context: HashMap::new(),
+                    ap_version: Some(ap_version.clone()),
                 };
 
                 match queue
-                    .enqueue_job(&params, wq::Priority::Normal, Duration::from_secs(1800))
+                    .enqueue_job_in(
+                        Some(&ap_version.to_string()),
+                        &params, 
+                        wq::Priority::Normal, 
+                        Duration::from_secs(1800),
+                    )
                     .await
                 {
                     Ok(job_id) => {
