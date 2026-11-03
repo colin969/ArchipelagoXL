@@ -10,8 +10,23 @@
     <div class="section">
         <h2>Create New Preset</h2>
         <form onsubmit="createPreset(event)">
-            <input type="text" id="new-preset-name" placeholder="Preset name" required size="30">
-            <button type="submit" class="primary">Create</button>
+            <div class="field-group">
+                <div class="field">
+                    <span>Preset name</span>
+                    <input type="text" id="new-preset-name" placeholder="Preset name" required size="30">
+                </div>
+                <div class="field">
+                    <span>Archipelago version</span>
+                    <select id="new-preset-ap-version">
+                        {% for version in available_ap_versions %}
+                        <option value="{{ version }}" {% if version == &default_ap_version %}selected{% endif %}>{{ version }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="field field-end">
+                    <button type="submit" class="primary">Create</button>
+                </div>
+            </div>
         </form>
     </div>
     {% endif %}
@@ -56,10 +71,11 @@ async function createPreset(e) {
     e.preventDefault();
     const name = document.getElementById("new-preset-name").value.trim();
     if (!name) return;
+    const ap_version = document.getElementById("new-preset-ap-version").value;
     const resp = await fetch("/api/presets", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ name, builtin_rules: [] }),
+        body: JSON.stringify({ name, builtin_rules: [], ap_version }),
     });
     if (!resp.ok) { showToast("Failed to create preset: " + await resp.text()); return; }
     const preset = await resp.json();

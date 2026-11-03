@@ -326,6 +326,9 @@ services:
       ROCKET_SECRET_KEY: "changemechangemechangemechangemechangeme1234"
       ROCKET_PORT: "8010"
       ROCKET_ADDRESS: "0.0.0.0"
+      # Should match lobby
+      AP_BASES: "0.6.8,0.6.7"
+      AP_DEFAULT_BASE: "0.6.8"
     user: "${USER_ID}:${GID}"
     volumes:
       - .:/builds/worker/checkout

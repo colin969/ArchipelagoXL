@@ -1270,6 +1270,8 @@ pub struct Config {
     pub apx_ws_root: String,
     pub static_version: i64,
     pub api_key: String,
+    pub ap_versions: Vec<Version>,
+    pub default_ap_version: Version,
 }
 
 pub struct TrackerInfoCache(
@@ -1309,6 +1311,30 @@ async fn main() -> crate::error::Result<()> {
     let apx_api_key = std::env::var("APX_API_KEY").ok();
     let apx_ws_root = std::env::var("APX_WS_ROOT").expect("Provide an APX_WS_ROOT env variable");
 
+    let mut ap_versions: Vec<Version> = std::env::var("AP_BASES")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| Version::parse(s).unwrap_or_else(|_| panic!("Invalid semver in AP_BASES: {s:?}")))
+        .collect();
+
+    // Feels weird, but it behaves like lobby I guess
+    if ap_versions.is_empty() {
+        ap_versions.push(Version::new(0, 6, 7));
+    }
+
+    let default_ap_version = if let Ok(base) = std::env::var("AP_DEFAULT_BASE") {
+        let v =
+            Version::parse(&base).unwrap_or_else(|_| panic!("Invalid semver in AP_DEFAULT_BASE: {base:?}"));
+        if !ap_versions.contains(&v) {
+            panic!("AP_DEFAULT_BASE {base:?} is not listed in AP_BASES");
+        }
+        v
+    } else {
+        ap_versions.last().unwrap().clone()
+    };
+
     let db_url = std::env::var("DATABASE_URL").expect("Provide a `DATABASE_URL` env variable");
     let db_pool = common::db::get_database_pool(&db_url, MIGRATIONS).await?;
 
@@ -1329,6 +1355,8 @@ async fn main() -> crate::error::Result<()> {
         apx_ws_root,
         static_version,
         api_key,
+        ap_versions,
+        default_ap_version,
     };
 
     let redis_cfg = deadpool_redis::Config::from_url(&valkey_url);
