@@ -3,14 +3,15 @@ use chrono::Utc;
 use diesel_async::AsyncPgConnection;
 use diesel_async::pooled_connection::deadpool::Pool as DieselPool;
 use rocket::{State, routes, serde::json::Json};
+use semver::Version;
 use serde::Deserialize;
 
-use crate::JsonDownload;
 use crate::auth::{AdminSession, LoggedInSession};
 use crate::review::Role;
 use crate::review::builtin;
 use crate::review::db::{self, NewPreset, NewPresetRule, UpdatePreset, UpdatePresetRule};
 use crate::review::rules::Rule;
+use crate::{Config, JsonDownload};
 
 #[rocket::get("/presets")]
 async fn list_presets(
@@ -41,9 +42,19 @@ async fn get_preset(
 async fn create_preset(
     _session: AdminSession,
     body: Json<NewPreset>,
+    config: &State<Config>,
     pool: &State<DieselPool<AsyncPgConnection>>,
 ) -> crate::error::Result<Json<db::ReviewPreset>> {
     let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+
+    let parsed = Version::parse(&body.ap_version)
+        .map_err(|_| crate::error::bad_request("Invalid semver for ap_version"))?;
+    if !config.ap_versions.contains(&parsed) {
+        return Err(crate::error::bad_request(
+            "ap_version is not in the list of supported versions",
+        ));
+    }
+
     let preset = db::create_preset(body.into_inner(), &mut conn).await?;
     Ok(Json(preset))
 }
@@ -53,9 +64,21 @@ async fn update_preset(
     _session: AdminSession,
     id: i32,
     body: Json<UpdatePreset>,
+    config: &State<Config>,
     pool: &State<DieselPool<AsyncPgConnection>>,
 ) -> crate::error::Result<Json<db::ReviewPreset>> {
     let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+
+    if let Some(ref ap_version) = body.ap_version {
+        let parsed = Version::parse(ap_version)
+            .map_err(|_| crate::error::bad_request("Invalid semver for ap_version"))?;
+        if !config.ap_versions.contains(&parsed) {
+            return Err(crate::error::bad_request(
+                "ap_version is not in the list of supported versions",
+            ));
+        }
+    }
+
     let preset = db::update_preset(id, body.into_inner(), &mut conn).await?;
     Ok(Json(preset))
 }

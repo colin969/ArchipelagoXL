@@ -164,18 +164,31 @@ async fn room_redirect(room_id: &str) -> Redirect {
 pub struct PresetsListTpl {
     base: OrgTplContext,
     presets: Vec<db::PresetSummary>,
+    available_ap_versions: Vec<String>,
+    default_ap_version: String,
 }
 
 #[rocket::get("/presets")]
 async fn presets_list(
     session: LoggedInSession,
+    config: &State<Config>,
     pool: &State<DieselPool<AsyncPgConnection>>,
 ) -> crate::error::Result<PresetsListTpl> {
     let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
     let presets =
         db::list_presets_for_user(session.user_id(), session.is_super_admin(), &mut conn).await?;
     let base = OrgTplContext::new(&session, "presets", pool).await?;
-    Ok(PresetsListTpl { base, presets })
+
+    let available_ap_versions: Vec<String> =
+        config.ap_versions.iter().map(|v| v.to_string()).collect();
+    let default_ap_version = config.default_ap_version.to_string();
+
+    Ok(PresetsListTpl {
+        base,
+        presets,
+        available_ap_versions,
+        default_ap_version,
+    })
 }
 
 // -- Preset edit page --
@@ -186,6 +199,7 @@ struct PresetForTemplate {
     name: String,
     rules: String,
     builtin_rules: String,
+    ap_version: String,
 }
 
 #[derive(Serialize)]
@@ -204,6 +218,7 @@ pub struct PresetEditTpl {
     preset: PresetForTemplate,
     back_url: Option<String>,
     can_edit_rules: bool,
+    available_ap_versions: Vec<String>,
 }
 
 #[rocket::get("/presets/<id>?<from_room>")]
@@ -211,6 +226,7 @@ async fn preset_edit(
     session: LoggedInSession,
     id: i32,
     from_room: Option<String>,
+    config: &State<Config>,
     pool: &State<DieselPool<AsyncPgConnection>>,
 ) -> crate::error::Result<PresetEditTpl> {
     let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
@@ -247,6 +263,9 @@ async fn preset_edit(
     let back_url = from_room.map(|room_id| format!("/room/{}/review", room_id));
     let base = OrgTplContext::new(&session, "preset_edit", pool).await?;
 
+    let available_ap_versions: Vec<String> =
+        config.ap_versions.iter().map(|v| v.to_string()).collect();
+
     Ok(PresetEditTpl {
         base,
         preset: PresetForTemplate {
@@ -254,9 +273,11 @@ async fn preset_edit(
             name: preset.name,
             rules: serde_json::to_string(&rules_for_tpl)?,
             builtin_rules: serde_json::to_string(&preset.builtin_rules)?,
+            ap_version: preset.ap_version,
         },
         back_url,
         can_edit_rules,
+        available_ap_versions,
     })
 }
 

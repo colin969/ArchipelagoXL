@@ -1,0 +1,1 @@
+ALTER TABLE review_presets ADD COLUMN ap_version TEXT NOT NULL DEFAULT '0.6.7';

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ops::Deref;
 use std::time::Instant;
 
 use anyhow::anyhow;
@@ -13,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::{AdminSession, LoggedInSession, ModeratorSession};
-use crate::{RoomStateResponse, error};
 use crate::guards::{ApRoom, LobbyRoom, MergedSlotInfo};
 use crate::jobs::YamlAnalysisQueue;
 use crate::review::Role;
@@ -21,6 +21,7 @@ use crate::review::db;
 use crate::{
     Config, TRACKER_CACHE_TTL, TrackerInfoCache, fetch_incomplete_sphere1s, fetch_room_state,
 };
+use crate::{RoomStateResponse, error};
 
 #[derive(Deserialize)]
 struct SetRoomPresetRequest {
@@ -75,22 +76,20 @@ async fn remove_room_preset(
 /// options for them, and a room is on one. Asked without a `base` the lobby answers for its
 /// default version, which need not be the room's. `None` is a lobby from before rooms had a
 /// version: it has only one, and doesn't know the parameter.
-fn lobby_games_url(lobby_root_url: &Url, path: &str, base: Option<&str>) -> anyhow::Result<Url> {
+fn preset_games_url(lobby_root_url: &Url, path: &str, base: &str) -> anyhow::Result<Url> {
     let mut url = lobby_root_url.join(path)?;
-    if let Some(base) = base {
-        url.query_pairs_mut().append_pair("base", base);
-    }
+    url.query_pairs_mut().append_pair("base", base);
 
     Ok(url)
 }
 
-/// Fetches something about the lobby's games as the room of this instance sees them
-async fn fetch_from_lobby_games(
+/// Fetches the list of games applicable to the preset's ap version
+async fn fetch_from_ap_version_games(
     config: &Config,
-    room: &LobbyRoom,
+    ap_version: &str,
     path: &str,
 ) -> crate::error::Result<serde_json::Value> {
-    let url = lobby_games_url(&config.lobby_root_url, path, room.ap_version.as_deref())?;
+    let url = preset_games_url(&config.lobby_root_url, path, ap_version)?;
     let resp = reqwest::Client::new()
         .get(url)
         .header("x-api-key", &config.lobby_api_key)
@@ -107,28 +106,41 @@ async fn fetch_from_lobby_games(
     Ok(resp.json().await?)
 }
 
-#[rocket::get("/games")]
+#[rocket::get("/games/<preset_id>")]
 async fn proxy_games(
-    _session: LoggedInSession,
-    room: LobbyRoom,
+    session: LoggedInSession,
+    preset_id: i32,
     config: &State<Config>,
+    pool: &State<DieselPool<AsyncPgConnection>>,
 ) -> crate::error::Result<Json<serde_json::Value>> {
+    let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+    session
+        .require_preset_role(preset_id, Role::Viewer, &mut conn)
+        .await?;
+    let preset = db::get_preset(preset_id, &mut conn).await?;
     Ok(Json(
-        fetch_from_lobby_games(config, &room, "/api/games").await?,
+        fetch_from_ap_version_games(config, preset.ap_version.deref(), "/api/games").await?,
     ))
 }
 
 // TODO: Do we need perms for users not on a team? Double check
-#[rocket::get("/games/<apworld>/options")]
+#[rocket::get("/games/<preset_id>/<apworld>/options")]
 async fn proxy_game_options(
-    _session: LoggedInSession,
-    room: LobbyRoom,
+    session: LoggedInSession,
+    preset_id: i32,
     apworld: &str,
     config: &State<Config>,
+    pool: &State<DieselPool<AsyncPgConnection>>,
 ) -> crate::error::Result<Json<serde_json::Value>> {
     let path = format!("/api/games/{}/options", apworld);
-
-    Ok(Json(fetch_from_lobby_games(config, &room, &path).await?))
+    let mut conn = pool.get().await.map_err(|e| anyhow!(e))?;
+    session
+        .require_preset_role(preset_id, Role::Viewer, &mut conn)
+        .await?;
+    let preset = db::get_preset(preset_id, &mut conn).await?;
+    Ok(Json(
+        fetch_from_ap_version_games(config, preset.ap_version.deref(), &path).await?,
+    ))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -464,7 +476,8 @@ async fn queue_analysis(
         .await?
         .unwrap_or_else(|| Version::new(0, 6, 8));
 
-    crate::jobs::priority_queue_yaml(room_id, yaml_id, &ap_version, queue, pool, redis_pool).await?;
+    crate::jobs::priority_queue_yaml(room_id, yaml_id, &ap_version, queue, pool, redis_pool)
+        .await?;
 
     Ok(())
 }
@@ -649,48 +662,26 @@ pub fn routes() -> Vec<rocket::Route> {
 mod tests {
     use super::*;
 
-    fn url(path: &str, base: Option<&str>) -> String {
+    fn url(path: &str, base: &str) -> String {
         let root: Url = "https://lobby.example/".parse().unwrap();
 
-        lobby_games_url(&root, path, base).unwrap().to_string()
+        preset_games_url(&root, path, base).unwrap().to_string()
     }
 
     #[test]
     fn test_games_are_asked_for_the_version_of_the_room() {
         assert_eq!(
-            url("/api/games", Some("0.6.8")),
+            url("/api/games", "0.6.8"),
             "https://lobby.example/api/games?base=0.6.8"
         );
         assert_eq!(
-            url("/api/games/apquest/options", Some("0.6.8")),
+            url("/api/games/apquest/options", "0.6.8"),
             "https://lobby.example/api/games/apquest/options?base=0.6.8"
         );
         // A `+` would be read as a space on the other side
         assert_eq!(
-            url("/api/games", Some("0.7.0-rc1+build")),
+            url("/api/games", "0.7.0-rc1+build"),
             "https://lobby.example/api/games?base=0.7.0-rc1%2Bbuild"
         );
-    }
-
-    #[test]
-    fn test_lobby_without_versions_is_asked_as_before() {
-        assert_eq!(url("/api/games", None), "https://lobby.example/api/games");
-    }
-
-    // What `/api/room/<id>` of the lobby answers, cut down to what is read here
-    #[test]
-    fn test_room_of_the_lobby_says_its_version_or_not() {
-        let room: LobbyRoom = serde_json::from_str(
-            r#"{"id": "00000000-0000-0000-0000-0000000000a1", "name": "Room", "close_date": "2026-10-20T12:00:00",
-                "description": "", "locked": false, "author_id": 42, "ap_version": "0.6.8", "yamls": []}"#,
-        )
-        .unwrap();
-        assert_eq!(room.ap_version.as_deref(), Some("0.6.8"));
-
-        let room: LobbyRoom = serde_json::from_str(
-            r#"{"id": "00000000-0000-0000-0000-0000000000a1", "name": "Room", "yamls": []}"#,
-        )
-        .unwrap();
-        assert_eq!(room.ap_version, None);
     }
 }

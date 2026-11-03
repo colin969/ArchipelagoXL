@@ -13,6 +13,14 @@
                 <span>Preset name</span>
                 <input type="text" id="preset-name" value="{{ preset.name }}" size="30">
             </div>
+            <div class="field">
+                <span>Archipelago version</span>
+                <select id="preset-ap-version">
+                    {% for version in available_ap_versions %}
+                    <option value="{{ version }}" {% if version == &preset.ap_version %}selected{% endif %}>{{ version }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             <div class="field field-end">
                 <button onclick="savePreset()" class="primary">Save</button>
             </div>
@@ -62,7 +70,7 @@ const optionsCache = {};
 
 async function loadGames() {
     try {
-        const resp = await fetch("/api/games");
+        const resp = await fetch(`/api/games/${PRESET_ID}`);
         if (!resp.ok) { showToast("Failed to load games list"); return; }
         gamesData = await resp.json();
         for (const g of gamesData) gameToApworld[g.game_name] = g.apworld_name;
@@ -74,7 +82,7 @@ async function getOptionsForGame(gameName) {
     if (!apworld) return [];
     if (optionsCache[apworld]) return optionsCache[apworld];
     try {
-        const resp = await fetch(`/api/games/${encodeURIComponent(apworld)}/options`);
+        const resp = await fetch(`/api/games/${PRESET_ID}/${encodeURIComponent(apworld)}/options`);
         if (!resp.ok) return [];
         const data = await resp.json();
         optionsCache[apworld] = data;
@@ -782,10 +790,12 @@ async function savePreset() {
     const name = document.getElementById("preset-name").value.trim();
     if (!name) { showToast("Name is required"); return; }
 
+    const ap_version = document.getElementById("preset-ap-version").value;
+
     const resp = await fetch(`/api/presets/${PRESET_ID}`, {
         method: "PUT",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, ap_version }),
     });
     if (!resp.ok) { showToast("Failed to save: " + await resp.text()); return; }
 

@@ -19,7 +19,7 @@ use chrono::{DateTime, Utc};
 
 use crate::schema::{
     review_preset_rules, review_presets, room_review_config, team_members, team_rooms, teams,
-    yaml_review_notes, yaml_review_status, yaml_analysis_status
+    yaml_analysis_status, yaml_review_notes, yaml_review_status,
 };
 
 #[derive(Queryable, Selectable, Serialize, Debug)]
@@ -29,12 +29,14 @@ pub struct ReviewPreset {
     pub name: String,
     pub builtin_rules: serde_json::Value,
     pub team_id: Option<i32>,
+    pub ap_version: String,
 }
 
 #[derive(Serialize, Debug)]
 pub struct PresetSummary {
     pub id: i32,
     pub name: String,
+    pub ap_version: String,
 }
 
 #[derive(Insertable, Debug, Deserialize)]
@@ -44,6 +46,7 @@ pub struct NewPreset {
     pub builtin_rules: serde_json::Value,
     #[serde(default)]
     pub team_id: Option<i32>,
+    pub ap_version: String,
 }
 
 #[derive(AsChangeset, Debug, Deserialize)]
@@ -51,6 +54,7 @@ pub struct NewPreset {
 pub struct UpdatePreset {
     pub name: Option<String>,
     pub builtin_rules: Option<serde_json::Value>,
+    pub ap_version: Option<String>,
 }
 
 #[derive(Queryable, Selectable, Serialize, Debug)]
@@ -113,14 +117,22 @@ struct NewYamlAnalysisStatus {
 
 pub async fn list_presets(conn: &mut AsyncPgConnection) -> anyhow::Result<Vec<PresetSummary>> {
     let results = review_presets::table
-        .select((review_presets::id, review_presets::name))
+        .select((
+            review_presets::id,
+            review_presets::name,
+            review_presets::ap_version,
+        ))
         .order_by(review_presets::name)
-        .load::<(i32, String)>(conn)
+        .load::<(i32, String, String)>(conn)
         .await?;
 
     Ok(results
         .into_iter()
-        .map(|(id, name)| PresetSummary { id, name })
+        .map(|(id, name, ap_version)| PresetSummary {
+            id,
+            name,
+            ap_version,
+        })
         .collect())
 }
 
@@ -704,14 +716,22 @@ pub async fn list_presets_for_teams(
 ) -> anyhow::Result<Vec<PresetSummary>> {
     let results = review_presets::table
         .filter(review_presets::team_id.eq_any(team_ids))
-        .select((review_presets::id, review_presets::name))
+        .select((
+            review_presets::id,
+            review_presets::name,
+            review_presets::ap_version,
+        ))
         .order_by(review_presets::name)
-        .load::<(i32, String)>(conn)
+        .load::<(i32, String, String)>(conn)
         .await?;
 
     Ok(results
         .into_iter()
-        .map(|(id, name)| PresetSummary { id, name })
+        .map(|(id, name, ap_version)| PresetSummary {
+            id,
+            name,
+            ap_version,
+        })
         .collect())
 }
 
@@ -841,7 +861,6 @@ pub async fn get_unanalyzed_yamls(
     .load(conn)
     .await?)
 }
-
 
 pub async fn get_yaml_apworlds(
     yaml_id: Uuid,

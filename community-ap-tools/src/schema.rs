@@ -6,6 +6,7 @@ diesel::table! {
         name -> Text,
         builtin_rules -> Jsonb,
         team_id -> Nullable<Int4>,
+        ap_version -> Text
     }
 }
 
