@@ -877,10 +877,32 @@ td {
                 })
             })
 
+			const setButton = document.createElement("div")
+			setButton.innerText = "Set Password"
+			setButton.className = "simple-button";
+			setButton.addEventListener("click", () => {
+				const newPassword = prompt("Enter a new Password:");
+				if (newPassword === null || newPassword.trim() === "") {
+			        return;
+			    }
+
+				setPassword(yamlId, newPassword)
+			        .then(() => {
+			            currentPassword = newPassword;
+			            passwordDisplay.innerText = "Current password: " + currentPassword;
+			            passwordDisplay.style.cursor = "pointer";
+			        })
+			        .catch((error) => {
+			            console.error("Failed to set password:", error);
+			            alert("Failed to set password. Please try again.");
+			        });
+			});
+
             popup.appendChild(title)
             popup.appendChild(passwordDisplay)
             btnRow.appendChild(generateButton)
             btnRow.appendChild(removeButton)
+			btnRow.appendChild(setButton)
             popup.appendChild(btnRow)
         }
 
